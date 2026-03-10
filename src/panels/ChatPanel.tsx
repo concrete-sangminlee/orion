@@ -1,0 +1,1 @@
+export default function ChatPanel() { return <div className="h-full flex flex-col border-l border-border-primary bg-bg-primary"><div className="px-3.5 py-2.5 border-b border-border-primary"><span className="text-text-primary font-semibold text-sm">✦ AI Chat</span></div></div> }

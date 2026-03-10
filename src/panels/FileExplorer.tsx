@@ -1,0 +1,1 @@
+export default function FileExplorer() { return <div className="flex-1 flex flex-col overflow-hidden"><div className="px-3 py-2.5 border-b border-border-primary"><span className="text-text-secondary text-[10px] font-semibold tracking-wider">EXPLORER</span></div></div> }

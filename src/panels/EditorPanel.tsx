@@ -1,0 +1,1 @@
+export default function EditorPanel() { return <div className="h-full flex flex-col items-center justify-center text-text-muted"><span className="text-4xl mb-4">⚡</span><h2 className="text-lg font-semibold text-text-secondary mb-2">CursorPlus</h2><p className="text-xs">Open a file or folder to get started</p></div> }

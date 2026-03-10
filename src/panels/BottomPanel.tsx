@@ -1,0 +1,1 @@
+export default function BottomPanel() { return <div className="h-full flex flex-col border-t border-border-primary"><div className="flex items-center px-3 h-7 bg-bg-tertiary border-b border-border-primary"><span className="text-accent-blue text-[10px] font-semibold">TERMINAL</span></div></div> }

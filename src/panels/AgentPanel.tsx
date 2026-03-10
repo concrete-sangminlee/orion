@@ -1,0 +1,1 @@
+export default function AgentPanel() { return <div className="flex flex-col border-b border-border-primary"><div className="px-3 py-2.5 border-b border-border-primary"><span className="text-text-secondary text-[10px] font-semibold tracking-wider">AGENTS</span></div><div className="p-2 text-text-muted text-xs text-center py-4">No agents running</div></div> }
