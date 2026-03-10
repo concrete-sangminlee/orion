@@ -6,19 +6,24 @@ interface ChatStore {
   mode: ChatMode
   selectedModel: string
   isStreaming: boolean
+  ollamaAvailable: boolean
+  ollamaModels: string[]
   addMessage: (message: ChatMessage) => void
   updateLastAssistant: (content: string) => void
   setMode: (mode: ChatMode) => void
   setModel: (model: string) => void
   setStreaming: (streaming: boolean) => void
   clearMessages: () => void
+  setOllamaStatus: (available: boolean, models: string[]) => void
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
   messages: [],
   mode: 'agent',
-  selectedModel: '',
+  selectedModel: 'Ollama',
   isStreaming: false,
+  ollamaAvailable: false,
+  ollamaModels: [],
 
   addMessage: (message) =>
     set((state) => ({ messages: [...state.messages, message] })),
@@ -39,4 +44,5 @@ export const useChatStore = create<ChatStore>((set) => ({
   setModel: (model) => set({ selectedModel: model }),
   setStreaming: (streaming) => set({ isStreaming: streaming }),
   clearMessages: () => set({ messages: [] }),
+  setOllamaStatus: (available, models) => set({ ollamaAvailable: available, ollamaModels: models }),
 }))

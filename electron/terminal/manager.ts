@@ -9,6 +9,11 @@ interface PtyProcess {
 }
 
 const terminals = new Map<string, PtyProcess>()
+let currentProjectPath: string | null = null
+
+export function setProjectPath(projectPath: string) {
+  currentProjectPath = projectPath
+}
 
 function detectShell(): string {
   if (process.platform === 'win32') {
@@ -34,13 +39,14 @@ export async function createTerminal(
     const pty = loadNodePty()
 
     const shell = detectShell()
+    const cwd = currentProjectPath || os.homedir()
     const term = pty.spawn(shell, [], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
-      cwd: os.homedir(),
+      cwd,
       env: process.env as Record<string, string>,
-      useConpty: false, // Use winpty on Windows to avoid ConPTY AttachConsole errors
+      useConpty: false,
     })
 
     term.onData(onData)

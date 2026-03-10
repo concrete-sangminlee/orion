@@ -36,6 +36,8 @@ const api = {
   omoStart: (projectPath: string) => ipcRenderer.invoke(IPC.OMO_START, projectPath),
   omoStop: () => ipcRenderer.invoke(IPC.OMO_STOP),
   omoSend: (message: unknown) => ipcRenderer.send(IPC.OMO_SEND, message),
+  omoSetApiKeys: (keys: Record<string, string>) => ipcRenderer.invoke('omo:set-api-keys', keys),
+  omoSetPrompts: (prompts: { systemPrompt?: string; userPromptTemplate?: string }) => ipcRenderer.invoke('omo:set-prompts', prompts),
   onOmoMessage: (callback: (message: unknown) => void) => {
     const handler = (_: unknown, message: unknown) => callback(message)
     ipcRenderer.on(IPC.OMO_MESSAGE, handler)

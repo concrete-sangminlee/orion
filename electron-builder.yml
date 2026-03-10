@@ -1,5 +1,5 @@
-appId: com.cursorplus.app
-productName: CursorPlus
+appId: com.bebut.orion
+productName: Orion
 directories:
   buildResources: build
   output: release
@@ -10,7 +10,7 @@ npmRebuild: true
 publish:
   provider: github
   owner: concrete-sangminlee
-  repo: cursorplus
+  repo: orion
 win:
   target: nsis
 mac:

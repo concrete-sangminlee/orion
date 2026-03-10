@@ -8,7 +8,7 @@ async function getStore() {
   if (!store) {
     const Store = (await import('electron-store')).default
     store = new Store<AppSettings>({
-      name: 'cursorplus-settings',
+      name: 'orion-settings',
       defaults: {
         theme: 'dark',
         fontSize: 14,

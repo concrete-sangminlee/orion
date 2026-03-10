@@ -1,4 +1,4 @@
-export const APP_NAME = 'CursorPlus'
+export const APP_NAME = 'Orion'
 export const DEFAULT_FONT_SIZE = 14
 export const DEFAULT_FONT_FAMILY = 'Cascadia Code, Fira Code, Consolas, monospace'
 export const MIN_PANEL_WIDTH = 200

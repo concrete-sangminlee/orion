@@ -5,7 +5,7 @@ export function useFileWatcher() {
   const { rootPath, setFileTree } = useFileStore()
 
   useEffect(() => {
-    if (!rootPath) return
+    if (!rootPath || !window.api) return
 
     const cleanup = window.api.onFsChange(async () => {
       const tree = await window.api.readDir(rootPath)

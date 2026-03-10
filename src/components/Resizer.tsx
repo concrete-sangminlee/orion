@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 interface Props {
   direction: 'horizontal' | 'vertical'
@@ -7,11 +7,13 @@ interface Props {
 
 export default function Resizer({ direction, onResize }: Props) {
   const startPos = useRef(0)
+  const [dragging, setDragging] = useState(false)
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault()
       startPos.current = direction === 'horizontal' ? e.clientX : e.clientY
+      setDragging(true)
 
       const onMouseMove = (e: MouseEvent) => {
         const current = direction === 'horizontal' ? e.clientX : e.clientY
@@ -25,6 +27,7 @@ export default function Resizer({ direction, onResize }: Props) {
         document.removeEventListener('mouseup', onMouseUp)
         document.body.style.cursor = ''
         document.body.style.userSelect = ''
+        setDragging(false)
       }
 
       document.addEventListener('mousemove', onMouseMove)
@@ -35,14 +38,50 @@ export default function Resizer({ direction, onResize }: Props) {
     [direction, onResize]
   )
 
+  const isH = direction === 'horizontal'
+
   return (
     <div
       onMouseDown={onMouseDown}
-      className={`${
-        direction === 'horizontal'
-          ? 'w-1 cursor-col-resize hover:bg-accent-blue'
-          : 'h-1 cursor-row-resize hover:bg-accent-blue'
-      } bg-border-primary transition-colors flex-shrink-0`}
-    />
+      style={{
+        position: 'relative',
+        flexShrink: 0,
+        cursor: isH ? 'col-resize' : 'row-resize',
+        zIndex: 10,
+        ...(isH ? { width: 1 } : { height: 1 }),
+      }}
+    >
+      {/* Visible line */}
+      <div
+        data-resizer-line=""
+        style={{
+          position: 'absolute',
+          background: dragging ? 'var(--accent)' : 'var(--border)',
+          transition: dragging ? 'none' : 'background 0.15s ease',
+          ...(isH
+            ? { width: 1, top: 0, bottom: 0, left: 0 }
+            : { height: 1, left: 0, right: 0, top: 0 }),
+        }}
+      />
+      {/* Wider hit target - 7px for comfortable grabbing */}
+      <div
+        style={{
+          position: 'absolute',
+          ...(isH
+            ? { width: 7, top: 0, bottom: 0, left: -3 }
+            : { height: 7, left: 0, right: 0, top: -3 }),
+        }}
+        onMouseEnter={(e) => {
+          if (dragging) return
+          const line = e.currentTarget.previousElementSibling as HTMLElement
+          if (line) line.style.background = 'rgba(88, 166, 255, 0.5)'
+        }}
+        onMouseLeave={(e) => {
+          if (dragging) return
+          const line = e.currentTarget.previousElementSibling as HTMLElement
+          if (line) line.style.background = 'var(--border)'
+        }}
+      />
+    </div>
   )
 }

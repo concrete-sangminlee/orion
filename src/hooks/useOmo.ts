@@ -6,13 +6,14 @@ import { v4 as uuid } from 'uuid'
 import type { Agent } from '@shared/types'
 
 export function useOmo() {
-  const { setAgents, updateAgent, addLog } = useAgentStore()
-  const { addMessage } = useChatStore()
+  const { setAgents, addLog } = useAgentStore()
+  const { addMessage, setOllamaStatus } = useChatStore()
   const { markAiModified } = useEditorStore()
 
   useEffect(() => {
-    // Auto-start OMO bridge on mount
-    window.api.omoStart(process.cwd?.() || '.')
+    if (!window.api) return
+
+    window.api.omoStart('.')
 
     const cleanup = window.api.onOmoMessage((raw: any) => {
       const event = raw as { type: string; payload: any }
@@ -49,6 +50,10 @@ export function useOmo() {
           markAiModified(event.payload.filePath)
           break
         }
+        case 'ollama-status': {
+          setOllamaStatus(event.payload.available, event.payload.models || [])
+          break
+        }
         case 'error': {
           addLog({
             id: uuid(),
@@ -63,5 +68,5 @@ export function useOmo() {
     })
 
     return cleanup
-  }, [setAgents, updateAgent, addLog, addMessage, markAiModified])
+  }, [setAgents, addLog, addMessage, markAiModified, setOllamaStatus])
 }

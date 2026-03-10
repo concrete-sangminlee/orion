@@ -5,6 +5,14 @@ import { registerTerminalHandlers } from './ipc/terminal'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerOmoHandlers } from './ipc/omo'
 
+// Prevent error dialogs from crashing the app
+process.on('uncaughtException', (err) => {
+  console.error('[Main] Uncaught exception:', err)
+})
+process.on('unhandledRejection', (err) => {
+  console.error('[Main] Unhandled rejection:', err)
+})
+
 let mainWindow: BrowserWindow | null = null
 
 function createWindow() {
@@ -20,6 +28,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      webSecurity: false,
     },
   })
 
@@ -27,6 +36,11 @@ function createWindow() {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+  }
+
+  // Open DevTools in development
+  if (process.env.VITE_DEV_SERVER_URL) {
+    mainWindow.webContents.openDevTools()
   }
 
   mainWindow.on('closed', () => {
