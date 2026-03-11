@@ -52,7 +52,7 @@ async function callAnthropic(config: AIConfig, messages: { role: string; content
 
   const response = await client.messages.create({
     model: config.model,
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     system: messages.find(m => m.role === 'system')?.content || '',
   })
@@ -61,6 +61,30 @@ async function callAnthropic(config: AIConfig, messages: { role: string; content
     .filter((b: any) => b.type === 'text')
     .map((b: any) => b.text)
     .join('')
+}
+
+// Call Anthropic API with streaming
+async function callAnthropicStreaming(config: AIConfig, messages: { role: string; content: string }[], handler: ((event: OmoEvent) => void) | null, onChunk: (text: string) => void): Promise<string> {
+  const Anthropic = (await import('@anthropic-ai/sdk')).default
+  const client = new Anthropic({ apiKey: config.apiKey })
+
+  log(handler, 'hephaestus', 'Calling Claude API (streaming)...', 'action')
+
+  const stream = client.messages.stream({
+    model: config.model,
+    max_tokens: 4096,
+    messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    system: messages.find(m => m.role === 'system')?.content || '',
+  })
+
+  let fullText = ''
+  stream.on('text', (text) => {
+    fullText += text
+    onChunk(text)
+  })
+
+  await stream.finalMessage()
+  return fullText
 }
 
 // Call OpenAI-compatible API (OpenAI, Ollama, etc.)
@@ -78,10 +102,41 @@ async function callOpenAICompat(config: AIConfig, messages: { role: string; cont
   const response = await client.chat.completions.create({
     model: config.model,
     messages: messages.map(m => ({ role: m.role as any, content: m.content })),
-    ...(config.provider !== 'ollama' ? { max_tokens: 2048 } : {}),
+    ...(config.provider !== 'ollama' ? { max_tokens: 4096 } : {}),
   })
 
   return response.choices[0]?.message?.content || 'No response generated.'
+}
+
+// Call OpenAI-compatible API with streaming
+async function callOpenAICompatStreaming(config: AIConfig, messages: { role: string; content: string }[], handler: ((event: OmoEvent) => void) | null, onChunk: (text: string) => void): Promise<string> {
+  const OpenAI = (await import('openai')).default
+
+  const clientOpts: any = { apiKey: config.apiKey }
+  if (config.baseURL) clientOpts.baseURL = config.baseURL
+
+  const client = new OpenAI(clientOpts)
+
+  const label = config.provider === 'ollama' ? 'Ollama (local)' : config.provider === 'nvidia' ? `NVIDIA NIM (${config.model})` : config.provider
+  log(handler, 'hephaestus', `Calling ${label} (streaming)...`, 'action')
+
+  const stream = await client.chat.completions.create({
+    model: config.model,
+    messages: messages.map(m => ({ role: m.role as any, content: m.content })),
+    ...(config.provider !== 'ollama' ? { max_tokens: 4096 } : {}),
+    stream: true,
+  })
+
+  let fullText = ''
+  for await (const chunk of stream) {
+    const text = chunk.choices[0]?.delta?.content || ''
+    if (text) {
+      fullText += text
+      onChunk(text)
+    }
+  }
+
+  return fullText || 'No response generated.'
 }
 
 // Check if Ollama is running
@@ -188,6 +243,60 @@ export async function callAI(
     content = await callAnthropic(config, messages, handler)
   } else {
     content = await callOpenAICompat(config, messages, handler)
+  }
+
+  // Save assistant response to history
+  conversationHistory.push({ role: 'assistant', content })
+
+  return { content, model: config.model }
+}
+
+export async function callAIStreaming(
+  selectedModel: string,
+  message: string,
+  apiKeys: Record<string, string>,
+  handler: ((event: OmoEvent) => void) | null,
+  onChunk: (text: string) => void,
+): Promise<{ content: string; model: string } | null> {
+  let config = resolveModel(selectedModel, apiKeys)
+
+  // Fallback to Ollama if no API key
+  if (!config && ollamaAvailable) {
+    const model = ollamaModels[0] || 'llama3.2'
+    config = { provider: 'ollama', apiKey: 'ollama', model, baseURL: 'http://localhost:11434/v1' }
+    log(handler, 'sisyphus', `No API key for ${selectedModel}, using Ollama (${model})`, 'info')
+  }
+
+  if (!config) return null
+
+  console.log(`[AI Client] Calling ${config.provider} / ${config.model} (streaming)`)
+
+  // Apply user template if set
+  let processedMessage = message
+  if (customUserTemplate && customUserTemplate !== '{message}') {
+    processedMessage = customUserTemplate.replace('{message}', message)
+  }
+
+  // Build messages with history
+  conversationHistory.push({ role: 'user', content: processedMessage })
+  // Keep last 10 exchanges
+  if (conversationHistory.length > 20) {
+    conversationHistory = conversationHistory.slice(-20)
+  }
+
+  const systemPrompt = customSystemPrompt || DEFAULT_SYSTEM_PROMPT
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...conversationHistory,
+  ]
+
+  let content: string
+
+  if (config.provider === 'anthropic') {
+    content = await callAnthropicStreaming(config, messages, handler, onChunk)
+  } else {
+    content = await callOpenAICompatStreaming(config, messages, handler, onChunk)
   }
 
   // Save assistant response to history

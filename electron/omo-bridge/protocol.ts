@@ -10,6 +10,6 @@ export interface OmoBridgeMessage {
 }
 
 export interface OmoEvent {
-  type: 'agent-status' | 'agent-log' | 'file-edit' | 'chat-response' | 'task-complete' | 'error' | 'ollama-status'
+  type: 'agent-status' | 'agent-log' | 'file-edit' | 'chat-response' | 'chat-stream' | 'task-complete' | 'error' | 'ollama-status'
   payload: unknown
 }

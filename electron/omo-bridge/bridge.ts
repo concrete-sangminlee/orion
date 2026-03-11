@@ -1,6 +1,6 @@
 import type { OmoBridgeMessage, OmoEvent } from './protocol'
 import type { Agent } from '../../shared/types'
-import { callAI, canRespond, checkOllama, getOllamaStatus, setCustomPrompts } from './ai-client'
+import { callAI, callAIStreaming, canRespond, checkOllama, getOllamaStatus, setCustomPrompts } from './ai-client'
 
 let messageHandler: ((event: OmoEvent) => void) | null = null
 let apiKeys: Record<string, string> = {}
@@ -64,9 +64,22 @@ async function handleWithAI(message: string, model: string, mode: string) {
 
     if (canCall) {
       updateAgent('sisyphus', { progress: 60 })
-      const result = await callAI(model, message, apiKeys, messageHandler)
-      responseText = result?.content || 'Failed to get response.'
-      responseModel = result?.model || model
+      // Use streaming for real-time response
+      emit({ type: 'chat-stream', payload: { status: 'start', agentName: isAgent ? 'Sisyphus' : 'AI Assistant' } })
+      try {
+        const result = await callAIStreaming(model, message, apiKeys, messageHandler, (chunk: string) => {
+          emit({ type: 'chat-stream', payload: { status: 'chunk', content: chunk } })
+        })
+        responseText = result?.content || 'Failed to get response.'
+        responseModel = result?.model || model
+      } catch (streamErr: any) {
+        // Fallback to non-streaming
+        console.log('[OMO] Streaming failed, falling back to non-streaming:', streamErr.message)
+        const result = await callAI(model, message, apiKeys, messageHandler)
+        responseText = result?.content || 'Failed to get response.'
+        responseModel = result?.model || model
+      }
+      emit({ type: 'chat-stream', payload: { status: 'end' } })
     } else {
       // No AI available
       updateAgent('sisyphus', { progress: 60 })

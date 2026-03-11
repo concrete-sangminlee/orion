@@ -20,6 +20,7 @@ export const IPC = {
   GIT_STAGE: 'git:stage',
   GIT_UNSTAGE: 'git:unstage',
   GIT_COMMIT: 'git:commit',
+  GIT_DISCARD: 'git:discard',
   GIT_BRANCHES: 'git:branches',
 
   // Terminal

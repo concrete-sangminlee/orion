@@ -11,6 +11,7 @@ import ToastContainer from '@/components/Toast'
 import AgentPanel from './panels/AgentPanel'
 import FileExplorer from './panels/FileExplorer'
 import SearchPanel from '@/panels/SearchPanel'
+import SourceControlPanel from '@/panels/SourceControlPanel'
 import EditorPanel from './panels/EditorPanel'
 import ChatPanel from './panels/ChatPanel'
 import BottomPanel from './panels/BottomPanel'
@@ -199,7 +200,8 @@ export default function App() {
             >
               {activeView === 'agents' && <AgentPanel />}
               {activeView === 'search' && <SearchPanel />}
-              {(activeView === 'explorer' || activeView === 'git') && <FileExplorer />}
+              {activeView === 'explorer' && <FileExplorer />}
+              {activeView === 'git' && <SourceControlPanel />}
             </div>
 
             <Resizer direction="horizontal" onResize={handleSideResize} />

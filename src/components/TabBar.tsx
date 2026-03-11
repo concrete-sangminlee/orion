@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useEditorStore } from '@/store/editor'
 import { X } from 'lucide-react'
 
@@ -11,8 +11,12 @@ const extColors: Record<string, string> = {
 }
 
 export default function TabBar() {
-  const { openFiles, activeFilePath, setActiveFile, closeFile } = useEditorStore()
+  const { openFiles, activeFilePath, setActiveFile, closeFile, closeAllFiles, reorderFiles } = useEditorStore()
   const [hoveredTab, setHoveredTab] = useState<string | null>(null)
+  const [dragOverPath, setDragOverPath] = useState<string | null>(null)
+  const [draggingPath, setDraggingPath] = useState<string | null>(null)
+  const [closeAllHovered, setCloseAllHovered] = useState(false)
+  const dragIndexRef = useRef<number>(-1)
 
   if (openFiles.length === 0) return null
 
@@ -28,6 +32,8 @@ export default function TabBar() {
       {openFiles.map((file, index) => {
         const isActive = activeFilePath === file.path
         const isHovered = hoveredTab === file.path
+        const isDragOver = dragOverPath === file.path && draggingPath !== file.path
+        const isDragging = draggingPath === file.path
         const ext = file.name.split('.').pop()?.toLowerCase() || ''
         const dotColor = extColors[ext] || '#8b949e'
         const showClose = isActive || isHovered
@@ -35,6 +41,36 @@ export default function TabBar() {
         return (
           <div
             key={file.path}
+            draggable={true}
+            onDragStart={(e) => {
+              dragIndexRef.current = index
+              setDraggingPath(file.path)
+              e.dataTransfer.effectAllowed = 'move'
+              e.dataTransfer.setData('text/plain', file.path)
+            }}
+            onDragOver={(e) => {
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              if (draggingPath !== file.path) {
+                setDragOverPath(file.path)
+              }
+            }}
+            onDragLeave={() => {
+              setDragOverPath(null)
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDragOverPath(null)
+              const fromIndex = dragIndexRef.current
+              if (fromIndex !== -1 && fromIndex !== index) {
+                reorderFiles(fromIndex, index)
+              }
+            }}
+            onDragEnd={() => {
+              setDraggingPath(null)
+              setDragOverPath(null)
+              dragIndexRef.current = -1
+            }}
             onClick={() => setActiveFile(file.path)}
             className="shrink-0 flex items-center cursor-pointer"
             style={{
@@ -56,6 +92,10 @@ export default function TabBar() {
               borderRight: index < openFiles.length - 1
                 ? '1px solid rgba(255, 255, 255, 0.04)'
                 : 'none',
+              borderLeft: isDragOver
+                ? '2px solid var(--accent)'
+                : '2px solid transparent',
+              opacity: isDragging ? 0.5 : 1,
             }}
             onMouseEnter={() => setHoveredTab(file.path)}
             onMouseLeave={() => setHoveredTab(null)}
@@ -196,6 +236,41 @@ export default function TabBar() {
           borderBottom: '1px solid var(--border)',
         }}
       />
+
+      {/* Close all tabs button */}
+      <div
+        style={{
+          height: 35,
+          display: 'flex',
+          alignItems: 'center',
+          paddingRight: 6,
+          paddingLeft: 4,
+          borderBottom: '1px solid var(--border)',
+        }}
+      >
+        <button
+          onClick={closeAllFiles}
+          title="Close all tabs"
+          onMouseEnter={() => setCloseAllHovered(true)}
+          onMouseLeave={() => setCloseAllHovered(false)}
+          style={{
+            width: 20,
+            height: 20,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 4,
+            color: closeAllHovered ? 'var(--text-primary)' : 'var(--text-muted)',
+            background: closeAllHovered ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
+            transition: 'background 0.1s, color 0.1s',
+            cursor: 'pointer',
+            border: 'none',
+            padding: 0,
+          }}
+        >
+          <X size={10} strokeWidth={2} />
+        </button>
+      </div>
     </div>
   )
 }

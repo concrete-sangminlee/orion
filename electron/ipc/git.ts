@@ -22,21 +22,45 @@ export function registerGitHandlers() {
 
     if (!isRepo) {
       const check = await runGit(cwd, 'rev-parse --is-inside-work-tree')
-      if (check !== 'true') return { isRepo: false, branch: '', files: [], ahead: 0, behind: 0 }
+      if (check !== 'true') return { isRepo: false, branch: '', files: [], staged: [], unstaged: [], ahead: 0, behind: 0 }
     }
 
-    const files = statusRaw
+    const files: { path: string; state: string }[] = []
+    const staged: { path: string; state: string }[] = []
+    const unstaged: { path: string; state: string }[] = []
+
+    statusRaw
       .split('\n')
       .filter(Boolean)
-      .map((line) => {
-        const status = line.substring(0, 2).trim()
+      .forEach((line) => {
+        const x = line[0] // index (staging area) status
+        const y = line[1] // working tree status
         const path = line.substring(3)
+
+        // Determine overall state for backward compat
         let state: 'modified' | 'added' | 'deleted' | 'untracked' | 'renamed' = 'modified'
-        if (status === '??') state = 'untracked'
-        else if (status.includes('A')) state = 'added'
-        else if (status.includes('D')) state = 'deleted'
-        else if (status.includes('R')) state = 'renamed'
-        return { path, state }
+        if (x === '?' && y === '?') state = 'untracked'
+        else if (x === 'A' || y === 'A') state = 'added'
+        else if (x === 'D' || y === 'D') state = 'deleted'
+        else if (x === 'R' || y === 'R') state = 'renamed'
+        files.push({ path, state })
+
+        // Staged: X has a non-space, non-? value
+        if (x !== ' ' && x !== '?') {
+          let sState: string = 'modified'
+          if (x === 'A') sState = 'added'
+          else if (x === 'D') sState = 'deleted'
+          else if (x === 'R') sState = 'renamed'
+          staged.push({ path, state: sState })
+        }
+
+        // Unstaged: Y has a non-space value, or untracked
+        if (y !== ' ' || (x === '?' && y === '?')) {
+          let uState: string = 'modified'
+          if (x === '?' && y === '?') uState = 'untracked'
+          else if (y === 'D') uState = 'deleted'
+          unstaged.push({ path, state: uState })
+        }
       })
 
     // Get ahead/behind counts
@@ -50,7 +74,7 @@ export function registerGitHandlers() {
       }
     } catch {}
 
-    return { isRepo: true, branch: branch || 'main', files, ahead, behind }
+    return { isRepo: true, branch: branch || 'main', files, staged, unstaged, ahead, behind }
   })
 
   ipcMain.handle('git:diff', async (_, cwd: string, filePath?: string) => {
@@ -84,6 +108,13 @@ export function registerGitHandlers() {
 
   ipcMain.handle('git:checkout', async (_, cwd: string, branch: string) => {
     return await runGit(cwd, `checkout "${branch}"`)
+  })
+
+  ipcMain.handle('git:discard', async (_, cwd: string, filePath: string) => {
+    await runGit(cwd, `checkout -- "${filePath}"`)
+    // Also handle untracked files
+    await runGit(cwd, `clean -f -- "${filePath}"`)
+    return true
   })
 
   ipcMain.handle('git:branches', async (_, cwd: string) => {

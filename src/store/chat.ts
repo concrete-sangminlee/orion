@@ -28,12 +28,12 @@ export const useChatStore = create<ChatStore>((set) => ({
   addMessage: (message) =>
     set((state) => ({ messages: [...state.messages, message] })),
 
-  updateLastAssistant: (content) =>
+  updateLastAssistant: (chunk) =>
     set((state) => {
       const msgs = [...state.messages]
       for (let i = msgs.length - 1; i >= 0; i--) {
         if (msgs[i].role === 'assistant') {
-          msgs[i] = { ...msgs[i], content }
+          msgs[i] = { ...msgs[i], content: msgs[i].content + chunk }
           break
         }
       }

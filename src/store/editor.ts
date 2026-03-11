@@ -6,9 +6,11 @@ interface EditorStore {
   activeFilePath: string | null
   openFile: (file: OpenFile) => void
   closeFile: (path: string) => void
+  closeAllFiles: () => void
   setActiveFile: (path: string) => void
   updateFileContent: (path: string, content: string) => void
   markAiModified: (path: string) => void
+  reorderFiles: (fromIndex: number, toIndex: number) => void
 }
 
 export const useEditorStore = create<EditorStore>((set) => ({
@@ -47,4 +49,23 @@ export const useEditorStore = create<EditorStore>((set) => ({
         f.path === path ? { ...f, aiModified: true } : f
       ),
     })),
+
+  closeAllFiles: () => set({ openFiles: [], activeFilePath: null }),
+
+  reorderFiles: (fromIndex, toIndex) =>
+    set((state) => {
+      if (
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= state.openFiles.length ||
+        toIndex >= state.openFiles.length ||
+        fromIndex === toIndex
+      ) {
+        return state
+      }
+      const files = [...state.openFiles]
+      const [moved] = files.splice(fromIndex, 1)
+      files.splice(toIndex, 0, moved)
+      return { openFiles: files }
+    }),
 }))

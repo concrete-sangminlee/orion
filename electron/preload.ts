@@ -28,6 +28,7 @@ const api = {
   gitStage: (cwd: string, filePath: string) => ipcRenderer.invoke(IPC.GIT_STAGE, cwd, filePath),
   gitUnstage: (cwd: string, filePath: string) => ipcRenderer.invoke(IPC.GIT_UNSTAGE, cwd, filePath),
   gitCommit: (cwd: string, message: string) => ipcRenderer.invoke(IPC.GIT_COMMIT, cwd, message),
+  gitDiscard: (cwd: string, filePath: string) => ipcRenderer.invoke(IPC.GIT_DISCARD, cwd, filePath),
   gitBranches: (cwd: string) => ipcRenderer.invoke(IPC.GIT_BRANCHES, cwd),
 
   // Terminal
