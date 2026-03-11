@@ -9,6 +9,10 @@ const api = {
   renameFile: (oldPath: string, newPath: string) => ipcRenderer.invoke(IPC.FS_RENAME, oldPath, newPath),
   readDir: (dirPath: string) => ipcRenderer.invoke(IPC.FS_READ_DIR, dirPath),
   openFolder: () => ipcRenderer.invoke(IPC.FS_OPEN_FOLDER),
+  createFile: (filePath: string, content?: string) => ipcRenderer.invoke(IPC.FS_CREATE_FILE, filePath, content || ''),
+  createDir: (dirPath: string) => ipcRenderer.invoke(IPC.FS_CREATE_DIR, dirPath),
+  searchFiles: (rootPath: string, query: string, options?: { caseSensitive?: boolean; regex?: boolean }) =>
+    ipcRenderer.invoke(IPC.FS_SEARCH, rootPath, query, options),
   watchStart: (dirPath: string) => ipcRenderer.send(IPC.FS_WATCH_START, dirPath),
   watchStop: () => ipcRenderer.send(IPC.FS_WATCH_STOP),
   onFsChange: (callback: (event: string, filePath: string) => void) => {
@@ -16,6 +20,15 @@ const api = {
     ipcRenderer.on(IPC.FS_CHANGE, handler)
     return () => ipcRenderer.removeListener(IPC.FS_CHANGE, handler)
   },
+
+  // Git
+  gitStatus: (cwd: string) => ipcRenderer.invoke(IPC.GIT_STATUS, cwd),
+  gitLog: (cwd: string, count?: number) => ipcRenderer.invoke(IPC.GIT_LOG, cwd, count),
+  gitDiff: (cwd: string, filePath?: string) => ipcRenderer.invoke(IPC.GIT_DIFF, cwd, filePath),
+  gitStage: (cwd: string, filePath: string) => ipcRenderer.invoke(IPC.GIT_STAGE, cwd, filePath),
+  gitUnstage: (cwd: string, filePath: string) => ipcRenderer.invoke(IPC.GIT_UNSTAGE, cwd, filePath),
+  gitCommit: (cwd: string, message: string) => ipcRenderer.invoke(IPC.GIT_COMMIT, cwd, message),
+  gitBranches: (cwd: string) => ipcRenderer.invoke(IPC.GIT_BRANCHES, cwd),
 
   // Terminal
   termCreate: (id: string) => ipcRenderer.invoke(IPC.TERM_CREATE, id),

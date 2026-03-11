@@ -5,8 +5,11 @@ import {
   Sparkles, Bot, User, Zap, MessageSquare,
   ArrowUp, Paperclip, AtSign, CheckCircle2, Loader2, Circle,
   ChevronDown, Copy, Check, Code, Lightbulb, Wrench, BookOpen,
+  Play, Trash2,
 } from 'lucide-react'
 import type { ChatMessage } from '@shared/types'
+import { useEditorStore } from '@/store/editor'
+import { useToastStore } from '@/store/toast'
 
 /* ── Model definitions ─────────────────────────────────── */
 
@@ -275,11 +278,32 @@ function renderInline(text: string): ReactNode[] {
 
 function CodeBlock({ language, code }: { language: string; code: string }) {
   const [copied, setCopied] = useState(false)
+  const [applied, setApplied] = useState(false)
+  const { openFiles, activeFilePath, updateFileContent } = useEditorStore()
+  const { addToast } = useToastStore()
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(code)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleApply = async () => {
+    const activeFile = openFiles.find((f) => f.path === activeFilePath)
+    if (!activeFile || !activeFilePath) {
+      addToast({ type: 'error', message: 'No file open to apply code' })
+      return
+    }
+    updateFileContent(activeFilePath, code)
+    try {
+      await window.api.writeFile(activeFilePath, code)
+    } catch {
+      // file was still updated in-memory
+    }
+    const filename = activeFilePath.split(/[\\/]/).pop() || activeFilePath
+    addToast({ type: 'success', message: `Code applied to ${filename}` })
+    setApplied(true)
+    setTimeout(() => setApplied(false), 2000)
   }
 
   return (
@@ -311,28 +335,52 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
         >
           {language || 'code'}
         </span>
-        <button
-          onClick={handleCopy}
-          className="flex items-center gap-1 transition-colors duration-100"
-          style={{
-            fontSize: 10,
-            color: copied ? 'var(--accent-green)' : 'var(--text-muted)',
-            background: 'transparent',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '2px 6px',
-            borderRadius: 4,
-          }}
-          onMouseEnter={(e) => {
-            if (!copied) e.currentTarget.style.color = 'var(--text-secondary)'
-          }}
-          onMouseLeave={(e) => {
-            if (!copied) e.currentTarget.style.color = 'var(--text-muted)'
-          }}
-        >
-          {copied ? <Check size={11} /> : <Copy size={11} />}
-          {copied ? 'Copied' : 'Copy'}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleApply}
+            className="flex items-center gap-1 transition-colors duration-100"
+            style={{
+              fontSize: 10,
+              color: applied ? 'var(--accent-green)' : 'var(--accent)',
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '2px 6px',
+              borderRadius: 4,
+            }}
+            onMouseEnter={(e) => {
+              if (!applied) e.currentTarget.style.color = 'var(--accent-purple)'
+            }}
+            onMouseLeave={(e) => {
+              if (!applied) e.currentTarget.style.color = 'var(--accent)'
+            }}
+          >
+            {applied ? <Check size={11} /> : <Play size={11} />}
+            {applied ? 'Applied' : 'Apply'}
+          </button>
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1 transition-colors duration-100"
+            style={{
+              fontSize: 10,
+              color: copied ? 'var(--accent-green)' : 'var(--text-muted)',
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '2px 6px',
+              borderRadius: 4,
+            }}
+            onMouseEnter={(e) => {
+              if (!copied) e.currentTarget.style.color = 'var(--text-secondary)'
+            }}
+            onMouseLeave={(e) => {
+              if (!copied) e.currentTarget.style.color = 'var(--text-muted)'
+            }}
+          >
+            {copied ? <Check size={11} /> : <Copy size={11} />}
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
       </div>
       {/* Code */}
       <pre
@@ -763,6 +811,7 @@ export default function ChatPanel() {
     addMessage,
     setMode,
     setModel,
+    clearMessages,
     ollamaAvailable,
     ollamaModels,
   } = useChatStore()
@@ -871,6 +920,31 @@ export default function ChatPanel() {
             </button>
           ))}
         </div>
+        <button
+          onClick={clearMessages}
+          title="Clear chat"
+          className="flex items-center justify-center transition-colors duration-100"
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: 6,
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            color: 'var(--text-muted)',
+            marginLeft: 6,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--text-secondary)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.05)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--text-muted)'
+            e.currentTarget.style.background = 'transparent'
+          }}
+        >
+          <Trash2 size={13} />
+        </button>
       </div>
 
       {/* Messages */}

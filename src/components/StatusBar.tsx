@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAgentStore } from '@/store/agents'
 import { useEditorStore } from '@/store/editor'
 import { useChatStore } from '@/store/chat'
+import { useFileStore } from '@/store/files'
 import {
   GitBranch,
   AlertTriangle,
@@ -10,19 +11,30 @@ import {
   Zap,
   CheckCircle2,
   Cloud,
+  CloudOff,
+  MessageSquare,
+  Terminal,
+  ArrowUpDown,
 } from 'lucide-react'
+
+interface Props {
+  onToggleTerminal?: () => void
+  onToggleChat?: () => void
+}
 
 interface StatusItemProps {
   children: React.ReactNode
   style?: React.CSSProperties
   onClick?: () => void
+  title?: string
 }
 
-function StatusItem({ children, style, onClick }: StatusItemProps) {
+function StatusItem({ children, style, onClick, title }: StatusItemProps) {
   const [hovered, setHovered] = useState(false)
   return (
     <div
       className="flex items-center"
+      title={title}
       style={{
         height: '100%',
         padding: '0 7px',
@@ -41,13 +53,38 @@ function StatusItem({ children, style, onClick }: StatusItemProps) {
   )
 }
 
-export default function StatusBar() {
+interface GitInfo {
+  isRepo: boolean
+  branch: string
+  files: { path: string; state: string }[]
+  ahead: number
+  behind: number
+}
+
+export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
   const agents = useAgentStore((s) => s.agents)
   const activeFile = useEditorStore((s) =>
     s.openFiles.find((f) => f.path === s.activeFilePath)
   )
   const model = useChatStore((s) => s.selectedModel)
+  const rootPath = useFileStore((s) => s.rootPath)
   const activeAgents = agents.filter((a) => a.status !== 'idle').length
+  const [gitInfo, setGitInfo] = useState<GitInfo | null>(null)
+
+  useEffect(() => {
+    if (!rootPath) return
+    const fetchGit = async () => {
+      try {
+        const info = await window.api?.gitStatus(rootPath)
+        if (info) setGitInfo(info)
+      } catch {}
+    }
+    fetchGit()
+    const interval = setInterval(fetchGit, 5000)
+    return () => clearInterval(interval)
+  }, [rootPath])
+
+  const changedFiles = gitInfo?.files?.length || 0
 
   return (
     <footer
@@ -81,15 +118,37 @@ export default function StatusBar() {
         </div>
 
         {/* Branch info */}
-        <StatusItem>
+        <StatusItem title={gitInfo?.isRepo ? `Branch: ${gitInfo.branch}` : 'Not a git repository'}>
           <GitBranch size={11} style={{ color: 'var(--text-secondary)' }} />
-          <span style={{ color: 'var(--text-secondary)' }}>main</span>
+          <span style={{ color: 'var(--text-secondary)' }}>
+            {gitInfo?.isRepo ? gitInfo.branch : 'No repo'}
+          </span>
         </StatusItem>
 
         {/* Sync indicator */}
-        <StatusItem>
-          <Cloud size={10} style={{ color: 'var(--text-muted)' }} />
+        <StatusItem title={gitInfo?.isRepo ? `${gitInfo.ahead || 0}↑ ${gitInfo.behind || 0}↓` : ''}>
+          {gitInfo?.isRepo ? (
+            <>
+              <ArrowUpDown size={10} style={{ color: 'var(--text-muted)' }} />
+              {(gitInfo.ahead > 0 || gitInfo.behind > 0) && (
+                <span style={{ fontSize: 10 }}>
+                  {gitInfo.ahead > 0 && `${gitInfo.ahead}↑`}
+                  {gitInfo.behind > 0 && ` ${gitInfo.behind}↓`}
+                </span>
+              )}
+            </>
+          ) : (
+            <CloudOff size={10} style={{ color: 'var(--text-muted)' }} />
+          )}
         </StatusItem>
+
+        {/* Changed files count */}
+        {changedFiles > 0 && (
+          <StatusItem title={`${changedFiles} changed files`}>
+            <Cloud size={10} style={{ color: 'var(--accent-orange)' }} />
+            <span style={{ color: 'var(--accent-orange)' }}>{changedFiles}</span>
+          </StatusItem>
+        )}
 
         {/* Active agents */}
         {activeAgents > 0 && (
@@ -116,22 +175,15 @@ export default function StatusBar() {
       <div className="flex items-center" style={{ height: '100%' }}>
         {activeFile && (
           <>
-            {/* Line/Col info */}
             <StatusItem>
               <span>Ln 1, Col 1</span>
             </StatusItem>
-
-            {/* Spaces */}
             <StatusItem>
               <span>Spaces: 2</span>
             </StatusItem>
-
-            {/* Encoding */}
             <StatusItem>
               <span>UTF-8</span>
             </StatusItem>
-
-            {/* Language */}
             <StatusItem>
               <span style={{ color: 'var(--text-secondary)' }}>
                 {activeFile.language || 'Plain Text'}
@@ -139,6 +191,14 @@ export default function StatusBar() {
             </StatusItem>
           </>
         )}
+
+        {/* Toggle buttons */}
+        <StatusItem onClick={onToggleTerminal} title="Toggle Terminal (Ctrl+`)">
+          <Terminal size={11} />
+        </StatusItem>
+        <StatusItem onClick={onToggleChat} title="Toggle Chat (Ctrl+L)">
+          <MessageSquare size={11} />
+        </StatusItem>
 
         {/* AI model */}
         <StatusItem>

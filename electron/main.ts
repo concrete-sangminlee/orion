@@ -4,6 +4,7 @@ import { registerFilesystemHandlers } from './ipc/filesystem'
 import { registerTerminalHandlers } from './ipc/terminal'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerOmoHandlers } from './ipc/omo'
+import { registerGitHandlers } from './ipc/git'
 
 // Prevent error dialogs from crashing the app
 process.on('uncaughtException', (err) => {
@@ -53,6 +54,7 @@ function registerIpcHandlers() {
   registerTerminalHandlers(ipcMain, () => mainWindow)
   registerSettingsHandlers(ipcMain)
   registerOmoHandlers(ipcMain, () => mainWindow)
+  registerGitHandlers()
 
   // Window controls
   ipcMain.on('win:minimize', () => mainWindow?.minimize())

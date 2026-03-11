@@ -9,6 +9,18 @@ export const IPC = {
   FS_WATCH_STOP: 'fs:watch-stop',
   FS_CHANGE: 'fs:change',
   FS_OPEN_FOLDER: 'fs:open-folder',
+  FS_CREATE_FILE: 'fs:create-file',
+  FS_CREATE_DIR: 'fs:create-dir',
+  FS_SEARCH: 'fs:search',
+
+  // Git
+  GIT_STATUS: 'git:status',
+  GIT_LOG: 'git:log',
+  GIT_DIFF: 'git:diff',
+  GIT_STAGE: 'git:stage',
+  GIT_UNSTAGE: 'git:unstage',
+  GIT_COMMIT: 'git:commit',
+  GIT_BRANCHES: 'git:branches',
 
   // Terminal
   TERM_CREATE: 'term:create',
