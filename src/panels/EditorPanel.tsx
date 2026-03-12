@@ -210,6 +210,7 @@ export default function EditorPanel() {
       fontFamily: 'Cascadia Code', lineHeight: 1.5,
       fontLigatures: true, cursorStyle: 'line' as string,
       renderWhitespace: 'selection' as string, letterSpacing: 0,
+      formatOnSave: false, trimTrailingWhitespace: true, insertFinalNewline: true,
     }
     try {
       const stored = localStorage.getItem('orion-editor-settings')
@@ -1391,224 +1392,10 @@ export default function EditorPanel() {
     editor.trigger = patchedTrigger
 
     // ── Language providers: definition, references, hover, symbols, rename ──────────────────
-    registerLanguageProviders(monaco, editor)
-
-    // ── Hover provider: show type hints, import paths, and color previews ──────────────────
-    const TS_KEYWORDS: Record<string, string> = {
-      'string': 'Primitive type: represents text data.',
-      'number': 'Primitive type: represents numeric values (integers and floats).',
-      'boolean': 'Primitive type: represents true/false values.',
-      'void': 'Type: indicates no return value.',
-      'null': 'Primitive type: intentional absence of any value.',
-      'undefined': 'Primitive type: variable declared but not assigned.',
-      'any': 'Type: opt out of type checking. Any value is allowed.',
-      'unknown': 'Type: type-safe counterpart of any. Must narrow before use.',
-      'never': 'Type: represents values that never occur (e.g. function that always throws).',
-      'object': 'Type: represents non-primitive values.',
-      'Array': 'Built-in generic type: Array<T> or T[].',
-      'Promise': 'Built-in generic type: Promise<T> represents an async result.',
-      'Record': 'Utility type: Record<K, V> constructs an object type.',
-      'Partial': 'Utility type: Partial<T> makes all properties optional.',
-      'Required': 'Utility type: Required<T> makes all properties required.',
-      'Readonly': 'Utility type: Readonly<T> makes all properties readonly.',
-      'Pick': 'Utility type: Pick<T, K> picks a set of properties.',
-      'Omit': 'Utility type: Omit<T, K> omits a set of properties.',
-      'Exclude': 'Utility type: Exclude<T, U> excludes types assignable to U.',
-      'Extract': 'Utility type: Extract<T, U> extracts types assignable to U.',
-      'ReturnType': 'Utility type: ReturnType<T> extracts the return type of a function type.',
-      'Parameters': 'Utility type: Parameters<T> extracts parameter types of a function type.',
-      'useState': 'React Hook: returns [state, setState]. Manages component state.',
-      'useEffect': 'React Hook: runs side effects after render. Cleanup via return function.',
-      'useRef': 'React Hook: returns a mutable ref object that persists across renders.',
-      'useCallback': 'React Hook: returns a memoized callback function.',
-      'useMemo': 'React Hook: returns a memoized value. Recomputes only when dependencies change.',
-      'useContext': 'React Hook: accepts a context object and returns the current context value.',
-      'useReducer': 'React Hook: alternative to useState for complex state logic.',
-      'async': 'Keyword: declares an asynchronous function that returns a Promise.',
-      'await': 'Keyword: pauses async function execution until a Promise settles.',
-      'interface': 'Keyword: declares a TypeScript interface (structural type).',
-      'type': 'Keyword: declares a TypeScript type alias.',
-      'enum': 'Keyword: declares a TypeScript enum (set of named constants).',
-      'const': 'Keyword: declares a block-scoped constant binding.',
-      'let': 'Keyword: declares a block-scoped variable binding.',
-      'function': 'Keyword: declares a function.',
-      'class': 'Keyword: declares a class.',
-      'extends': 'Keyword: used in class/interface inheritance.',
-      'implements': 'Keyword: used to implement an interface in a class.',
-      'import': 'Keyword: imports bindings from another module.',
-      'export': 'Keyword: exports bindings from a module.',
-    }
-
-    const HOVER_IMPORT_REGEX = /import\s+(?:\{[^}]*\}|[^{}]+)\s+from\s+['"](.+?)['"]/
-    const CSS_HEX_REGEX = /#(?:[0-9a-fA-F]{3,4}){1,2}\b/
-    const CSS_RGBA_REGEX = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/
-    const CSS_HSLA_REGEX = /hsla?\(\s*(\d+)\s*,\s*(\d+)%?\s*,\s*(\d+)%?\s*(?:,\s*([\d.]+))?\s*\)/
-
-    for (const lang of codeLensLanguages) {
-      monaco.languages.registerHoverProvider(lang, {
-        provideHover: (model, position) => {
-          const word = model.getWordAtPosition(position)
-          const lineContent = model.getLineContent(position.lineNumber)
-
-          // ── Diagnostic hover: show rich tooltip for errors/warnings ──────────────────
-          const markers = monaco.editor.getModelMarkers({ resource: model.uri, owner: 'orion' })
-          const hitMarkers = markers.filter(m =>
-            m.startLineNumber <= position.lineNumber &&
-            m.endLineNumber >= position.lineNumber &&
-            (m.startLineNumber < position.lineNumber || m.startColumn <= position.column) &&
-            (m.endLineNumber > position.lineNumber || m.endColumn >= position.column)
-          )
-          if (hitMarkers.length > 0) {
-            const contents: { value: string }[] = []
-            for (const marker of hitMarkers) {
-              const sevIcon = marker.severity === monaco.MarkerSeverity.Error
-                ? '\u26D4' : marker.severity === monaco.MarkerSeverity.Warning
-                ? '\u26A0\uFE0F' : '\u2139\uFE0F'
-              const sevLabel = marker.severity === monaco.MarkerSeverity.Error
-                ? 'Error' : marker.severity === monaco.MarkerSeverity.Warning
-                ? 'Warning' : 'Info'
-              contents.push({ value: `${sevIcon} **${sevLabel}**: ${marker.message}` })
-              if (marker.source) {
-                contents.push({ value: `_Source: ${marker.source}_` })
-              }
-              // Show quick fix hint from problems store
-              const storeProblems = useProblemsStore.getState().problems
-              const matchingProblem = storeProblems.find(p =>
-                p.file === activeFilePath &&
-                p.line === marker.startLineNumber &&
-                p.message === marker.message
-              )
-              if (matchingProblem?.quickFix) {
-                contents.push({ value: `\u{1F527} **Quick Fix**: ${matchingProblem.quickFix}` })
-              }
-              contents.push({ value: `\u{1F916} [Fix with AI](command:orion-fix-with-ai)` })
-            }
-            const firstMarker = hitMarkers[0]
-            return {
-              range: new monaco.Range(
-                firstMarker.startLineNumber, firstMarker.startColumn,
-                firstMarker.endLineNumber, firstMarker.endColumn
-              ),
-              contents,
-            }
-          }
-
-          // CSS color preview: check if cursor is on a color value
-          // Check hex colors
-          const hexMatch = CSS_HEX_REGEX.exec(lineContent)
-          if (hexMatch) {
-            const startCol = hexMatch.index + 1
-            const endCol = startCol + hexMatch[0].length
-            if (position.column >= startCol && position.column <= endCol) {
-              const colorVal = hexMatch[0]
-              return {
-                range: new monaco.Range(position.lineNumber, startCol, position.lineNumber, endCol),
-                contents: [
-                  { value: `**Color Preview**` },
-                  { value: `\`${colorVal}\`\n\n${'\\'}u2588${'\\'}u2588${'\\'}u2588 \`${colorVal}\`` },
-                ],
-              }
-            }
-          }
-
-          // Check rgba colors
-          const rgbaMatch = CSS_RGBA_REGEX.exec(lineContent)
-          if (rgbaMatch) {
-            const startCol = rgbaMatch.index + 1
-            const endCol = startCol + rgbaMatch[0].length
-            if (position.column >= startCol && position.column <= endCol) {
-              const colorVal = rgbaMatch[0]
-              const r = rgbaMatch[1], g = rgbaMatch[2], b = rgbaMatch[3], a = rgbaMatch[4] || '1'
-              return {
-                range: new monaco.Range(position.lineNumber, startCol, position.lineNumber, endCol),
-                contents: [
-                  { value: `**Color Preview**` },
-                  { value: `\`${colorVal}\`\n\nR: ${r} G: ${g} B: ${b} A: ${a}` },
-                ],
-              }
-            }
-          }
-
-          // Check hsla colors
-          const hslaMatch = CSS_HSLA_REGEX.exec(lineContent)
-          if (hslaMatch) {
-            const startCol = hslaMatch.index + 1
-            const endCol = startCol + hslaMatch[0].length
-            if (position.column >= startCol && position.column <= endCol) {
-              const colorVal = hslaMatch[0]
-              const h = hslaMatch[1], s = hslaMatch[2], l = hslaMatch[3], a = hslaMatch[4] || '1'
-              return {
-                range: new monaco.Range(position.lineNumber, startCol, position.lineNumber, endCol),
-                contents: [
-                  { value: `**Color Preview**` },
-                  { value: `\`${colorVal}\`\n\nH: ${h} S: ${s}% L: ${l}% A: ${a}` },
-                ],
-              }
-            }
-          }
-
-          if (!word) return null
-
-          // Import path hover: show where a symbol is imported from
-          const importMatch = HOVER_IMPORT_REGEX.exec(lineContent)
-          if (importMatch) {
-            const importPath = importMatch[1]
-            // Check if cursor is on the import specifier names
-            const braceStart = lineContent.indexOf('{')
-            const braceEnd = lineContent.indexOf('}')
-            if (braceStart !== -1 && braceEnd !== -1 && position.column > braceStart && position.column <= braceEnd + 1) {
-              return {
-                range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-                contents: [
-                  { value: `**\`${word.word}\`**` },
-                  { value: `Imported from \`${importPath}\`` },
-                ],
-              }
-            }
-            // Default import
-            const defaultImportMatch = lineContent.match(/import\s+(\w+)\s+from/)
-            if (defaultImportMatch && defaultImportMatch[1] === word.word) {
-              return {
-                range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-                contents: [
-                  { value: `**\`${word.word}\`** (default import)` },
-                  { value: `Imported from \`${importPath}\`` },
-                ],
-              }
-            }
-          }
-
-          // TypeScript/JS keyword hints
-          if (TS_KEYWORDS[word.word]) {
-            return {
-              range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-              contents: [
-                { value: `**\`${word.word}\`**` },
-                { value: TS_KEYWORDS[word.word] },
-              ],
-            }
-          }
-
-          // Check if the hovered word is imported somewhere in the file
-          const fullText = model.getValue()
-          const importLineRegex = new RegExp(
-            `import\\s+(?:\\{[^}]*\\b${word.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[^}]*\\}|${word.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\s+from\\s+['"](.+?)['"]`,
-          )
-          const fileImportMatch = importLineRegex.exec(fullText)
-          if (fileImportMatch) {
-            return {
-              range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-              contents: [
-                { value: `**\`${word.word}\`**` },
-                { value: `Imported from \`${fileImportMatch[1]}\`` },
-              ],
-            }
-          }
-
-          return null
-        },
-      })
-    }
+    registerLanguageProviders(monaco, editor, {
+      getActiveFilePath: () => activeFilePath,
+      getProblems: () => useProblemsStore.getState().problems,
+    })
 
     // ── Code Actions / Quick Fix provider: lightbulb with fix suggestions ──────────────────
     registerCodeActionProviders(monaco, editor)
@@ -1855,6 +1642,163 @@ export default function EditorPanel() {
         }
       },
     })
+
+    // ── Linked editing for HTML/JSX tags ──────────────────
+    const linkedEditingLanguages = ['html', 'javascriptreact', 'typescriptreact']
+    for (const lang of linkedEditingLanguages) {
+      monaco.languages.registerLinkedEditingRangeProvider(lang, {
+        provideLinkedEditingRanges(model, position) {
+          const line = model.getLineContent(position.lineNumber)
+          const offset = position.column - 1
+
+          // Check if cursor is on a tag name (opening or closing)
+          // Match opening tag: <TagName or closing tag: </TagName
+          const tagPattern = /<\/?([a-zA-Z][a-zA-Z0-9._-]*)/g
+          let match: RegExpExecArray | null
+          while ((match = tagPattern.exec(line)) !== null) {
+            const tagStart = match.index + match[0].length - match[1].length
+            const tagEnd = tagStart + match[1].length
+            if (offset >= tagStart && offset <= tagEnd) {
+              const tagName = match[1]
+              const isClosing = match[0].startsWith('</')
+              const fullText = model.getValue()
+
+              // Find the matching tag
+              if (isClosing) {
+                // Find the matching opening tag by scanning backwards
+                const closingTagPos = model.getPositionAt(
+                  fullText.lastIndexOf(match[0], model.getOffsetAt(position))
+                )
+                const beforeClosing = fullText.substring(0, model.getOffsetAt(closingTagPos))
+                // Simple stack-based search for matching opening tag
+                let depth = 0
+                const openPattern = new RegExp(`</?${tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[\\s>/])`, 'g')
+                const allTags: { index: number; isClose: boolean }[] = []
+                let m2: RegExpExecArray | null
+                while ((m2 = openPattern.exec(beforeClosing)) !== null) {
+                  allTags.push({ index: m2.index, isClose: m2[0].startsWith('</') })
+                }
+                // Walk from end to find the matching open
+                for (let i = allTags.length - 1; i >= 0; i--) {
+                  if (allTags[i].isClose) {
+                    depth++
+                  } else {
+                    if (depth === 0) {
+                      // Found matching opening tag
+                      const openPos = model.getPositionAt(allTags[i].index + 1) // skip <
+                      const openRange = {
+                        startLineNumber: openPos.lineNumber,
+                        startColumn: openPos.column,
+                        endLineNumber: openPos.lineNumber,
+                        endColumn: openPos.column + tagName.length,
+                      }
+                      const closeRange = {
+                        startLineNumber: position.lineNumber,
+                        startColumn: tagStart + 1,
+                        endLineNumber: position.lineNumber,
+                        endColumn: tagEnd + 1,
+                      }
+                      return {
+                        ranges: [openRange, closeRange],
+                        wordPattern: /[a-zA-Z][a-zA-Z0-9._-]*/,
+                      }
+                    }
+                    depth--
+                  }
+                }
+              } else {
+                // Find the matching closing tag by scanning forwards
+                const openOffset = model.getOffsetAt(position)
+                const afterOpen = fullText.substring(openOffset)
+                let depth = 0
+                const closePattern = new RegExp(`</?${tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[\\s>/])`, 'g')
+                let m2: RegExpExecArray | null
+                while ((m2 = closePattern.exec(afterOpen)) !== null) {
+                  if (m2[0].startsWith('</')) {
+                    if (depth === 0) {
+                      // Found matching closing tag
+                      const closeAbsOffset = openOffset + m2.index + 2 // skip </
+                      const closePos = model.getPositionAt(closeAbsOffset)
+                      const openRange = {
+                        startLineNumber: position.lineNumber,
+                        startColumn: tagStart + 1,
+                        endLineNumber: position.lineNumber,
+                        endColumn: tagEnd + 1,
+                      }
+                      const closeRange = {
+                        startLineNumber: closePos.lineNumber,
+                        startColumn: closePos.column,
+                        endLineNumber: closePos.lineNumber,
+                        endColumn: closePos.column + tagName.length,
+                      }
+                      return {
+                        ranges: [openRange, closeRange],
+                        wordPattern: /[a-zA-Z][a-zA-Z0-9._-]*/,
+                      }
+                    }
+                    depth--
+                  } else {
+                    depth++
+                  }
+                }
+              }
+              break
+            }
+          }
+          return null
+        },
+      })
+    }
+
+    // ── Import block folding range provider ──────────────────
+    const foldingLanguages = [
+      'typescript', 'typescriptreact', 'javascript', 'javascriptreact',
+      'python', 'go', 'rust', 'java', 'css', 'scss', 'less',
+    ]
+    for (const lang of foldingLanguages) {
+      monaco.languages.registerFoldingRangeProvider(lang, {
+        provideFoldingRanges(model) {
+          const ranges: { start: number; end: number; kind: number }[] = []
+          const lineCount = model.getLineCount()
+          let importStart = -1
+          let importEnd = -1
+
+          for (let i = 1; i <= lineCount; i++) {
+            const lineText = model.getLineContent(i).trim()
+            // Match import/require statements across common languages
+            const isImport = /^(import\s|from\s|require\(|const\s+\w+\s*=\s*require|let\s+\w+\s*=\s*require|var\s+\w+\s*=\s*require|#include|use\s|using\s|@import)/.test(lineText)
+            if (isImport) {
+              if (importStart === -1) importStart = i
+              importEnd = i
+            } else if (lineText === '' && importStart !== -1) {
+              // Allow blank lines within import blocks
+              continue
+            } else if (importStart !== -1 && importEnd > importStart) {
+              // End of import block
+              ranges.push({
+                start: importStart,
+                end: importEnd,
+                kind: monaco.languages.FoldingRangeKind.Imports.value,
+              })
+              importStart = -1
+              importEnd = -1
+            } else {
+              importStart = -1
+              importEnd = -1
+            }
+          }
+          // Handle imports at end of scannable area
+          if (importStart !== -1 && importEnd > importStart) {
+            ranges.push({
+              start: importStart,
+              end: importEnd,
+              kind: monaco.languages.FoldingRangeKind.Imports.value,
+            })
+          }
+          return ranges
+        },
+      })
+    }
   }
 
   const handleInlineEditSubmit = async (instruction: string) => {
@@ -2492,11 +2436,40 @@ export default function EditorPanel() {
       'orion:close-all-tabs': () => {
         closeAllFiles()
       },
-      'orion:save-file': () => {
+      'orion:save-file': async () => {
         if (activeFile) {
           setSaving(true)
-          useFileHistoryStore.getState().addSnapshot(activeFile.path, activeFile.content, 'Saved')
-          window.api.writeFile(activeFile.path, activeFile.content).then(() => {
+
+          // Format on save
+          if (editorConfig.formatOnSave && editorRef.current) {
+            try {
+              await editorRef.current.getAction('editor.action.formatDocument')?.run()
+            } catch { /* formatter may not be available for this language */ }
+          }
+
+          // Get latest content from editor model (may have been formatted)
+          let content = editorRef.current?.getModel()?.getValue() ?? activeFile.content
+
+          // Trim trailing whitespace on save
+          if (editorConfig.trimTrailingWhitespace) {
+            content = content.replace(/[ \t]+$/gm, '')
+          }
+
+          // Insert final newline
+          if (editorConfig.insertFinalNewline && content.length > 0 && !content.endsWith('\n')) {
+            content = content + '\n'
+          }
+
+          // Update the editor model if content was modified by trim/newline
+          if (editorRef.current) {
+            const model = editorRef.current.getModel()
+            if (model && model.getValue() !== content) {
+              model.setValue(content)
+            }
+          }
+
+          useFileHistoryStore.getState().addSnapshot(activeFile.path, content, 'Saved')
+          window.api.writeFile(activeFile.path, content).then(() => {
             markSaved(activeFile.path)
             addToast({ type: 'success', message: `Saved ${activeFile.name}`, duration: 1500 })
             setTimeout(() => setSaving(false), 800)
@@ -2796,6 +2769,12 @@ export default function EditorPanel() {
       addExtraSpaceOnTop: true,
       loop: true,
     },
+    autoClosingBrackets: 'always',
+    autoClosingQuotes: 'always',
+    autoClosingOvertype: 'always',
+    autoSurround: 'languageDefined',
+    formatOnPaste: true,
+    linkedEditing: true,
   }
 
   return (

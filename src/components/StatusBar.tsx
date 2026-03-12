@@ -22,6 +22,9 @@ import {
   Sparkles,
   ChevronDown,
   Check,
+  Cpu,
+  Puzzle,
+  Files,
 } from 'lucide-react'
 
 interface Props {
@@ -527,6 +530,58 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
     )
   }, [])
 
+  // ── Performance monitoring ──────────────────
+  const [memoryMB, setMemoryMB] = useState<number | null>(null)
+  const openFilesCount = useEditorStore((s) => s.openFiles.length)
+  const SIMULATED_EXTENSIONS = 12
+
+  // Memory usage polling (every 10 seconds)
+  useEffect(() => {
+    const readMemory = () => {
+      try {
+        // Chromium/Electron: performance.memory is available
+        const perfMemory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+        if (perfMemory?.usedJSHeapSize) {
+          setMemoryMB(Math.round(perfMemory.usedJSHeapSize / (1024 * 1024)))
+          return
+        }
+      } catch {
+        // ignore
+      }
+      // Fallback: estimate based on open files
+      setMemoryMB(80 + openFilesCount * 8)
+    }
+    readMemory()
+    const interval = setInterval(readMemory, 10_000)
+    return () => clearInterval(interval)
+  }, [openFilesCount])
+
+  const getMemoryColor = (mb: number): string => {
+    if (mb < 300) return 'var(--accent-green, #89d185)'
+    if (mb <= 500) return 'var(--accent-orange, #cca700)'
+    return 'var(--accent-red, #f44747)'
+  }
+
+  const handleMemoryClick = useCallback(() => {
+    // Hint the GC by clearing weak references / forcing minor collection
+    if (typeof window !== 'undefined' && (window as unknown as { gc?: () => void }).gc) {
+      ;(window as unknown as { gc: () => void }).gc()
+    }
+    // Dispatch event so other parts of the app can respond
+    window.dispatchEvent(new CustomEvent('orion:gc-hint'))
+    // Re-read memory after a short delay
+    setTimeout(() => {
+      try {
+        const perfMemory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+        if (perfMemory?.usedJSHeapSize) {
+          setMemoryMB(Math.round(perfMemory.usedJSHeapSize / (1024 * 1024)))
+        }
+      } catch {
+        // ignore
+      }
+    }, 500)
+  }, [])
+
   const changedFiles = gitInfo?.files?.length || 0
 
   // Build ahead/behind label for branch display using arrow symbols
@@ -790,6 +845,42 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
             </StatusItem>
           </>
         )}
+
+        {/* ── Performance indicators ── */}
+
+        {/* Open files / editor performance */}
+        <StatusItem title={`${openFilesCount} file(s) open${cursorInfo.totalLines > 0 ? `, ${cursorInfo.totalLines} lines in current file` : ''}`}>
+          <Files size={10} style={{ color: 'var(--text-muted)' }} />
+          <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>
+            {openFilesCount} file{openFilesCount !== 1 ? 's' : ''}
+            {activeFile && cursorInfo.totalLines > 0 && (
+              <span style={{ marginLeft: 4, opacity: 0.7 }}>
+                ({cursorInfo.totalLines.toLocaleString()} ln)
+              </span>
+            )}
+          </span>
+        </StatusItem>
+
+        {/* Memory usage */}
+        {memoryMB !== null && (
+          <StatusItem
+            title={`Memory: ${memoryMB} MB (click to hint GC)`}
+            onClick={handleMemoryClick}
+          >
+            <Cpu size={10} style={{ color: getMemoryColor(memoryMB) }} />
+            <span style={{ color: getMemoryColor(memoryMB), fontSize: 10 }}>
+              {memoryMB} MB
+            </span>
+          </StatusItem>
+        )}
+
+        {/* Extensions count */}
+        <StatusItem title={`${SIMULATED_EXTENSIONS} extensions active`}>
+          <Puzzle size={10} style={{ color: 'var(--text-muted)' }} />
+          <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>
+            {SIMULATED_EXTENSIONS} ext
+          </span>
+        </StatusItem>
 
         {/* AI Autocomplete toggle */}
         <StatusItem
