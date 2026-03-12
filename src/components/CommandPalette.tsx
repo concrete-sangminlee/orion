@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
-import { Search, FileText, Settings, Terminal, FolderOpen, MessageSquare, Zap, ChevronRight, Columns, Eye, EyeOff, Type, Minus, Plus, GitBranch, Paintbrush, WrapText, Map, PanelLeft, PanelBottom, X, Save, RotateCcw, RotateCw, Scissors, Copy, Clipboard, Keyboard, MousePointer, CaseSensitive, ArrowUpDown, ArrowDownUp, Merge, MessageSquareCode, Braces, ChevronsDownUp, ChevronsUpDown, Palette, Code, Rows2, Link2, GitCompare, Hash, Eraser, Bug, Maximize2, Clock, ArrowLeftRight, FilePlus, FolderOpenDot, SaveAll, Undo2, Redo2, FileSearch, CheckSquare, Activity, PanelTop, Fullscreen, ZoomIn, ZoomOut, Navigation, Milestone, AlertTriangle, ArrowUp, ArrowDown, Indent, Outdent, Trash2, SplitSquareVertical, XCircle, GitCommitHorizontal, Upload, Download, RefreshCw, Archive, Brain, TestTube, Wand2, Languages } from 'lucide-react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { Search, FileText, Settings, Terminal, FolderOpen, MessageSquare, Zap, ChevronRight, Columns, Eye, EyeOff, Type, Minus, Plus, GitBranch, Paintbrush, WrapText, Map, PanelLeft, PanelBottom, X, Save, RotateCcw, RotateCw, Scissors, Copy, Clipboard, Keyboard, MousePointer, CaseSensitive, ArrowUpDown, ArrowDownUp, Merge, MessageSquareCode, Braces, ChevronsDownUp, ChevronsUpDown, Palette, Code, Rows2, Link2, GitCompare, Hash, Eraser, Bug, Maximize2, Clock, ArrowLeftRight, FilePlus, FolderOpenDot, SaveAll, Undo2, Redo2, FileSearch, CheckSquare, Activity, PanelTop, Fullscreen, ZoomIn, ZoomOut, Navigation, Milestone, AlertTriangle, ArrowUp, ArrowDown, Indent, Outdent, Trash2, SplitSquareVertical, XCircle, GitCommitHorizontal, Upload, Download, RefreshCw, Archive, Brain, TestTube, Wand2, Languages, HelpCircle, Pin, GitPullRequest, Circle, Diamond, Triangle, Square, Star, Hexagon, Bookmark } from 'lucide-react'
 import { useEditorStore } from '@/store/editor'
 import { useFileStore } from '@/store/files'
 import { useThemeStore } from '@/store/theme'
@@ -9,18 +9,177 @@ import FileIcon from '@/components/FileIcon'
 interface PaletteItem {
   id: string
   label: string
-  category: 'file' | 'command' | 'setting' | 'symbol' | 'goto-line'
+  category: 'file' | 'command' | 'setting' | 'symbol' | 'goto-line' | 'help'
   icon: React.ReactNode
   shortcut?: string
   action: () => void
   description?: string
   badge?: string
+  badges?: string[]
+  fileSize?: number
+  filePath?: string
+  symbolKind?: string
+  matchIndices?: number[]
+  group?: string
+  previewSnippet?: string
 }
 
 interface Props {
   open: boolean
   onClose: () => void
   onOpenSettings: () => void
+}
+
+// ── MRU command usage tracking ─────────────────────────────────────────
+const MRU_STORAGE_KEY = 'orion-command-mru'
+
+function getMRUCounts(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(MRU_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+function recordMRUUsage(commandId: string) {
+  const counts = getMRUCounts()
+  counts[commandId] = (counts[commandId] || 0) + 1
+  try {
+    localStorage.setItem(MRU_STORAGE_KEY, JSON.stringify(counts))
+  } catch {
+    // storage full - ignore
+  }
+}
+
+// ── Fuzzy matching with character index tracking ───────────────────────
+function fuzzyMatchWithIndices(text: string, query: string): { matches: boolean; indices: number[] } {
+  let qi = 0
+  const tl = text.toLowerCase()
+  const ql = query.toLowerCase()
+  const indices: number[] = []
+  for (let i = 0; i < tl.length && qi < ql.length; i++) {
+    if (tl[i] === ql[qi]) {
+      indices.push(i)
+      qi++
+    }
+  }
+  return { matches: qi === ql.length, indices }
+}
+
+// ── Highlighted text component ─────────────────────────────────────────
+function HighlightedText({ text, indices, style }: { text: string; indices?: number[]; style?: React.CSSProperties }) {
+  if (!indices || indices.length === 0) {
+    return <span style={style}>{text}</span>
+  }
+  const indexSet = new Set(indices)
+  const parts: React.ReactNode[] = []
+  let i = 0
+  while (i < text.length) {
+    if (indexSet.has(i)) {
+      // Collect consecutive highlighted chars
+      let j = i
+      while (j < text.length && indexSet.has(j)) j++
+      parts.push(
+        <span key={i} style={{ color: 'var(--accent)', fontWeight: 600 }}>
+          {text.slice(i, j)}
+        </span>
+      )
+      i = j
+    } else {
+      let j = i
+      while (j < text.length && !indexSet.has(j)) j++
+      parts.push(<span key={i}>{text.slice(i, j)}</span>)
+      i = j
+    }
+  }
+  return <span style={style}>{parts}</span>
+}
+
+// ── Symbol kind icons ──────────────────────────────────────────────────
+function SymbolKindIcon({ kind, size = 14 }: { kind: string; size?: number }) {
+  const colorMap: Record<string, string> = {
+    function: '#b180d7',
+    class: '#ee9d28',
+    interface: '#75beff',
+    type: '#75beff',
+    enum: '#ee9d28',
+    variable: '#4fc1ff',
+    constant: '#4fc1ff',
+    method: '#b180d7',
+    property: '#9cdcfe',
+  }
+  const color = colorMap[kind] || 'var(--text-muted)'
+
+  switch (kind) {
+    case 'function':
+    case 'method':
+      return <span style={{ color, fontSize: size, fontWeight: 700, fontFamily: 'monospace', lineHeight: 1 }}>f</span>
+    case 'class':
+      return <Diamond size={size} style={{ color, flexShrink: 0 }} />
+    case 'interface':
+      return <Circle size={size} style={{ color, flexShrink: 0 }} />
+    case 'type':
+      return <Triangle size={size} style={{ color, flexShrink: 0 }} />
+    case 'enum':
+      return <Hexagon size={size} style={{ color, flexShrink: 0 }} />
+    case 'variable':
+    case 'constant':
+      return <span style={{ color, fontSize: size, fontWeight: 700, fontFamily: 'monospace', lineHeight: 1 }}>x</span>
+    default:
+      return <Code size={size} style={{ color, flexShrink: 0 }} />
+  }
+}
+
+// ── File size formatter ────────────────────────────────────────────────
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// ── Section header component ───────────────────────────────────────────
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <div style={{
+      padding: '6px 14px 3px',
+      fontSize: 11,
+      fontWeight: 600,
+      color: 'var(--text-muted)',
+      textTransform: 'uppercase',
+      letterSpacing: '0.5px',
+      userSelect: 'none',
+      opacity: 0.7,
+    }}>
+      {label}
+    </div>
+  )
+}
+
+// ── Preview panel component ────────────────────────────────────────────
+function PreviewPanel({ snippet }: { snippet: string }) {
+  return (
+    <div style={{
+      padding: '6px 14px',
+      borderTop: '1px solid var(--border)',
+      background: 'var(--bg-tertiary)',
+      maxHeight: 100,
+      overflow: 'hidden',
+    }}>
+      <pre style={{
+        margin: 0,
+        fontSize: 11,
+        fontFamily: 'var(--font-mono, monospace)',
+        color: 'var(--text-secondary)',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-all',
+        lineHeight: 1.4,
+        opacity: 0.85,
+      }}>
+        {snippet}
+      </pre>
+    </div>
+  )
 }
 
 function flattenFiles(nodes: any[], prefix = ''): { name: string; path: string }[] {
@@ -96,6 +255,64 @@ function extractSymbols(content: string, fileName: string, filePath: string): Sy
   return results
 }
 
+// ── Help mode items ────────────────────────────────────────────────────
+function getHelpItems(onClose: () => void): PaletteItem[] {
+  return [
+    {
+      id: 'help-files',
+      label: 'Search files by name',
+      category: 'help' as const,
+      icon: <FileText size={14} style={{ color: '#75beff' }} />,
+      description: 'Just start typing',
+      badge: 'default',
+      action: () => {},
+    },
+    {
+      id: 'help-commands',
+      label: 'Run a command',
+      category: 'help' as const,
+      icon: <ChevronRight size={14} style={{ color: '#b180d7' }} />,
+      description: 'Type ">" to enter command mode',
+      badge: '>',
+      action: () => {},
+    },
+    {
+      id: 'help-symbols',
+      label: 'Search workspace symbols',
+      category: 'help' as const,
+      icon: <Hash size={14} style={{ color: '#ee9d28' }} />,
+      description: 'Type "#" to search symbols across open files',
+      badge: '#',
+      action: () => {},
+    },
+    {
+      id: 'help-goto-line',
+      label: 'Go to a specific line',
+      category: 'help' as const,
+      icon: <Hash size={14} style={{ color: '#4fc1ff' }} />,
+      description: 'Type ":" followed by a line number',
+      badge: ':',
+      action: () => {},
+    },
+    {
+      id: 'help-help',
+      label: 'Show this help',
+      category: 'help' as const,
+      icon: <HelpCircle size={14} style={{ color: 'var(--text-muted)' }} />,
+      description: 'Type "?" to show available modes',
+      badge: '?',
+      action: () => {},
+    },
+  ]
+}
+
+// ── Get preview snippet from file content ──────────────────────────────
+function getFilePreviewSnippet(content: string | undefined, maxLines: number = 5): string {
+  if (!content) return ''
+  const lines = content.split('\n').slice(0, maxLines)
+  return lines.join('\n')
+}
+
 export default function CommandPalette({ open, onClose, onOpenSettings }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -106,18 +323,21 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
   const { fileTree } = useFileStore()
   const { themes: allThemes, setTheme, activeThemeId, previewTheme } = useThemeStore()
   const { recentFiles } = useRecentFilesStore()
+  const pinnedTabs = useEditorStore(s => s.pinnedTabs)
 
   // Determine mode based on prefix
-  const isSymbolMode = !themeMode && query.startsWith('#')
-  const isGotoLineMode = !themeMode && query.startsWith(':')
-  const isCommandMode = !themeMode && !isSymbolMode && !isGotoLineMode && query.startsWith('>')
-  const isFileMode = !themeMode && !isSymbolMode && !isGotoLineMode && !isCommandMode
+  const isHelpMode = !themeMode && query === '?'
+  const isSymbolMode = !themeMode && !isHelpMode && query.startsWith('#')
+  const isGotoLineMode = !themeMode && !isHelpMode && query.startsWith(':')
+  const isCommandMode = !themeMode && !isHelpMode && !isSymbolMode && !isGotoLineMode && query.startsWith('>')
+  const isFileMode = !themeMode && !isHelpMode && !isSymbolMode && !isGotoLineMode && !isCommandMode
 
   const searchQuery = themeMode
     ? query.trim()
     : isCommandMode ? query.slice(1).trim()
     : isSymbolMode ? query.slice(1).trim()
     : isGotoLineMode ? query.slice(1).trim()
+    : isHelpMode ? ''
     : query.trim()
 
   const dispatch = (event: string, detail?: any) => window.dispatchEvent(new CustomEvent(event, { detail }))
@@ -143,156 +363,202 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
     onClose()
   }
 
+  // Wrap command action with MRU tracking
+  const withMRU = useCallback((id: string, action: () => void) => {
+    return () => {
+      recordMRUUsage(id)
+      action()
+    }
+  }, [])
+
   const commands: PaletteItem[] = useMemo(() => [
     // ── File commands ──────────────────────────────────────────────────
-    { id: 'new-file', label: 'File: New File', category: 'command', icon: <FilePlus size={14} />, shortcut: 'Ctrl+N', action: () => { dispatch('orion:new-file'); onClose() } },
-    { id: 'new-window', label: 'File: New Window', category: 'command', icon: <Maximize2 size={14} />, shortcut: 'Ctrl+Shift+N', action: () => { dispatch('orion:new-window'); onClose() } },
-    { id: 'open-file', label: 'File: Open File', category: 'command', icon: <FolderOpenDot size={14} />, shortcut: 'Ctrl+O', action: () => { window.api?.openFile?.(); onClose() } },
-    { id: 'open-folder', label: 'File: Open Folder', category: 'command', icon: <FolderOpen size={14} />, shortcut: 'Ctrl+K Ctrl+O', action: () => { window.api?.openFolder(); onClose() } },
-    { id: 'save', label: 'File: Save', category: 'command', icon: <Save size={14} />, shortcut: 'Ctrl+S', action: () => { dispatch('orion:save-file'); onClose() } },
-    { id: 'save-as', label: 'File: Save As...', category: 'command', icon: <Save size={14} />, shortcut: 'Ctrl+Shift+S', action: () => { dispatch('orion:save-file-as'); onClose() } },
-    { id: 'save-all', label: 'File: Save All', category: 'command', icon: <SaveAll size={14} />, shortcut: 'Ctrl+K S', action: () => { dispatch('orion:save-all'); onClose() } },
-    { id: 'close-tab', label: 'File: Close Tab', category: 'command', icon: <X size={14} />, shortcut: 'Ctrl+W', action: () => { dispatch('orion:close-tab'); onClose() } },
-    { id: 'close-all', label: 'File: Close All Tabs', category: 'command', icon: <X size={14} />, action: () => { dispatch('orion:close-all-tabs'); onClose() } },
-    { id: 'revert-file', label: 'File: Revert File', category: 'command', icon: <RotateCcw size={14} />, action: () => { dispatch('orion:revert-file'); onClose() } },
+    { id: 'new-file', label: 'File: New File', category: 'command' as const, icon: <FilePlus size={14} />, shortcut: 'Ctrl+N', action: () => { dispatch('orion:new-file'); onClose() }, group: 'File' },
+    { id: 'new-window', label: 'File: New Window', category: 'command' as const, icon: <Maximize2 size={14} />, shortcut: 'Ctrl+Shift+N', action: () => { dispatch('orion:new-window'); onClose() }, group: 'File' },
+    { id: 'open-file', label: 'File: Open File', category: 'command' as const, icon: <FolderOpenDot size={14} />, shortcut: 'Ctrl+O', action: () => { window.api?.openFile?.(); onClose() }, group: 'File' },
+    { id: 'open-folder', label: 'File: Open Folder', category: 'command' as const, icon: <FolderOpen size={14} />, shortcut: 'Ctrl+K Ctrl+O', action: () => { window.api?.openFolder(); onClose() }, group: 'File' },
+    { id: 'save', label: 'File: Save', category: 'command' as const, icon: <Save size={14} />, shortcut: 'Ctrl+S', action: () => { dispatch('orion:save-file'); onClose() }, group: 'File' },
+    { id: 'save-as', label: 'File: Save As...', category: 'command' as const, icon: <Save size={14} />, shortcut: 'Ctrl+Shift+S', action: () => { dispatch('orion:save-file-as'); onClose() }, group: 'File' },
+    { id: 'save-all', label: 'File: Save All', category: 'command' as const, icon: <SaveAll size={14} />, shortcut: 'Ctrl+K S', action: () => { dispatch('orion:save-all'); onClose() }, group: 'File' },
+    { id: 'close-tab', label: 'File: Close Tab', category: 'command' as const, icon: <X size={14} />, shortcut: 'Ctrl+W', action: () => { dispatch('orion:close-tab'); onClose() }, group: 'File' },
+    { id: 'close-all', label: 'File: Close All Tabs', category: 'command' as const, icon: <X size={14} />, action: () => { dispatch('orion:close-all-tabs'); onClose() }, group: 'File' },
+    { id: 'revert-file', label: 'File: Revert File', category: 'command' as const, icon: <RotateCcw size={14} />, action: () => { dispatch('orion:revert-file'); onClose() }, group: 'File' },
 
     // ── Edit commands ──────────────────────────────────────────────────
-    { id: 'undo', label: 'Edit: Undo', category: 'command', icon: <Undo2 size={14} />, shortcut: 'Ctrl+Z', action: () => { dispatch('orion:undo'); onClose() } },
-    { id: 'redo', label: 'Edit: Redo', category: 'command', icon: <Redo2 size={14} />, shortcut: 'Ctrl+Y', action: () => { dispatch('orion:redo'); onClose() } },
-    { id: 'cut', label: 'Edit: Cut', category: 'command', icon: <Scissors size={14} />, shortcut: 'Ctrl+X', action: () => { document.execCommand('cut'); onClose() } },
-    { id: 'copy', label: 'Edit: Copy', category: 'command', icon: <Copy size={14} />, shortcut: 'Ctrl+C', action: () => { document.execCommand('copy'); onClose() } },
-    { id: 'paste', label: 'Edit: Paste', category: 'command', icon: <Clipboard size={14} />, shortcut: 'Ctrl+V', action: () => { document.execCommand('paste'); onClose() } },
-    { id: 'find', label: 'Edit: Find', category: 'command', icon: <Search size={14} />, shortcut: 'Ctrl+F', action: () => { dispatch('orion:editor-find'); onClose() } },
-    { id: 'replace', label: 'Edit: Replace', category: 'command', icon: <Search size={14} />, shortcut: 'Ctrl+H', action: () => { dispatch('orion:editor-replace'); onClose() } },
-    { id: 'find-in-files', label: 'Edit: Find in Files', category: 'command', icon: <FileSearch size={14} />, shortcut: 'Ctrl+Shift+F', action: () => { dispatch('orion:show-search'); onClose() } },
-    { id: 'select-all', label: 'Edit: Select All', category: 'command', icon: <CheckSquare size={14} />, shortcut: 'Ctrl+A', action: () => { document.execCommand('selectAll'); onClose() } },
+    { id: 'undo', label: 'Edit: Undo', category: 'command' as const, icon: <Undo2 size={14} />, shortcut: 'Ctrl+Z', action: () => { dispatch('orion:undo'); onClose() }, group: 'Edit' },
+    { id: 'redo', label: 'Edit: Redo', category: 'command' as const, icon: <Redo2 size={14} />, shortcut: 'Ctrl+Y', action: () => { dispatch('orion:redo'); onClose() }, group: 'Edit' },
+    { id: 'cut', label: 'Edit: Cut', category: 'command' as const, icon: <Scissors size={14} />, shortcut: 'Ctrl+X', action: () => { document.execCommand('cut'); onClose() }, group: 'Edit' },
+    { id: 'copy', label: 'Edit: Copy', category: 'command' as const, icon: <Copy size={14} />, shortcut: 'Ctrl+C', action: () => { document.execCommand('copy'); onClose() }, group: 'Edit' },
+    { id: 'paste', label: 'Edit: Paste', category: 'command' as const, icon: <Clipboard size={14} />, shortcut: 'Ctrl+V', action: () => { document.execCommand('paste'); onClose() }, group: 'Edit' },
+    { id: 'find', label: 'Edit: Find', category: 'command' as const, icon: <Search size={14} />, shortcut: 'Ctrl+F', action: () => { dispatch('orion:editor-find'); onClose() }, group: 'Edit' },
+    { id: 'replace', label: 'Edit: Replace', category: 'command' as const, icon: <Search size={14} />, shortcut: 'Ctrl+H', action: () => { dispatch('orion:editor-replace'); onClose() }, group: 'Edit' },
+    { id: 'find-in-files', label: 'Edit: Find in Files', category: 'command' as const, icon: <FileSearch size={14} />, shortcut: 'Ctrl+Shift+F', action: () => { dispatch('orion:show-search'); onClose() }, group: 'Edit' },
+    { id: 'select-all', label: 'Edit: Select All', category: 'command' as const, icon: <CheckSquare size={14} />, shortcut: 'Ctrl+A', action: () => { document.execCommand('selectAll'); onClose() }, group: 'Edit' },
 
     // ── View commands ──────────────────────────────────────────────────
-    { id: 'toggle-sidebar', label: 'View: Toggle Sidebar', category: 'command', icon: <PanelLeft size={14} />, shortcut: 'Ctrl+B', action: () => { dispatch('orion:toggle-sidebar'); onClose() } },
-    { id: 'toggle-panel', label: 'View: Toggle Panel', category: 'command', icon: <PanelBottom size={14} />, shortcut: 'Ctrl+J', action: () => { dispatch('orion:toggle-terminal'); onClose() } },
-    { id: 'toggle-activity-bar', label: 'View: Toggle Activity Bar', category: 'command', icon: <Activity size={14} />, action: () => { dispatch('orion:toggle-activity-bar'); onClose() } },
-    { id: 'toggle-status-bar', label: 'View: Toggle Status Bar', category: 'command', icon: <PanelTop size={14} />, action: () => { dispatch('orion:toggle-status-bar'); onClose() } },
-    { id: 'toggle-minimap', label: 'View: Toggle Minimap', category: 'command', icon: <Map size={14} />, action: () => { dispatch('orion:toggle-minimap'); onClose() } },
-    { id: 'toggle-wordwrap', label: 'View: Toggle Word Wrap', category: 'command', icon: <WrapText size={14} />, shortcut: 'Alt+Z', action: () => { dispatch('orion:toggle-wordwrap'); onClose() } },
-    { id: 'toggle-zen-mode', label: 'View: Toggle Zen Mode', category: 'command', icon: <Maximize2 size={14} />, shortcut: 'Ctrl+K Z', action: () => { dispatch('orion:toggle-zen-mode'); onClose() } },
-    { id: 'toggle-fullscreen', label: 'View: Toggle Full Screen', category: 'command', icon: <Fullscreen size={14} />, shortcut: 'F11', action: () => { dispatch('orion:toggle-fullscreen'); onClose() } },
-    { id: 'zoom-in', label: 'View: Zoom In', category: 'command', icon: <ZoomIn size={14} />, shortcut: 'Ctrl+=', action: () => { dispatch('orion:font-increase'); onClose() } },
-    { id: 'zoom-out', label: 'View: Zoom Out', category: 'command', icon: <ZoomOut size={14} />, shortcut: 'Ctrl+-', action: () => { dispatch('orion:font-decrease'); onClose() } },
-    { id: 'zoom-reset', label: 'View: Reset Zoom', category: 'command', icon: <Type size={14} />, shortcut: 'Ctrl+0', action: () => { dispatch('orion:font-reset'); onClose() } },
-    { id: 'toggle-terminal', label: 'View: Toggle Terminal', category: 'command', icon: <Terminal size={14} />, shortcut: 'Ctrl+`', action: () => { dispatch('orion:toggle-terminal'); onClose() } },
-    { id: 'toggle-chat', label: 'View: Toggle Chat Panel', category: 'command', icon: <MessageSquare size={14} />, shortcut: 'Ctrl+L', action: () => { dispatch('orion:toggle-chat'); onClose() } },
-    { id: 'show-explorer', label: 'View: Show Explorer', category: 'command', icon: <FileText size={14} />, shortcut: 'Ctrl+Shift+E', action: () => { dispatch('orion:show-explorer'); onClose() } },
-    { id: 'show-search', label: 'View: Show Search', category: 'command', icon: <Search size={14} />, shortcut: 'Ctrl+Shift+F', action: () => { dispatch('orion:show-search'); onClose() } },
-    { id: 'show-git', label: 'View: Show Source Control', category: 'command', icon: <GitBranch size={14} />, shortcut: 'Ctrl+Shift+G', action: () => { dispatch('orion:show-git'); onClose() } },
-    { id: 'show-agents', label: 'View: Show Agents', category: 'command', icon: <Zap size={14} />, action: () => { dispatch('orion:show-agents'); onClose() } },
-    { id: 'toggle-timeline', label: 'View: Toggle Timeline', category: 'command', icon: <Clock size={14} />, action: () => { dispatch('orion:toggle-timeline'); onClose() } },
+    { id: 'toggle-sidebar', label: 'View: Toggle Sidebar', category: 'command' as const, icon: <PanelLeft size={14} />, shortcut: 'Ctrl+B', action: () => { dispatch('orion:toggle-sidebar'); onClose() }, group: 'View' },
+    { id: 'toggle-panel', label: 'View: Toggle Panel', category: 'command' as const, icon: <PanelBottom size={14} />, shortcut: 'Ctrl+J', action: () => { dispatch('orion:toggle-terminal'); onClose() }, group: 'View' },
+    { id: 'toggle-activity-bar', label: 'View: Toggle Activity Bar', category: 'command' as const, icon: <Activity size={14} />, action: () => { dispatch('orion:toggle-activity-bar'); onClose() }, group: 'View' },
+    { id: 'toggle-status-bar', label: 'View: Toggle Status Bar', category: 'command' as const, icon: <PanelTop size={14} />, action: () => { dispatch('orion:toggle-status-bar'); onClose() }, group: 'View' },
+    { id: 'toggle-minimap', label: 'View: Toggle Minimap', category: 'command' as const, icon: <Map size={14} />, action: () => { dispatch('orion:toggle-minimap'); onClose() }, group: 'View' },
+    { id: 'toggle-wordwrap', label: 'View: Toggle Word Wrap', category: 'command' as const, icon: <WrapText size={14} />, shortcut: 'Alt+Z', action: () => { dispatch('orion:toggle-wordwrap'); onClose() }, group: 'View' },
+    { id: 'toggle-zen-mode', label: 'View: Toggle Zen Mode', category: 'command' as const, icon: <Maximize2 size={14} />, shortcut: 'Ctrl+K Z', action: () => { dispatch('orion:toggle-zen-mode'); onClose() }, group: 'View' },
+    { id: 'toggle-fullscreen', label: 'View: Toggle Full Screen', category: 'command' as const, icon: <Fullscreen size={14} />, shortcut: 'F11', action: () => { dispatch('orion:toggle-fullscreen'); onClose() }, group: 'View' },
+    { id: 'zoom-in', label: 'View: Zoom In', category: 'command' as const, icon: <ZoomIn size={14} />, shortcut: 'Ctrl+=', action: () => { dispatch('orion:font-increase'); onClose() }, group: 'View' },
+    { id: 'zoom-out', label: 'View: Zoom Out', category: 'command' as const, icon: <ZoomOut size={14} />, shortcut: 'Ctrl+-', action: () => { dispatch('orion:font-decrease'); onClose() }, group: 'View' },
+    { id: 'zoom-reset', label: 'View: Reset Zoom', category: 'command' as const, icon: <Type size={14} />, shortcut: 'Ctrl+0', action: () => { dispatch('orion:font-reset'); onClose() }, group: 'View' },
+    { id: 'toggle-terminal', label: 'View: Toggle Terminal', category: 'command' as const, icon: <Terminal size={14} />, shortcut: 'Ctrl+`', action: () => { dispatch('orion:toggle-terminal'); onClose() }, group: 'View' },
+    { id: 'toggle-chat', label: 'View: Toggle Chat Panel', category: 'command' as const, icon: <MessageSquare size={14} />, shortcut: 'Ctrl+L', action: () => { dispatch('orion:toggle-chat'); onClose() }, group: 'View' },
+    { id: 'show-explorer', label: 'View: Show Explorer', category: 'command' as const, icon: <FileText size={14} />, shortcut: 'Ctrl+Shift+E', action: () => { dispatch('orion:show-explorer'); onClose() }, group: 'View' },
+    { id: 'show-search', label: 'View: Show Search', category: 'command' as const, icon: <Search size={14} />, shortcut: 'Ctrl+Shift+F', action: () => { dispatch('orion:show-search'); onClose() }, group: 'View' },
+    { id: 'show-git', label: 'View: Show Source Control', category: 'command' as const, icon: <GitBranch size={14} />, shortcut: 'Ctrl+Shift+G', action: () => { dispatch('orion:show-git'); onClose() }, group: 'View' },
+    { id: 'show-agents', label: 'View: Show Agents', category: 'command' as const, icon: <Zap size={14} />, action: () => { dispatch('orion:show-agents'); onClose() }, group: 'View' },
+    { id: 'toggle-timeline', label: 'View: Toggle Timeline', category: 'command' as const, icon: <Clock size={14} />, action: () => { dispatch('orion:toggle-timeline'); onClose() }, group: 'View' },
 
     // ── Go commands ────────────────────────────────────────────────────
-    { id: 'go-to-file', label: 'Go to File...', category: 'command', icon: <FileText size={14} />, shortcut: 'Ctrl+P', action: () => { onClose(); setTimeout(() => dispatch('orion:open-command-palette', { mode: 'file' }), 50) } },
-    { id: 'go-to-symbol', label: 'Go to Symbol (#)', category: 'command', icon: <Hash size={14} />, shortcut: 'Ctrl+Shift+O', action: () => { onClose(); setTimeout(() => dispatch('orion:open-command-palette', { mode: 'symbol' }), 50) } },
-    { id: 'go-to-line', label: 'Go to Line (:)', category: 'command', icon: <Hash size={14} />, shortcut: 'Ctrl+G', action: () => { onClose(); setTimeout(() => dispatch('orion:open-command-palette', { mode: 'goto-line' }), 50) } },
-    { id: 'go-to-definition', label: 'Go to Definition', category: 'command', icon: <Navigation size={14} />, shortcut: 'F12', action: () => { dispatch('orion:go-to-definition'); onClose() } },
-    { id: 'go-to-references', label: 'Go to References', category: 'command', icon: <Milestone size={14} />, shortcut: 'Shift+F12', action: () => { dispatch('orion:go-to-references'); onClose() } },
-    { id: 'go-to-next-error', label: 'Go to Next Error', category: 'command', icon: <AlertTriangle size={14} />, shortcut: 'F8', action: () => { dispatch('orion:go-to-next-error'); onClose() } },
-    { id: 'go-to-prev-error', label: 'Go to Previous Error', category: 'command', icon: <AlertTriangle size={14} />, shortcut: 'Shift+F8', action: () => { dispatch('orion:go-to-prev-error'); onClose() } },
+    { id: 'go-to-file', label: 'Go to File...', category: 'command' as const, icon: <FileText size={14} />, shortcut: 'Ctrl+P', action: () => { onClose(); setTimeout(() => dispatch('orion:open-command-palette', { mode: 'file' }), 50) }, group: 'Go' },
+    { id: 'go-to-symbol', label: 'Go to Symbol (#)', category: 'command' as const, icon: <Hash size={14} />, shortcut: 'Ctrl+Shift+O', action: () => { onClose(); setTimeout(() => dispatch('orion:open-command-palette', { mode: 'symbol' }), 50) }, group: 'Go' },
+    { id: 'go-to-line', label: 'Go to Line (:)', category: 'command' as const, icon: <Hash size={14} />, shortcut: 'Ctrl+G', action: () => { onClose(); setTimeout(() => dispatch('orion:open-command-palette', { mode: 'goto-line' }), 50) }, group: 'Go' },
+    { id: 'go-to-definition', label: 'Go to Definition', category: 'command' as const, icon: <Navigation size={14} />, shortcut: 'F12', action: () => { dispatch('orion:go-to-definition'); onClose() }, group: 'Go' },
+    { id: 'go-to-references', label: 'Go to References', category: 'command' as const, icon: <Milestone size={14} />, shortcut: 'Shift+F12', action: () => { dispatch('orion:go-to-references'); onClose() }, group: 'Go' },
+    { id: 'go-to-next-error', label: 'Go to Next Error', category: 'command' as const, icon: <AlertTriangle size={14} />, shortcut: 'F8', action: () => { dispatch('orion:go-to-next-error'); onClose() }, group: 'Go' },
+    { id: 'go-to-prev-error', label: 'Go to Previous Error', category: 'command' as const, icon: <AlertTriangle size={14} />, shortcut: 'Shift+F8', action: () => { dispatch('orion:go-to-prev-error'); onClose() }, group: 'Go' },
 
     // ── Editor commands ────────────────────────────────────────────────
-    { id: 'format', label: 'Editor: Format Document', category: 'command', icon: <Paintbrush size={14} />, shortcut: 'Shift+Alt+F', action: () => { dispatch('orion:format-document'); onClose() } },
-    { id: 'toggle-line-comment', label: 'Editor: Toggle Line Comment', category: 'command', icon: <MessageSquareCode size={14} />, shortcut: 'Ctrl+/', action: () => { dispatch('orion:toggle-line-comment'); onClose() } },
-    { id: 'toggle-block-comment', label: 'Editor: Toggle Block Comment', category: 'command', icon: <Braces size={14} />, shortcut: 'Ctrl+Shift+/', action: () => { dispatch('orion:toggle-block-comment'); onClose() } },
-    { id: 'indent-line', label: 'Editor: Indent Line', category: 'command', icon: <Indent size={14} />, shortcut: 'Ctrl+]', action: () => { dispatch('orion:indent-line'); onClose() } },
-    { id: 'outdent-line', label: 'Editor: Outdent Line', category: 'command', icon: <Outdent size={14} />, shortcut: 'Ctrl+[', action: () => { dispatch('orion:outdent-line'); onClose() } },
-    { id: 'move-line-up', label: 'Editor: Move Line Up', category: 'command', icon: <ArrowUp size={14} />, shortcut: 'Alt+Up', action: () => { dispatch('orion:move-line-up'); onClose() } },
-    { id: 'move-line-down', label: 'Editor: Move Line Down', category: 'command', icon: <ArrowDown size={14} />, shortcut: 'Alt+Down', action: () => { dispatch('orion:move-line-down'); onClose() } },
-    { id: 'duplicate-lines', label: 'Editor: Duplicate Lines', category: 'command', icon: <Copy size={14} />, shortcut: 'Shift+Alt+Down', action: () => { dispatch('orion:duplicate-selection'); onClose() } },
-    { id: 'delete-line', label: 'Editor: Delete Line', category: 'command', icon: <Trash2 size={14} />, shortcut: 'Ctrl+Shift+K', action: () => { dispatch('orion:delete-line'); onClose() } },
-    { id: 'sort-lines-asc', label: 'Editor: Sort Lines Ascending', category: 'command', icon: <ArrowUpDown size={14} />, action: () => { dispatch('orion:sort-lines-asc'); onClose() } },
-    { id: 'sort-lines-desc', label: 'Editor: Sort Lines Descending', category: 'command', icon: <ArrowDownUp size={14} />, action: () => { dispatch('orion:sort-lines-desc'); onClose() } },
-    { id: 'join-lines', label: 'Editor: Join Lines', category: 'command', icon: <Merge size={14} />, action: () => { dispatch('orion:join-lines'); onClose() } },
-    { id: 'trim-whitespace', label: 'Editor: Trim Trailing Whitespace', category: 'command', icon: <Eraser size={14} />, action: () => { dispatch('orion:trim-whitespace'); onClose() } },
+    { id: 'format', label: 'Editor: Format Document', category: 'command' as const, icon: <Paintbrush size={14} />, shortcut: 'Shift+Alt+F', action: () => { dispatch('orion:format-document'); onClose() }, group: 'Editor' },
+    { id: 'toggle-line-comment', label: 'Editor: Toggle Line Comment', category: 'command' as const, icon: <MessageSquareCode size={14} />, shortcut: 'Ctrl+/', action: () => { dispatch('orion:toggle-line-comment'); onClose() }, group: 'Editor' },
+    { id: 'toggle-block-comment', label: 'Editor: Toggle Block Comment', category: 'command' as const, icon: <Braces size={14} />, shortcut: 'Ctrl+Shift+/', action: () => { dispatch('orion:toggle-block-comment'); onClose() }, group: 'Editor' },
+    { id: 'indent-line', label: 'Editor: Indent Line', category: 'command' as const, icon: <Indent size={14} />, shortcut: 'Ctrl+]', action: () => { dispatch('orion:indent-line'); onClose() }, group: 'Editor' },
+    { id: 'outdent-line', label: 'Editor: Outdent Line', category: 'command' as const, icon: <Outdent size={14} />, shortcut: 'Ctrl+[', action: () => { dispatch('orion:outdent-line'); onClose() }, group: 'Editor' },
+    { id: 'move-line-up', label: 'Editor: Move Line Up', category: 'command' as const, icon: <ArrowUp size={14} />, shortcut: 'Alt+Up', action: () => { dispatch('orion:move-line-up'); onClose() }, group: 'Editor' },
+    { id: 'move-line-down', label: 'Editor: Move Line Down', category: 'command' as const, icon: <ArrowDown size={14} />, shortcut: 'Alt+Down', action: () => { dispatch('orion:move-line-down'); onClose() }, group: 'Editor' },
+    { id: 'duplicate-lines', label: 'Editor: Duplicate Lines', category: 'command' as const, icon: <Copy size={14} />, shortcut: 'Shift+Alt+Down', action: () => { dispatch('orion:duplicate-selection'); onClose() }, group: 'Editor' },
+    { id: 'delete-line', label: 'Editor: Delete Line', category: 'command' as const, icon: <Trash2 size={14} />, shortcut: 'Ctrl+Shift+K', action: () => { dispatch('orion:delete-line'); onClose() }, group: 'Editor' },
+    { id: 'sort-lines-asc', label: 'Editor: Sort Lines Ascending', category: 'command' as const, icon: <ArrowUpDown size={14} />, action: () => { dispatch('orion:sort-lines-asc'); onClose() }, group: 'Editor' },
+    { id: 'sort-lines-desc', label: 'Editor: Sort Lines Descending', category: 'command' as const, icon: <ArrowDownUp size={14} />, action: () => { dispatch('orion:sort-lines-desc'); onClose() }, group: 'Editor' },
+    { id: 'join-lines', label: 'Editor: Join Lines', category: 'command' as const, icon: <Merge size={14} />, action: () => { dispatch('orion:join-lines'); onClose() }, group: 'Editor' },
+    { id: 'trim-whitespace', label: 'Editor: Trim Trailing Whitespace', category: 'command' as const, icon: <Eraser size={14} />, action: () => { dispatch('orion:trim-whitespace'); onClose() }, group: 'Editor' },
     // Split / Compare
-    { id: 'split-editor', label: 'Editor: Split Editor Right', category: 'command', icon: <Columns size={14} />, shortcut: 'Ctrl+\\', action: () => { dispatch('orion:split-editor-right'); onClose() } },
-    { id: 'split-editor-down', label: 'Editor: Split Editor Down', category: 'command', icon: <Rows2 size={14} />, action: () => { dispatch('orion:split-editor-down'); onClose() } },
-    { id: 'toggle-split-direction', label: 'Editor: Toggle Split Direction', category: 'command', icon: <ArrowLeftRight size={14} />, action: () => { dispatch('orion:toggle-split-direction'); onClose() } },
-    { id: 'toggle-sync-scroll', label: 'Editor: Toggle Sync Scroll', category: 'command', icon: <Link2 size={14} />, action: () => { dispatch('orion:toggle-sync-scroll'); onClose() } },
-    { id: 'compare-files', label: 'Editor: Compare Active File With...', category: 'command', icon: <GitCompare size={14} />, action: () => { dispatch('orion:compare-files'); onClose() } },
+    { id: 'split-editor', label: 'Editor: Split Editor Right', category: 'command' as const, icon: <Columns size={14} />, shortcut: 'Ctrl+\\', action: () => { dispatch('orion:split-editor-right'); onClose() }, group: 'Editor' },
+    { id: 'split-editor-down', label: 'Editor: Split Editor Down', category: 'command' as const, icon: <Rows2 size={14} />, action: () => { dispatch('orion:split-editor-down'); onClose() }, group: 'Editor' },
+    { id: 'toggle-split-direction', label: 'Editor: Toggle Split Direction', category: 'command' as const, icon: <ArrowLeftRight size={14} />, action: () => { dispatch('orion:toggle-split-direction'); onClose() }, group: 'Editor' },
+    { id: 'toggle-sync-scroll', label: 'Editor: Toggle Sync Scroll', category: 'command' as const, icon: <Link2 size={14} />, action: () => { dispatch('orion:toggle-sync-scroll'); onClose() }, group: 'Editor' },
+    { id: 'compare-files', label: 'Editor: Compare Active File With...', category: 'command' as const, icon: <GitCompare size={14} />, action: () => { dispatch('orion:compare-files'); onClose() }, group: 'Editor' },
     // Font size
-    { id: 'font-increase', label: 'Editor: Increase Font Size', category: 'command', icon: <Plus size={14} />, shortcut: 'Ctrl+=', action: () => { dispatch('orion:font-increase'); onClose() } },
-    { id: 'font-decrease', label: 'Editor: Decrease Font Size', category: 'command', icon: <Minus size={14} />, shortcut: 'Ctrl+-', action: () => { dispatch('orion:font-decrease'); onClose() } },
-    { id: 'font-reset', label: 'Editor: Reset Font Size', category: 'command', icon: <Type size={14} />, action: () => { dispatch('orion:font-reset'); onClose() } },
+    { id: 'font-increase', label: 'Editor: Increase Font Size', category: 'command' as const, icon: <Plus size={14} />, shortcut: 'Ctrl+=', action: () => { dispatch('orion:font-increase'); onClose() }, group: 'Editor' },
+    { id: 'font-decrease', label: 'Editor: Decrease Font Size', category: 'command' as const, icon: <Minus size={14} />, shortcut: 'Ctrl+-', action: () => { dispatch('orion:font-decrease'); onClose() }, group: 'Editor' },
+    { id: 'font-reset', label: 'Editor: Reset Font Size', category: 'command' as const, icon: <Type size={14} />, action: () => { dispatch('orion:font-reset'); onClose() }, group: 'Editor' },
     // Multi-cursor / Selection
-    { id: 'add-selection-next', label: 'Editor: Add Selection to Next Find Match', category: 'command', icon: <MousePointer size={14} />, shortcut: 'Ctrl+D', action: () => { dispatch('orion:add-selection-next-match'); onClose() } },
-    { id: 'select-all-occurrences', label: 'Editor: Select All Occurrences', category: 'command', icon: <MousePointer size={14} />, shortcut: 'Ctrl+Shift+L', action: () => { dispatch('orion:select-all-occurrences'); onClose() } },
-    { id: 'add-cursor-above', label: 'Editor: Add Cursor Above', category: 'command', icon: <MousePointer size={14} />, shortcut: 'Ctrl+Alt+Up', action: () => { dispatch('orion:add-cursor-above'); onClose() } },
-    { id: 'add-cursor-below', label: 'Editor: Add Cursor Below', category: 'command', icon: <MousePointer size={14} />, shortcut: 'Ctrl+Alt+Down', action: () => { dispatch('orion:add-cursor-below'); onClose() } },
-    { id: 'cursors-to-line-ends', label: 'Editor: Add Cursors to Line Ends', category: 'command', icon: <MousePointer size={14} />, shortcut: 'Shift+Alt+I', action: () => { dispatch('orion:cursors-to-line-ends'); onClose() } },
-    { id: 'column-select', label: 'Editor: Column Select Mode', category: 'command', icon: <MousePointer size={14} />, action: () => { dispatch('orion:column-select'); onClose() } },
+    { id: 'add-selection-next', label: 'Editor: Add Selection to Next Find Match', category: 'command' as const, icon: <MousePointer size={14} />, shortcut: 'Ctrl+D', action: () => { dispatch('orion:add-selection-next-match'); onClose() }, group: 'Editor' },
+    { id: 'select-all-occurrences', label: 'Editor: Select All Occurrences', category: 'command' as const, icon: <MousePointer size={14} />, shortcut: 'Ctrl+Shift+L', action: () => { dispatch('orion:select-all-occurrences'); onClose() }, group: 'Editor' },
+    { id: 'add-cursor-above', label: 'Editor: Add Cursor Above', category: 'command' as const, icon: <MousePointer size={14} />, shortcut: 'Ctrl+Alt+Up', action: () => { dispatch('orion:add-cursor-above'); onClose() }, group: 'Editor' },
+    { id: 'add-cursor-below', label: 'Editor: Add Cursor Below', category: 'command' as const, icon: <MousePointer size={14} />, shortcut: 'Ctrl+Alt+Down', action: () => { dispatch('orion:add-cursor-below'); onClose() }, group: 'Editor' },
+    { id: 'cursors-to-line-ends', label: 'Editor: Add Cursors to Line Ends', category: 'command' as const, icon: <MousePointer size={14} />, shortcut: 'Shift+Alt+I', action: () => { dispatch('orion:cursors-to-line-ends'); onClose() }, group: 'Editor' },
+    { id: 'column-select', label: 'Editor: Column Select Mode', category: 'command' as const, icon: <MousePointer size={14} />, action: () => { dispatch('orion:column-select'); onClose() }, group: 'Editor' },
     // Transform
-    { id: 'transform-uppercase', label: 'Editor: Transform to Uppercase', category: 'command', icon: <CaseSensitive size={14} />, action: () => { dispatch('orion:transform-uppercase'); onClose() } },
-    { id: 'transform-lowercase', label: 'Editor: Transform to Lowercase', category: 'command', icon: <CaseSensitive size={14} />, action: () => { dispatch('orion:transform-lowercase'); onClose() } },
-    { id: 'transform-titlecase', label: 'Editor: Transform to Title Case', category: 'command', icon: <CaseSensitive size={14} />, action: () => { dispatch('orion:transform-titlecase'); onClose() } },
+    { id: 'transform-uppercase', label: 'Editor: Transform to Uppercase', category: 'command' as const, icon: <CaseSensitive size={14} />, action: () => { dispatch('orion:transform-uppercase'); onClose() }, group: 'Editor' },
+    { id: 'transform-lowercase', label: 'Editor: Transform to Lowercase', category: 'command' as const, icon: <CaseSensitive size={14} />, action: () => { dispatch('orion:transform-lowercase'); onClose() }, group: 'Editor' },
+    { id: 'transform-titlecase', label: 'Editor: Transform to Title Case', category: 'command' as const, icon: <CaseSensitive size={14} />, action: () => { dispatch('orion:transform-titlecase'); onClose() }, group: 'Editor' },
     // Find in Selection
-    { id: 'find-in-selection', label: 'Edit: Find in Selection', category: 'command', icon: <Search size={14} />, action: () => { dispatch('orion:find-in-selection'); onClose() } },
+    { id: 'find-in-selection', label: 'Edit: Find in Selection', category: 'command' as const, icon: <Search size={14} />, action: () => { dispatch('orion:find-in-selection'); onClose() }, group: 'Edit' },
     // Folding
-    { id: 'fold-all', label: 'Editor: Fold All', category: 'command', icon: <ChevronsDownUp size={14} />, shortcut: 'Ctrl+K Ctrl+0', action: () => { dispatch('orion:fold-all'); onClose() } },
-    { id: 'unfold-all', label: 'Editor: Unfold All', category: 'command', icon: <ChevronsUpDown size={14} />, shortcut: 'Ctrl+K Ctrl+J', action: () => { dispatch('orion:unfold-all'); onClose() } },
+    { id: 'fold-all', label: 'Editor: Fold All', category: 'command' as const, icon: <ChevronsDownUp size={14} />, shortcut: 'Ctrl+K Ctrl+0', action: () => { dispatch('orion:fold-all'); onClose() }, group: 'Editor' },
+    { id: 'unfold-all', label: 'Editor: Unfold All', category: 'command' as const, icon: <ChevronsUpDown size={14} />, shortcut: 'Ctrl+K Ctrl+J', action: () => { dispatch('orion:unfold-all'); onClose() }, group: 'Editor' },
 
     // ── Terminal commands ───────────────────────────────────────────────
-    { id: 'terminal-new', label: 'Terminal: New Terminal', category: 'command', icon: <Terminal size={14} />, shortcut: 'Ctrl+Shift+`', action: () => { dispatch('orion:new-terminal'); onClose() } },
-    { id: 'terminal-split', label: 'Terminal: Split Terminal', category: 'command', icon: <SplitSquareVertical size={14} />, action: () => { dispatch('orion:split-terminal'); onClose() } },
-    { id: 'terminal-clear', label: 'Terminal: Clear Terminal', category: 'command', icon: <Eraser size={14} />, action: () => { dispatch('orion:clear-terminal'); onClose() } },
-    { id: 'terminal-kill', label: 'Terminal: Kill Terminal', category: 'command', icon: <XCircle size={14} />, action: () => { dispatch('orion:kill-terminal'); onClose() } },
+    { id: 'terminal-new', label: 'Terminal: New Terminal', category: 'command' as const, icon: <Terminal size={14} />, shortcut: 'Ctrl+Shift+`', action: () => { dispatch('orion:new-terminal'); onClose() }, group: 'Terminal' },
+    { id: 'terminal-split', label: 'Terminal: Split Terminal', category: 'command' as const, icon: <SplitSquareVertical size={14} />, action: () => { dispatch('orion:split-terminal'); onClose() }, group: 'Terminal' },
+    { id: 'terminal-clear', label: 'Terminal: Clear Terminal', category: 'command' as const, icon: <Eraser size={14} />, action: () => { dispatch('orion:clear-terminal'); onClose() }, group: 'Terminal' },
+    { id: 'terminal-kill', label: 'Terminal: Kill Terminal', category: 'command' as const, icon: <XCircle size={14} />, action: () => { dispatch('orion:kill-terminal'); onClose() }, group: 'Terminal' },
 
     // ── Git commands ───────────────────────────────────────────────────
-    { id: 'git-stage-all', label: 'Git: Stage All', category: 'command', icon: <Plus size={14} />, action: () => { dispatch('orion:git-stage-all'); onClose() } },
-    { id: 'git-unstage-all', label: 'Git: Unstage All', category: 'command', icon: <Minus size={14} />, action: () => { dispatch('orion:git-unstage-all'); onClose() } },
-    { id: 'git-commit', label: 'Git: Commit', category: 'command', icon: <GitCommitHorizontal size={14} />, action: () => { dispatch('orion:git-commit'); onClose() } },
-    { id: 'git-push', label: 'Git: Push', category: 'command', icon: <Upload size={14} />, action: () => { dispatch('orion:git-push'); onClose() } },
-    { id: 'git-pull', label: 'Git: Pull', category: 'command', icon: <Download size={14} />, action: () => { dispatch('orion:git-pull'); onClose() } },
-    { id: 'git-fetch', label: 'Git: Fetch', category: 'command', icon: <RefreshCw size={14} />, action: () => { dispatch('orion:git-fetch'); onClose() } },
-    { id: 'git-stash', label: 'Git: Stash', category: 'command', icon: <Archive size={14} />, action: () => { dispatch('orion:git-stash'); onClose() } },
-    { id: 'git-show-log', label: 'Git: Show Log', category: 'command', icon: <GitBranch size={14} />, action: () => { dispatch('orion:show-git'); dispatch('orion:git-show-history'); onClose() } },
-    { id: 'git-toggle-blame', label: 'Git: Toggle Blame Annotations', category: 'command', icon: <GitBranch size={14} />, action: () => { dispatch('orion:git-toggle-blame'); onClose() } },
+    { id: 'git-stage-all', label: 'Git: Stage All', category: 'command' as const, icon: <Plus size={14} />, action: () => { dispatch('orion:git-stage-all'); onClose() }, group: 'Git' },
+    { id: 'git-unstage-all', label: 'Git: Unstage All', category: 'command' as const, icon: <Minus size={14} />, action: () => { dispatch('orion:git-unstage-all'); onClose() }, group: 'Git' },
+    { id: 'git-commit', label: 'Git: Commit', category: 'command' as const, icon: <GitCommitHorizontal size={14} />, action: () => { dispatch('orion:git-commit'); onClose() }, group: 'Git' },
+    { id: 'git-push', label: 'Git: Push', category: 'command' as const, icon: <Upload size={14} />, action: () => { dispatch('orion:git-push'); onClose() }, group: 'Git' },
+    { id: 'git-pull', label: 'Git: Pull', category: 'command' as const, icon: <Download size={14} />, action: () => { dispatch('orion:git-pull'); onClose() }, group: 'Git' },
+    { id: 'git-fetch', label: 'Git: Fetch', category: 'command' as const, icon: <RefreshCw size={14} />, action: () => { dispatch('orion:git-fetch'); onClose() }, group: 'Git' },
+    { id: 'git-stash', label: 'Git: Stash', category: 'command' as const, icon: <Archive size={14} />, action: () => { dispatch('orion:git-stash'); onClose() }, group: 'Git' },
+    { id: 'git-show-log', label: 'Git: Show Log', category: 'command' as const, icon: <GitBranch size={14} />, action: () => { dispatch('orion:show-git'); dispatch('orion:git-show-history'); onClose() }, group: 'Git' },
+    { id: 'git-toggle-blame', label: 'Git: Toggle Blame Annotations', category: 'command' as const, icon: <GitBranch size={14} />, action: () => { dispatch('orion:git-toggle-blame'); onClose() }, group: 'Git' },
 
     // ── AI commands ────────────────────────────────────────────────────
-    { id: 'ai-inline-edit', label: 'AI: Inline Edit', category: 'command', icon: <Zap size={14} />, shortcut: 'Ctrl+K', action: () => { dispatch('orion:inline-edit'); onClose() } },
-    { id: 'ai-explain', label: 'AI: Explain Selection', category: 'command', icon: <Brain size={14} />, action: () => { dispatch('orion:ai-explain-selection'); onClose() } },
-    { id: 'ai-fix-bugs', label: 'AI: Fix Bugs', category: 'command', icon: <Bug size={14} />, action: () => { dispatch('orion:ai-fix-bugs'); onClose() } },
-    { id: 'ai-gen-tests', label: 'AI: Generate Tests', category: 'command', icon: <TestTube size={14} />, action: () => { dispatch('orion:ai-generate-tests'); onClose() } },
-    { id: 'ai-refactor', label: 'AI: Refactor', category: 'command', icon: <Wand2 size={14} />, action: () => { dispatch('orion:ai-refactor'); onClose() } },
+    { id: 'ai-inline-edit', label: 'AI: Inline Edit', category: 'command' as const, icon: <Zap size={14} />, shortcut: 'Ctrl+K', action: () => { dispatch('orion:inline-edit'); onClose() }, group: 'AI' },
+    { id: 'ai-explain', label: 'AI: Explain Selection', category: 'command' as const, icon: <Brain size={14} />, action: () => { dispatch('orion:ai-explain-selection'); onClose() }, group: 'AI' },
+    { id: 'ai-fix-bugs', label: 'AI: Fix Bugs', category: 'command' as const, icon: <Bug size={14} />, action: () => { dispatch('orion:ai-fix-bugs'); onClose() }, group: 'AI' },
+    { id: 'ai-gen-tests', label: 'AI: Generate Tests', category: 'command' as const, icon: <TestTube size={14} />, action: () => { dispatch('orion:ai-generate-tests'); onClose() }, group: 'AI' },
+    { id: 'ai-refactor', label: 'AI: Refactor', category: 'command' as const, icon: <Wand2 size={14} />, action: () => { dispatch('orion:ai-refactor'); onClose() }, group: 'AI' },
 
     // ── Preferences commands ───────────────────────────────────────────
-    { id: 'settings', label: 'Preferences: Open Settings', category: 'command', icon: <Settings size={14} />, shortcut: 'Ctrl+,', action: () => { onClose(); onOpenSettings() } },
-    { id: 'shortcuts', label: 'Preferences: Keyboard Shortcuts', category: 'command', icon: <Keyboard size={14} />, shortcut: 'Ctrl+K Ctrl+S', action: () => { onClose(); onOpenSettings() } },
-    { id: 'color-theme', label: 'Preferences: Color Theme', category: 'command', icon: <Palette size={14} />, action: () => { setThemeMode(true); setQuery(''); setSelectedIndex(0) } },
-    { id: 'change-language', label: 'Preferences: Change Language Mode', category: 'command', icon: <Languages size={14} />, action: () => { dispatch('orion:change-language-mode'); onClose() } },
-    { id: 'snippets', label: 'Preferences: Snippets', category: 'command', icon: <Code size={14} />, action: () => { dispatch('orion:open-snippets'); onClose() } },
+    { id: 'settings', label: 'Preferences: Open Settings', category: 'command' as const, icon: <Settings size={14} />, shortcut: 'Ctrl+,', action: () => { onClose(); onOpenSettings() }, group: 'Preferences' },
+    { id: 'shortcuts', label: 'Preferences: Keyboard Shortcuts', category: 'command' as const, icon: <Keyboard size={14} />, shortcut: 'Ctrl+K Ctrl+S', action: () => { onClose(); onOpenSettings() }, group: 'Preferences' },
+    { id: 'color-theme', label: 'Preferences: Color Theme', category: 'command' as const, icon: <Palette size={14} />, action: () => { setThemeMode(true); setQuery(''); setSelectedIndex(0) }, group: 'Preferences' },
+    { id: 'change-language', label: 'Preferences: Change Language Mode', category: 'command' as const, icon: <Languages size={14} />, action: () => { dispatch('orion:change-language-mode'); onClose() }, group: 'Preferences' },
+    { id: 'snippets', label: 'Preferences: Snippets', category: 'command' as const, icon: <Code size={14} />, action: () => { dispatch('orion:open-snippets'); onClose() }, group: 'Preferences' },
 
     // ── Developer ──────────────────────────────────────────────────────
-    { id: 'reload-window', label: 'Developer: Reload Window', category: 'command', icon: <RotateCw size={14} />, action: () => { window.location.reload() } },
-    { id: 'toggle-devtools', label: 'Developer: Toggle DevTools', category: 'command', icon: <Bug size={14} />, action: () => { dispatch('orion:toggle-devtools'); onClose() } },
+    { id: 'reload-window', label: 'Developer: Reload Window', category: 'command' as const, icon: <RotateCw size={14} />, action: () => { window.location.reload() }, group: 'Developer' },
+    { id: 'toggle-devtools', label: 'Developer: Toggle DevTools', category: 'command' as const, icon: <Bug size={14} />, action: () => { dispatch('orion:toggle-devtools'); onClose() }, group: 'Developer' },
   ], [onClose, onOpenSettings, setThemeMode])
 
-  // File items with prioritization: open tabs first, then recent files, then workspace files
+  // Wrap commands with MRU tracking
+  const commandsWithMRU: PaletteItem[] = useMemo(() => {
+    return commands.map(cmd => ({
+      ...cmd,
+      action: withMRU(cmd.id, cmd.action),
+    }))
+  }, [commands, withMRU])
+
+  // Sort commands by MRU frequency
+  const mruSortedCommands: PaletteItem[] = useMemo(() => {
+    const counts = getMRUCounts()
+    return [...commandsWithMRU].sort((a, b) => {
+      const ca = counts[a.id] || 0
+      const cb = counts[b.id] || 0
+      return cb - ca
+    })
+  }, [commandsWithMRU])
+
+  // File items with prioritization and badges
   const fileItems: PaletteItem[] = useMemo(() => {
     const allFiles = flattenFiles(fileTree)
     const openTabPaths = new Set(openFiles.map(f => f.path))
     const recentPaths = new Set(recentFiles.map(f => f.path))
+    const pinnedSet = new Set(pinnedTabs)
+    const modifiedSet = new Set(openFiles.filter(f => f.isModified).map(f => f.path))
 
-    const makeItem = (f: { name: string; path: string }, badge?: string): PaletteItem => ({
-      id: f.path,
-      label: f.name,
-      category: 'file' as const,
-      icon: <FileIcon fileName={f.name} size={14} />,
-      badge,
-      description: getParentDir(f.path),
-      action: () => openFileAction(f),
-    })
+    const makeItem = (f: { name: string; path: string }, badge?: string, content?: string): PaletteItem => {
+      // Compute multiple badges
+      const badges: string[] = []
+      if (pinnedSet.has(f.path)) badges.push('pinned')
+      if (modifiedSet.has(f.path)) badges.push('modified')
+      if (badge === 'open') badges.push('open')
+      else if (badge === 'recent') badges.push('recent')
+
+      // File size from content if available
+      const fileSize = content ? new Blob([content]).size : undefined
+
+      return {
+        id: f.path,
+        label: f.name,
+        category: 'file' as const,
+        icon: <FileIcon fileName={f.name} size={14} />,
+        badge,
+        badges,
+        description: getParentDir(f.path),
+        filePath: f.path,
+        fileSize,
+        previewSnippet: content ? getFilePreviewSnippet(content) : undefined,
+        action: () => openFileAction(f),
+        group: badge === 'open' ? 'Open Editors' : badge === 'recent' ? 'Recently Opened' : 'Workspace',
+      }
+    }
 
     // Open tabs (currently open in editor)
     const openTabItems = openFiles.map(f => makeItem(
       { name: f.name, path: f.path },
-      'open'
+      'open',
+      f.content
     ))
 
     // Recent files that are NOT currently open
@@ -306,9 +572,9 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
       .map(f => makeItem(f))
 
     return [...openTabItems, ...recentOnlyItems, ...workspaceOnlyItems]
-  }, [fileTree, openFile, onClose, openFiles, recentFiles])
+  }, [fileTree, openFile, onClose, openFiles, recentFiles, pinnedTabs])
 
-  // Symbol search items (# mode)
+  // Symbol search items (# mode) with kind icons
   const symbolItems: PaletteItem[] = useMemo(() => {
     if (!isSymbolMode) return []
 
@@ -319,24 +585,35 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
       }
     }
 
-    return symbols.map(sym => ({
-      id: `symbol-${sym.filePath}-${sym.name}-${sym.lineNumber}`,
-      label: sym.name,
-      category: 'symbol' as const,
-      icon: <Code size={14} />,
-      description: `${sym.fileName}:${sym.lineNumber}`,
-      badge: sym.kind,
-      action: () => {
-        const file = openFiles.find(f => f.path === sym.filePath)
-        if (file) {
-          useEditorStore.getState().setActiveFile(sym.filePath)
-          setTimeout(() => {
-            dispatch('orion:go-to-line', { line: sym.lineNumber })
-          }, 50)
-        }
-        onClose()
-      },
-    }))
+    // Group symbols by kind
+    const kindOrder = ['class', 'interface', 'enum', 'type', 'function', 'variable']
+
+    return symbols
+      .sort((a, b) => {
+        const ai = kindOrder.indexOf(a.kind)
+        const bi = kindOrder.indexOf(b.kind)
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
+      })
+      .map(sym => ({
+        id: `symbol-${sym.filePath}-${sym.name}-${sym.lineNumber}`,
+        label: sym.name,
+        category: 'symbol' as const,
+        icon: <SymbolKindIcon kind={sym.kind} size={14} />,
+        description: `${sym.fileName}:${sym.lineNumber}`,
+        badge: sym.kind,
+        symbolKind: sym.kind,
+        group: sym.kind.charAt(0).toUpperCase() + sym.kind.slice(1) + 's',
+        action: () => {
+          const file = openFiles.find(f => f.path === sym.filePath)
+          if (file) {
+            useEditorStore.getState().setActiveFile(sym.filePath)
+            setTimeout(() => {
+              dispatch('orion:go-to-line', { line: sym.lineNumber })
+            }, 50)
+          }
+          onClose()
+        },
+      }))
   }, [isSymbolMode, openFiles, onClose])
 
   // Go to line items (: mode)
@@ -394,6 +671,12 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
     }]
   }, [isGotoLineMode, searchQuery, openFiles, activeFilePath, onClose])
 
+  // Help mode items
+  const helpItems: PaletteItem[] = useMemo(() => {
+    if (!isHelpMode) return []
+    return getHelpItems(onClose)
+  }, [isHelpMode, onClose])
+
   // Theme picker items (shown in theme-mode)
   const themeItems: PaletteItem[] = useMemo(() => {
     return allThemes.map((t) => ({
@@ -409,39 +692,33 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
   const items = useMemo(() => {
     const source = themeMode
       ? themeItems
-      : isGotoLineMode
-        ? gotoLineItems
-        : isSymbolMode
-          ? symbolItems
-          : isFileMode
-            ? fileItems
-            : commands
+      : isHelpMode
+        ? helpItems
+        : isGotoLineMode
+          ? gotoLineItems
+          : isSymbolMode
+            ? symbolItems
+            : isFileMode
+              ? fileItems
+              : mruSortedCommands
 
     if (!searchQuery) return source.slice(0, 30)
 
     // For goto-line mode, items are already computed based on query
     if (isGotoLineMode) return source
+    // Help mode shows all items
+    if (isHelpMode) return source
 
     const lower = searchQuery.toLowerCase()
 
-    // Fuzzy match: each character must appear in order
-    const fuzzyMatch = (text: string, query: string) => {
-      let qi = 0
-      const tl = text.toLowerCase()
-      for (let i = 0; i < tl.length && qi < query.length; i++) {
-        if (tl[i] === query[qi]) qi++
-      }
-      return qi === query.length
-    }
-
-    // Score: prefer exact substring > starts with > fuzzy
+    // Score with fuzzy match indices
     const scored = source
-      .filter(item => {
-        if (fuzzyMatch(item.label, lower)) return true
-        if (item.description && fuzzyMatch(item.description, lower)) return true
-        return false
-      })
       .map(item => {
+        const labelMatch = fuzzyMatchWithIndices(item.label, lower)
+        const descMatch = item.description ? fuzzyMatchWithIndices(item.description, lower) : { matches: false, indices: [] }
+
+        if (!labelMatch.matches && !descMatch.matches) return null
+
         const ll = item.label.toLowerCase()
         let score = 0
         if (ll === lower) score = 100
@@ -454,12 +731,72 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
         if (isFileMode && item.badge === 'open') score += 5
         else if (isFileMode && item.badge === 'recent') score += 3
 
-        return { item, score }
+        // Boost by MRU frequency for commands
+        if (isCommandMode) {
+          const counts = getMRUCounts()
+          const freq = counts[item.id] || 0
+          if (freq > 0) score += Math.min(freq * 2, 20)
+        }
+
+        return {
+          item: {
+            ...item,
+            matchIndices: labelMatch.matches ? labelMatch.indices : undefined,
+          },
+          score,
+        }
       })
+      .filter((s): s is NonNullable<typeof s> => s !== null)
       .sort((a, b) => b.score - a.score)
 
     return scored.map(s => s.item).slice(0, 30)
-  }, [themeMode, isFileMode, isSymbolMode, isGotoLineMode, searchQuery, themeItems, fileItems, commands, symbolItems, gotoLineItems])
+  }, [themeMode, isFileMode, isSymbolMode, isGotoLineMode, isHelpMode, searchQuery, themeItems, fileItems, mruSortedCommands, symbolItems, gotoLineItems, helpItems])
+
+  // Compute grouped items for section headers
+  const groupedItems = useMemo(() => {
+    // Only group when not searching (grouping on filtered results is noisy)
+    const shouldGroup = !searchQuery && (isFileMode || isCommandMode || isSymbolMode)
+
+    if (!shouldGroup) {
+      return items.map(item => ({ type: 'item' as const, item }))
+    }
+
+    const result: Array<{ type: 'header'; label: string } | { type: 'item'; item: PaletteItem }> = []
+    let lastGroup = ''
+
+    for (const item of items) {
+      const group = item.group || ''
+      if (group && group !== lastGroup) {
+        result.push({ type: 'header', label: group })
+        lastGroup = group
+      }
+      result.push({ type: 'item', item })
+    }
+
+    return result
+  }, [items, searchQuery, isFileMode, isCommandMode, isSymbolMode])
+
+  // Build flat item index for keyboard navigation (skipping headers)
+  const flatItems = useMemo(() => {
+    return groupedItems.filter((e): e is { type: 'item'; item: PaletteItem } => e.type === 'item').map(e => e.item)
+  }, [groupedItems])
+
+  // Compute preview snippet for selected file item
+  const selectedPreview = useMemo(() => {
+    const selected = flatItems[selectedIndex]
+    if (!selected) return null
+    if (selected.category === 'file' && selected.previewSnippet) {
+      return selected.previewSnippet
+    }
+    // For files without pre-loaded content, try to find from open files
+    if (selected.category === 'file' && selected.filePath) {
+      const openF = openFiles.find(f => f.path === selected.filePath)
+      if (openF?.content) {
+        return getFilePreviewSnippet(openF.content)
+      }
+    }
+    return null
+  }, [flatItems, selectedIndex, openFiles])
 
   useEffect(() => {
     if (open) {
@@ -475,8 +812,17 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
   }, [query])
 
   useEffect(() => {
-    const el = listRef.current?.children[selectedIndex] as HTMLElement
-    el?.scrollIntoView({ block: 'nearest' })
+    // Scroll the selected item into view within the list
+    if (!listRef.current) return
+    let itemIdx = 0
+    for (const child of Array.from(listRef.current.children)) {
+      if (child.getAttribute('data-type') === 'header') continue
+      if (itemIdx === selectedIndex) {
+        ;(child as HTMLElement).scrollIntoView({ block: 'nearest' })
+        break
+      }
+      itemIdx++
+    }
   }, [selectedIndex])
 
   // Live-preview theme when navigating in theme mode
@@ -499,27 +845,29 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
     if (e.key === 'Escape') { previewTheme(null); onClose(); return }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setSelectedIndex(i => Math.min(i + 1, items.length - 1))
+      setSelectedIndex(i => Math.min(i + 1, flatItems.length - 1))
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault()
       setSelectedIndex(i => Math.max(i - 1, 0))
     }
-    if (e.key === 'Enter' && items[selectedIndex]) {
-      items[selectedIndex].action()
+    if (e.key === 'Enter' && flatItems[selectedIndex]) {
+      flatItems[selectedIndex].action()
     }
   }
 
   const getPlaceholder = () => {
     if (themeMode) return 'Select a color theme...'
+    if (isHelpMode) return 'Available command palette modes'
     if (isSymbolMode) return 'Search symbols in open files...'
     if (isGotoLineMode) return 'Type a line number to go to...'
     if (isCommandMode) return 'Type a command...'
-    return 'Search files (> commands, # symbols, : go to line)'
+    return 'Search files (> commands, # symbols, : line, ? help)'
   }
 
   const getInputIcon = () => {
     if (themeMode) return <Palette size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+    if (isHelpMode) return <HelpCircle size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
     if (isSymbolMode) return <Hash size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
     if (isGotoLineMode) return <Hash size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
     if (isCommandMode) return <ChevronRight size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
@@ -527,6 +875,9 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
   }
 
   if (!open) return null
+
+  // Track the item index for mapping grouped entries to the flat index
+  let itemCounter = 0
 
   return (
     <div
@@ -542,7 +893,7 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
         className="anim-scale-in"
         onClick={e => e.stopPropagation()}
         style={{
-          width: 560, maxHeight: 400,
+          width: 580, maxHeight: selectedPreview ? 500 : 400,
           background: 'var(--bg-secondary)',
           border: '1px solid var(--border-bright)',
           borderRadius: 'var(--radius-lg)',
@@ -571,6 +922,11 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
               fontFamily: 'var(--font-sans)',
             }}
           />
+          {isFileMode && searchQuery && (
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>
+              {flatItems.length} result{flatItems.length !== 1 ? 's' : ''}
+            </span>
+          )}
         </div>
 
         {/* Results */}
@@ -578,83 +934,186 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
           flex: 1, overflowY: 'auto',
           padding: '4px 0',
         }}>
-          {items.length === 0 ? (
+          {flatItems.length === 0 ? (
             <div style={{
               padding: '24px 16px', textAlign: 'center',
               color: 'var(--text-muted)', fontSize: 12,
             }}>
-              {isSymbolMode ? 'No symbols found in open files' : 'No results found'}
+              {isHelpMode ? 'Type a prefix to activate a mode' : isSymbolMode ? 'No symbols found in open files' : 'No results found'}
             </div>
           ) : (
-            items.map((item, idx) => (
-              <div
-                key={item.id}
-                onClick={item.action}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  padding: '7px 14px',
-                  cursor: 'pointer',
-                  background: idx === selectedIndex ? 'var(--bg-active)' : 'transparent',
-                  color: idx === selectedIndex ? 'var(--text-primary)' : 'var(--text-secondary)',
-                  fontSize: 13,
-                }}
-                onMouseEnter={() => setSelectedIndex(idx)}
-              >
-                <span style={{ flexShrink: 0, display: 'flex' }}>
-                  {item.icon}
-                </span>
-                <span className="truncate" style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                  <span className="truncate">{item.label}</span>
-                  {item.category === 'symbol' && item.description && (
-                    <span style={{ fontSize: 11, opacity: 0.5, flexShrink: 0 }}>
-                      — {item.description}
+            (() => {
+              itemCounter = 0
+              return groupedItems.map((entry, rawIdx) => {
+                if (entry.type === 'header') {
+                  return (
+                    <SectionHeader key={`header-${entry.label}-${rawIdx}`} label={entry.label} />
+                  )
+                }
+
+                const item = entry.item
+                const currentItemIdx = itemCounter
+                itemCounter++
+
+                return (
+                  <div
+                    key={item.id}
+                    data-type="item"
+                    onClick={item.action}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '7px 14px',
+                      cursor: 'pointer',
+                      background: currentItemIdx === selectedIndex ? 'var(--bg-active)' : 'transparent',
+                      color: currentItemIdx === selectedIndex ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      fontSize: 13,
+                    }}
+                    onMouseEnter={() => setSelectedIndex(currentItemIdx)}
+                  >
+                    <span style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+                      {item.icon}
                     </span>
-                  )}
-                  {item.category === 'file' && item.description && (
-                    <span style={{ fontSize: 11, opacity: 0.4, flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {item.description}
+
+                    {/* Main label area */}
+                    <span className="truncate" style={{ flex: 1, display: 'flex', flexDirection: item.category === 'file' ? 'column' : 'row', alignItems: item.category === 'file' ? 'flex-start' : 'center', gap: item.category === 'file' ? 1 : 6, minWidth: 0 }}>
+                      {/* Label with fuzzy match highlighting */}
+                      <HighlightedText
+                        text={item.label}
+                        indices={item.matchIndices}
+                        style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      />
+
+                      {/* File path shown dimmed below filename */}
+                      {item.category === 'file' && item.description && (
+                        <span style={{
+                          fontSize: 11, opacity: 0.4, overflow: 'hidden', textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap', maxWidth: '100%', lineHeight: 1.2,
+                        }}>
+                          {item.description}
+                        </span>
+                      )}
+
+                      {item.category === 'symbol' && item.description && (
+                        <span style={{ fontSize: 11, opacity: 0.5, flexShrink: 0 }}>
+                          — {item.description}
+                        </span>
+                      )}
+                      {item.category === 'goto-line' && item.description && (
+                        <span style={{ fontSize: 11, opacity: 0.5 }}>
+                          {item.description}
+                        </span>
+                      )}
+                      {item.category === 'help' && item.description && (
+                        <span style={{ fontSize: 11, opacity: 0.5 }}>
+                          — {item.description}
+                        </span>
+                      )}
                     </span>
-                  )}
-                  {item.category === 'goto-line' && item.description && (
-                    <span style={{ fontSize: 11, opacity: 0.5 }}>
-                      {item.description}
-                    </span>
-                  )}
-                </span>
-                {/* Badge for open/recent files */}
-                {item.badge === 'open' && (
-                  <span style={{
-                    fontSize: 10, color: 'var(--accent)', opacity: 0.7,
-                    flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3,
-                  }}>
-                    <Eye size={10} /> open
-                  </span>
-                )}
-                {item.badge === 'recent' && (
-                  <span style={{
-                    fontSize: 10, color: 'var(--text-muted)', opacity: 0.7,
-                    flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3,
-                  }}>
-                    <Clock size={10} /> recent
-                  </span>
-                )}
-                {item.badge && item.category === 'symbol' && (
-                  <span style={{
-                    fontSize: 9, color: 'var(--text-muted)',
-                    background: 'var(--bg-tertiary)',
-                    padding: '1px 5px', borderRadius: 3,
-                    flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.5px',
-                  }}>
-                    {item.badge}
-                  </span>
-                )}
-                {item.shortcut && (
-                  <span className="kbd">{item.shortcut}</span>
-                )}
-              </div>
-            ))
+
+                    {/* File size info */}
+                    {item.category === 'file' && item.fileSize != null && (
+                      <span style={{
+                        fontSize: 10, color: 'var(--text-muted)', opacity: 0.5,
+                        flexShrink: 0, fontFamily: 'var(--font-mono, monospace)',
+                      }}>
+                        {formatFileSize(item.fileSize)}
+                      </span>
+                    )}
+
+                    {/* Result badges for files */}
+                    {item.category === 'file' && item.badges && item.badges.length > 0 && (
+                      <span style={{ display: 'flex', gap: 4, flexShrink: 0, alignItems: 'center' }}>
+                        {item.badges.includes('pinned') && (
+                          <span style={{
+                            fontSize: 9, color: '#ee9d28',
+                            background: 'rgba(238,157,40,0.12)',
+                            padding: '1px 5px', borderRadius: 3,
+                            display: 'flex', alignItems: 'center', gap: 2,
+                          }}>
+                            <Pin size={8} /> pinned
+                          </span>
+                        )}
+                        {item.badges.includes('modified') && (
+                          <span style={{
+                            fontSize: 9, color: '#e5c07b',
+                            background: 'rgba(229,192,123,0.12)',
+                            padding: '1px 5px', borderRadius: 3,
+                          }}>
+                            modified
+                          </span>
+                        )}
+                        {item.badges.includes('open') && !item.badges.includes('modified') && !item.badges.includes('pinned') && (
+                          <span style={{
+                            fontSize: 10, color: 'var(--accent)', opacity: 0.7,
+                            flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3,
+                          }}>
+                            <Eye size={10} /> open
+                          </span>
+                        )}
+                        {item.badges.includes('recent') && (
+                          <span style={{
+                            fontSize: 10, color: 'var(--text-muted)', opacity: 0.7,
+                            flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3,
+                          }}>
+                            <Clock size={10} /> recent
+                          </span>
+                        )}
+                      </span>
+                    )}
+
+                    {/* Legacy badge rendering for non-file items */}
+                    {item.badge === 'open' && item.category !== 'file' && (
+                      <span style={{
+                        fontSize: 10, color: 'var(--accent)', opacity: 0.7,
+                        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3,
+                      }}>
+                        <Eye size={10} /> open
+                      </span>
+                    )}
+                    {item.badge === 'recent' && item.category !== 'file' && (
+                      <span style={{
+                        fontSize: 10, color: 'var(--text-muted)', opacity: 0.7,
+                        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3,
+                      }}>
+                        <Clock size={10} /> recent
+                      </span>
+                    )}
+                    {item.badge && item.category === 'symbol' && (
+                      <span style={{
+                        fontSize: 9, color: 'var(--text-muted)',
+                        background: 'var(--bg-tertiary)',
+                        padding: '1px 5px', borderRadius: 3,
+                        flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.5px',
+                      }}>
+                        {item.badge}
+                      </span>
+                    )}
+                    {/* Help mode prefix badges */}
+                    {item.category === 'help' && item.badge && (
+                      <span style={{
+                        fontSize: 11, color: 'var(--accent)',
+                        background: 'var(--bg-tertiary)',
+                        padding: '1px 7px', borderRadius: 3,
+                        flexShrink: 0, fontFamily: 'var(--font-mono, monospace)',
+                        fontWeight: 600,
+                      }}>
+                        {item.badge}
+                      </span>
+                    )}
+                    {item.shortcut && (
+                      <span className="kbd">{item.shortcut}</span>
+                    )}
+                  </div>
+                )
+              })
+            })()
           )}
         </div>
+
+        {/* Quick open preview panel */}
+        {selectedPreview && isFileMode && (
+          <PreviewPanel snippet={selectedPreview} />
+        )}
 
         {/* Footer hint */}
         <div style={{
@@ -666,6 +1125,7 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
           <span><span className="kbd" style={{ marginRight: 4 }}>↑↓</span> navigate</span>
           <span><span className="kbd" style={{ marginRight: 4 }}>↵</span> select</span>
           <span><span className="kbd" style={{ marginRight: 4 }}>esc</span> close</span>
+          {!isHelpMode && <span><span className="kbd" style={{ marginRight: 4 }}>?</span> help</span>}
         </div>
       </div>
     </div>
