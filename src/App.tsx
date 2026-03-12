@@ -44,6 +44,7 @@ const OutlinePanel = React.lazy(() => import('@/panels/OutlinePanel'))
 const AgentPanel = React.lazy(() => import('./panels/AgentPanel'))
 const DebugPanel = React.lazy(() => import('./panels/DebugPanel'))
 const TestingPanel = React.lazy(() => import('./panels/TestingPanel'))
+const ComposerPanel = React.lazy(() => import('./panels/ComposerPanel'))
 
 // Lazy-loaded editor-area components
 const Breadcrumbs = React.lazy(() => import('./components/Breadcrumbs'))
@@ -125,6 +126,7 @@ export default function App() {
   const [bottomVisible, setBottomVisible] = useState(initialLayout.bottomVisible)
   const [chatVisible, setChatVisible] = useState(initialLayout.chatVisible)
   const [zenMode, setZenMode] = useState(false)
+  const [rightPanelTab, setRightPanelTab] = useState<'chat' | 'composer'>('chat')
   const [zenExitVisible, setZenExitVisible] = useState(false)
   const zenExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -1072,7 +1074,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Right Panel: Chat */}
+        {/* Right Panel: Chat / Composer */}
         {chatVisible && !zenMode && (
           <>
             <Resizer
@@ -1083,10 +1085,29 @@ export default function App() {
               onCollapse={() => setChatVisible(false)}
               onReset={() => setRightPanelWidth(DEFAULT_RIGHT_PANEL_WIDTH)}
             />
-            <div role="complementary" aria-label="AI Chat Panel" aria-expanded={chatVisible} style={{ width: rightPanelWidth }}>
-              <Suspense fallback={<PanelFallback />}>
-                <ChatPanel />
-              </Suspense>
+            <div role="complementary" aria-label="AI Panel" aria-expanded={chatVisible} style={{ width: rightPanelWidth, display: 'flex', flexDirection: 'column' }}>
+              <div style={{ display: 'flex', borderBottom: '1px solid var(--border-primary)', background: 'var(--bg-secondary)', flexShrink: 0 }}>
+                {(['chat', 'composer'] as const).map(tab => (
+                  <button
+                    key={tab}
+                    onClick={() => setRightPanelTab(tab)}
+                    style={{
+                      flex: 1, padding: '6px 12px', fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                      background: rightPanelTab === tab ? 'var(--bg-primary)' : 'transparent',
+                      color: rightPanelTab === tab ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      border: 'none', borderBottom: rightPanelTab === tab ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                      textTransform: 'uppercase', letterSpacing: '0.5px',
+                    }}
+                  >
+                    {tab === 'chat' ? 'Chat' : 'Composer'}
+                  </button>
+                ))}
+              </div>
+              <div style={{ flex: 1, overflow: 'hidden' }}>
+                <Suspense fallback={<PanelFallback />}>
+                  {rightPanelTab === 'chat' ? <ChatPanel /> : <ComposerPanel />}
+                </Suspense>
+              </div>
             </div>
           </>
         )}
