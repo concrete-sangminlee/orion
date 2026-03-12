@@ -7,11 +7,15 @@ interface TerminalStore {
   addSession: (session: TerminalSession) => void
   removeSession: (id: string) => void
   setActiveSession: (id: string) => void
+  renameSession: (id: string, name: string) => void
+  maximizedSessionId: string | null
+  setMaximizedSession: (id: string | null) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set) => ({
   sessions: [],
   activeSessionId: null,
+  maximizedSessionId: null,
 
   addSession: (session) =>
     set((state) => ({
@@ -28,8 +32,19 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
           state.activeSessionId === id
             ? sessions[sessions.length - 1]?.id ?? null
             : state.activeSessionId,
+        maximizedSessionId:
+          state.maximizedSessionId === id ? null : state.maximizedSessionId,
       }
     }),
 
   setActiveSession: (id) => set({ activeSessionId: id }),
+
+  renameSession: (id, name) =>
+    set((state) => ({
+      sessions: state.sessions.map((s) =>
+        s.id === id ? { ...s, name } : s
+      ),
+    })),
+
+  setMaximizedSession: (id) => set({ maximizedSessionId: id }),
 }))

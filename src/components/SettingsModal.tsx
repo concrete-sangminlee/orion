@@ -829,6 +829,14 @@ if (a === b && c >= d) {
                 <SettingRow label="Format on Save" description="Automatically format the file when saving">
                   <Toggle checked={editorSettings.formatOnSave} onChange={(v) => setEditorSettings(s => ({ ...s, formatOnSave: v }))} />
                 </SettingRow>
+
+                <SettingRow label="Trim Trailing Whitespace" description="Remove trailing whitespace from lines when saving">
+                  <Toggle checked={editorSettings.trimTrailingWhitespace ?? true} onChange={(v) => setEditorSettings(s => ({ ...s, trimTrailingWhitespace: v }))} />
+                </SettingRow>
+
+                <SettingRow label="Insert Final Newline" description="Ensure files end with a newline when saving">
+                  <Toggle checked={editorSettings.insertFinalNewline ?? true} onChange={(v) => setEditorSettings(s => ({ ...s, insertFinalNewline: v }))} />
+                </SettingRow>
               </div>
             )}
 

@@ -14,6 +14,8 @@ import InlineDiff from '@/components/InlineDiff'
 import GhostTextProvider from '@/components/GhostTextProvider'
 import EmmetProvider from '@/components/EmmetProvider'
 import MarkdownPreview, { markdownPreviewStyles } from '@/components/MarkdownPreview'
+import JsonTreeViewer from '@/components/JsonTreeViewer'
+import CsvTableViewer from '@/components/CsvTableViewer'
 import {
   Zap, FolderOpen, MessageSquare, Terminal, Command,
   ChevronRight, ChevronDown, FilePlus, Loader2, Keyboard, Clock,
@@ -21,7 +23,7 @@ import {
   FileText, ZoomIn, ZoomOut, Maximize2, Minimize2,
   Image as ImageIcon, Folder, File, Hash, Box, Braces, Type as TypeIcon,
   Upload, Rows2, Link2, Link2Off, X, GitCompare, Eye,
-  GripVertical, GripHorizontal, MoreVertical,
+  GripVertical, GripHorizontal, MoreVertical, Table,
 } from 'lucide-react'
 import { useEditorStore as useBreadcrumbEditorStore } from '@/store/editor'
 import { useFileStore } from '@/store/files'
@@ -221,7 +223,7 @@ export default function EditorPanel() {
     } catch { /* ignore */ }
     return defaults
   })
-  const minimapRef = useRef(true)
+  const minimapRef = useRef(editorConfig.minimap)
 
   // Inline edit (Ctrl+K) state
   const [inlineEditVisible, setInlineEditVisible] = useState(false)
@@ -252,6 +254,10 @@ export default function EditorPanel() {
 
   // Markdown preview state
   const [markdownPreview, setMarkdownPreview] = useState(false)
+
+  // JSON tree view / CSV table view state
+  const [jsonTreeView, setJsonTreeView] = useState(false)
+  const [csvTableView, setCsvTableView] = useState(false)
 
   // Timeline panel state
   const [timelineVisible, setTimelineVisible] = useState(false)
@@ -2088,6 +2094,14 @@ export default function EditorPanel() {
               : isWarning
                 ? 'error-lens-line-warning'
                 : 'error-lens-line-info',
+            overviewRuler: {
+              color: isError ? '#f85149' : isWarning ? '#d29922' : '#3fb950',
+              position: monaco.editor.OverviewRulerLane.Right,
+            },
+            minimap: {
+              color: isError ? '#f8514980' : isWarning ? '#d2992280' : '#3fb95080',
+              position: monaco.editor.MinimapPosition.Gutter,
+            },
           },
         }
       })
@@ -2732,7 +2746,8 @@ export default function EditorPanel() {
       highlightActiveIndentation: true,
     },
     overviewRulerBorder: false,
-    hideCursorInOverviewRuler: true,
+    overviewRulerLanes: 3,
+    hideCursorInOverviewRuler: false,
     scrollbar: {
       verticalScrollbarSize: 8,
       horizontalScrollbarSize: 8,
@@ -2834,6 +2849,56 @@ export default function EditorPanel() {
             >
               <Eye size={12} />
               Preview
+            </button>
+          )}
+          {/* JSON tree view toggle */}
+          {activeFile?.path?.endsWith('.json') && (
+            <button
+              onClick={() => setJsonTreeView(prev => !prev)}
+              title="Toggle Tree View"
+              style={{
+                background: jsonTreeView ? 'rgba(88,166,255,0.15)' : 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '2px 6px',
+                borderRadius: 3,
+                color: jsonTreeView ? 'var(--accent-blue)' : 'var(--text-muted)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                fontSize: 11,
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => { if (!jsonTreeView) e.currentTarget.style.color = 'var(--text-secondary)' }}
+              onMouseLeave={(e) => { if (!jsonTreeView) e.currentTarget.style.color = 'var(--text-muted)' }}
+            >
+              <Braces size={12} />
+              Tree View
+            </button>
+          )}
+          {/* CSV/TSV table view toggle */}
+          {(activeFile?.path?.endsWith('.csv') || activeFile?.path?.endsWith('.tsv')) && (
+            <button
+              onClick={() => setCsvTableView(prev => !prev)}
+              title="Toggle Table View"
+              style={{
+                background: csvTableView ? 'rgba(88,166,255,0.15)' : 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '2px 6px',
+                borderRadius: 3,
+                color: csvTableView ? 'var(--accent-blue)' : 'var(--text-muted)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                fontSize: 11,
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => { if (!csvTableView) e.currentTarget.style.color = 'var(--text-secondary)' }}
+              onMouseLeave={(e) => { if (!csvTableView) e.currentTarget.style.color = 'var(--text-muted)' }}
+            >
+              <Table size={12} />
+              Table View
             </button>
           )}
           {/* Split editor buttons */}
@@ -3168,9 +3233,17 @@ export default function EditorPanel() {
                   )}
                   {isImageFile(activeFile.path) ? (
                     <ImagePreview filePath={activeFile.path} />
+                  ) : csvTableView && (activeFile.path?.endsWith('.csv') || activeFile.path?.endsWith('.tsv')) ? (
+                    <div style={{ flex: 1, overflow: 'hidden' }}>
+                      <CsvTableViewer content={activeFile.content || ''} isTsv={activeFile.path?.endsWith('.tsv')} />
+                    </div>
                   ) : (
                     <>
-                      <div style={markdownPreview && activeFile?.language === 'markdown' ? { flex: 1, overflow: 'hidden', position: 'relative' } : { flex: 1, minHeight: 0 }}>
+                      <div style={
+                        (markdownPreview && activeFile?.language === 'markdown') || (jsonTreeView && activeFile?.path?.endsWith('.json'))
+                          ? { flex: 1, overflow: 'hidden', position: 'relative' }
+                          : { flex: 1, minHeight: 0 }
+                      }>
                       <Editor
                         theme={currentMonacoTheme}
                         language={activeFile.language}
