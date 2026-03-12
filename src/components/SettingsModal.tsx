@@ -876,8 +876,8 @@ export default function SettingsModal({ open, onClose }: Props) {
                   />
                 </SettingRow>
 
-                <SettingRow label="Font Size" description="Editor font size in pixels (10-30)">
-                  <NumberStepper value={editorSettings.fontSize} onChange={(v) => setEditorSettings(s => ({ ...s, fontSize: v }))} min={10} max={30} />
+                <SettingRow label="Font Size" description="Editor font size in pixels (8-32)">
+                  <NumberStepper value={editorSettings.fontSize} onChange={(v) => setEditorSettings(s => ({ ...s, fontSize: v }))} min={8} max={32} />
                 </SettingRow>
 
                 <SettingRow label="Line Height" description="Line height multiplier (1.0-3.0)">
@@ -915,9 +915,17 @@ if (a === b && c >= d) {
                   </pre>
                 </div>
 
+                <SectionHeader title="Indentation" />
+
                 <SettingRow label="Tab Size" description="Number of spaces per tab">
                   <PillToggle value={editorSettings.tabSize} onChange={(v) => setEditorSettings(s => ({ ...s, tabSize: v }))} options={[2, 4, 8]} />
                 </SettingRow>
+
+                <SettingRow label="Insert Spaces" description="Use spaces instead of tab characters for indentation">
+                  <Toggle checked={editorSettings.insertSpaces} onChange={(v) => setEditorSettings(s => ({ ...s, insertSpaces: v }))} />
+                </SettingRow>
+
+                <SectionHeader title="Cursor" />
 
                 <SettingRow label="Cursor Style" description="Shape of the editor cursor">
                   <SelectDropdown
@@ -934,6 +942,44 @@ if (a === b && c >= d) {
                   />
                 </SettingRow>
 
+                <SettingRow label="Cursor Blinking" description="Controls the cursor animation style">
+                  <SelectDropdown
+                    value={editorSettings.cursorBlinking}
+                    onChange={(v) => setEditorSettings(s => ({ ...s, cursorBlinking: v as CursorBlinking }))}
+                    options={[
+                      { value: 'blink', label: 'Blink' },
+                      { value: 'smooth', label: 'Smooth' },
+                      { value: 'expand', label: 'Expand' },
+                      { value: 'solid', label: 'Solid' },
+                      { value: 'phase', label: 'Phase' },
+                    ]}
+                  />
+                </SettingRow>
+
+                <SectionHeader title="Text & Wrapping" />
+
+                <SettingRow label="Word Wrap" description="Controls how long lines are wrapped in the editor">
+                  <SelectDropdown
+                    value={editorSettings.wordWrapMode}
+                    onChange={(v) => {
+                      const mode = v as WordWrapMode
+                      setEditorSettings(s => ({ ...s, wordWrapMode: mode, wordWrap: mode !== 'off' }))
+                    }}
+                    options={[
+                      { value: 'off', label: 'Off' },
+                      { value: 'on', label: 'On' },
+                      { value: 'wordWrapColumn', label: 'Wrap at Column' },
+                      { value: 'bounded', label: 'Bounded' },
+                    ]}
+                  />
+                </SettingRow>
+
+                {(editorSettings.wordWrapMode === 'wordWrapColumn' || editorSettings.wordWrapMode === 'bounded') && (
+                  <SettingRow label="Wrap Column" description="Column at which to wrap lines">
+                    <NumberStepper value={editorSettings.wordWrapColumn} onChange={(v) => setEditorSettings(s => ({ ...s, wordWrapColumn: v }))} min={40} max={200} step={10} />
+                  </SettingRow>
+                )}
+
                 <SettingRow label="Render Whitespace" description="Controls how whitespace is rendered">
                   <SelectDropdown
                     value={editorSettings.renderWhitespace}
@@ -948,24 +994,114 @@ if (a === b && c >= d) {
                   />
                 </SettingRow>
 
-                <SectionHeader title="Text" />
-
-                <SettingRow label="Word Wrap" description="Wrap long lines at the editor width">
-                  <Toggle checked={editorSettings.wordWrap} onChange={(v) => setEditorSettings(s => ({ ...s, wordWrap: v }))} />
+                <SettingRow label="Line Numbers" description="Controls line number display in the gutter">
+                  <SelectDropdown
+                    value={editorSettings.lineNumbersMode}
+                    onChange={(v) => {
+                      const mode = v as LineNumbersMode
+                      setEditorSettings(s => ({ ...s, lineNumbersMode: mode, lineNumbers: mode !== 'off' }))
+                    }}
+                    options={[
+                      { value: 'on', label: 'On' },
+                      { value: 'off', label: 'Off' },
+                      { value: 'relative', label: 'Relative' },
+                      { value: 'interval', label: 'Interval (every 10)' },
+                    ]}
+                  />
                 </SettingRow>
 
-                <SettingRow label="Line Numbers" description="Show line numbers in the gutter">
-                  <Toggle checked={editorSettings.lineNumbers} onChange={(v) => setEditorSettings(s => ({ ...s, lineNumbers: v }))} />
-                </SettingRow>
+                <SectionHeader title="Rulers (Column Guides)" />
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                  {(editorSettings.rulers || []).map((col) => (
+                    <span key={col} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      padding: '3px 8px', borderRadius: 4,
+                      background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                      fontSize: 11, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)',
+                    }}>
+                      {col}
+                      <button
+                        onClick={() => setEditorSettings(s => ({ ...s, rulers: s.rulers.filter(r => r !== col) }))}
+                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0, display: 'flex' }}
+                      >
+                        <X size={10} />
+                      </button>
+                    </span>
+                  ))}
+                  {(editorSettings.rulers || []).length === 0 && (
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>No rulers configured</span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                  <input
+                    value={newRuler}
+                    onChange={(e) => setNewRuler(e.target.value)}
+                    placeholder="Column (e.g. 80)"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const v = parseInt(newRuler, 10)
+                        if (!isNaN(v) && v > 0 && v <= 300 && !(editorSettings.rulers || []).includes(v)) {
+                          setEditorSettings(s => ({ ...s, rulers: [...(s.rulers || []), v].sort((a, b) => a - b) }))
+                          setNewRuler('')
+                        }
+                      }
+                    }}
+                    style={{
+                      width: 100, padding: '6px 10px',
+                      background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                      borderRadius: 6, outline: 'none', fontSize: 12, color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-mono, monospace)',
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      const v = parseInt(newRuler, 10)
+                      if (!isNaN(v) && v > 0 && v <= 300 && !(editorSettings.rulers || []).includes(v)) {
+                        setEditorSettings(s => ({ ...s, rulers: [...(s.rulers || []), v].sort((a, b) => a - b) }))
+                        setNewRuler('')
+                      }
+                    }}
+                    style={{
+                      padding: '6px 10px', borderRadius: 6, border: 'none',
+                      background: 'var(--accent-blue, #388bfd)', color: '#fff', cursor: 'pointer',
+                      fontSize: 12, display: 'flex', alignItems: 'center', gap: 4,
+                    }}
+                  >
+                    <Plus size={12} /> Add
+                  </button>
+                </div>
 
                 <SectionHeader title="Navigation" />
 
-                <SettingRow label="Minimap" description="Show code overview on the right side">
+                <SettingRow label="Minimap" description="Show code overview minimap">
                   <Toggle checked={editorSettings.minimap} onChange={(v) => setEditorSettings(s => ({ ...s, minimap: v }))} />
                 </SettingRow>
 
+                {editorSettings.minimap && (
+                  <>
+                    <SettingRow label="Minimap Side" description="Render minimap on the left or right">
+                      <SelectDropdown
+                        value={editorSettings.minimapSide}
+                        onChange={(v) => setEditorSettings(s => ({ ...s, minimapSide: v as MinimapSide }))}
+                        options={[
+                          { value: 'right', label: 'Right' },
+                          { value: 'left', label: 'Left' },
+                        ]}
+                      />
+                    </SettingRow>
+
+                    <SettingRow label="Minimap Max Column" description="Limit the width of the minimap rendering">
+                      <NumberStepper value={editorSettings.minimapMaxColumn} onChange={(v) => setEditorSettings(s => ({ ...s, minimapMaxColumn: v }))} min={40} max={300} step={20} />
+                    </SettingRow>
+                  </>
+                )}
+
                 <SettingRow label="Sticky Scroll" description="Pin parent scopes at the top while scrolling">
                   <Toggle checked={editorSettings.stickyScroll} onChange={(v) => setEditorSettings(s => ({ ...s, stickyScroll: v }))} />
+                </SettingRow>
+
+                <SettingRow label="Smooth Scrolling" description="Animate scrolling in the editor">
+                  <Toggle checked={editorSettings.smoothScrolling} onChange={(v) => setEditorSettings(s => ({ ...s, smoothScrolling: v }))} />
                 </SettingRow>
 
                 <SettingRow label="Bracket Pair Colorization" description="Colorize matching bracket pairs">
@@ -974,50 +1110,132 @@ if (a === b && c >= d) {
 
                 <SectionHeader title="Save" />
 
-                <SettingRow label="Auto Save" description="Controls when files are automatically saved">
-                  <select
-                    value={editorSettings.autoSaveMode}
-                    onChange={(e) => {
-                      const mode = e.target.value as AutoSaveMode
-                      setEditorSettings(s => ({
-                        ...s,
-                        autoSaveMode: mode,
-                        autoSave: mode !== 'off',
-                      }))
-                    }}
-                    style={{
-                      padding: '4px 8px',
-                      background: 'var(--bg-primary)',
-                      border: '1px solid var(--border)',
-                      borderRadius: 6,
-                      outline: 'none',
-                      fontSize: 12,
-                      color: 'var(--text-primary)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <option value="off">Off</option>
-                    <option value="afterDelay">After Delay</option>
-                    <option value="onFocusChange">On Focus Change</option>
-                    <option value="onWindowChange">On Window Change</option>
-                  </select>
+                <SettingRow label="Format on Save" description="Automatically format the file when saving">
+                  <Toggle checked={editorSettings.formatOnSave} onChange={(v) => setEditorSettings(s => ({ ...s, formatOnSave: v }))} />
                 </SettingRow>
 
-                {editorSettings.autoSaveMode === 'afterDelay' && (
-                  <SettingRow label="Auto Save Delay" description="Delay in milliseconds before auto-saving">
+                <SettingRow label="Format on Paste" description="Automatically format pasted content">
+                  <Toggle checked={editorSettings.formatOnPaste} onChange={(v) => setEditorSettings(s => ({ ...s, formatOnPaste: v }))} />
+                </SettingRow>
+
+                <SettingRow label="Trim Trailing Whitespace" description="Remove trailing whitespace from lines when saving">
+                  <Toggle checked={editorSettings.trimTrailingWhitespace} onChange={(v) => setEditorSettings(s => ({ ...s, trimTrailingWhitespace: v }))} />
+                </SettingRow>
+
+                <SettingRow label="Insert Final Newline" description="Ensure files end with a newline when saving">
+                  <Toggle checked={editorSettings.insertFinalNewline} onChange={(v) => setEditorSettings(s => ({ ...s, insertFinalNewline: v }))} />
+                </SettingRow>
+              </div>
+            )}
+
+            {/* ---- AI / MODELS ---- */}
+            {activeCategory === 'ai' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <SectionHeader title="Active Provider" />
+
+                <SettingRow label="API Provider" description="Select the AI provider to use for chat and completions">
+                  <SelectDropdown
+                    value={aiSettings.activeProvider}
+                    onChange={(v) => setAiSettings(s => ({ ...s, activeProvider: v }))}
+                    options={providers.map(p => ({ value: p.key, label: p.label }))}
+                  />
+                </SettingRow>
+
+                <SettingRow label="Model" description="Select the model for the active provider">
+                  <SelectDropdown
+                    value={aiSettings.selectedModels[aiSettings.activeProvider] || ''}
+                    onChange={(v) => setAiSettings(s => ({ ...s, selectedModels: { ...s.selectedModels, [s.activeProvider]: v } }))}
+                    options={AI_MODELS[aiSettings.activeProvider] || [{ value: 'custom', label: 'Custom' }]}
+                  />
+                </SettingRow>
+
+                {aiSettings.activeProvider === 'custom' && (
+                  <>
+                    <SettingRow label="Custom Model Name" description="Name identifier for your custom model">
+                      <input
+                        value={aiSettings.customModelName}
+                        onChange={(e) => setAiSettings(s => ({ ...s, customModelName: e.target.value }))}
+                        placeholder="my-model-v1"
+                        style={{
+                          width: 160, padding: '5px 10px',
+                          background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                          borderRadius: 6, outline: 'none', fontSize: 12, color: 'var(--text-primary)',
+                          fontFamily: 'var(--font-mono, monospace)',
+                        }}
+                      />
+                    </SettingRow>
+                    <SettingRow label="Endpoint URL" description="Base URL for the custom API endpoint">
+                      <input
+                        value={aiSettings.customEndpointUrl}
+                        onChange={(e) => setAiSettings(s => ({ ...s, customEndpointUrl: e.target.value }))}
+                        placeholder="https://api.example.com/v1"
+                        style={{
+                          width: 200, padding: '5px 10px',
+                          background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                          borderRadius: 6, outline: 'none', fontSize: 12, color: 'var(--text-primary)',
+                          fontFamily: 'var(--font-mono, monospace)',
+                        }}
+                      />
+                    </SettingRow>
+                  </>
+                )}
+
+                <SectionHeader title="Model Parameters" />
+
+                <SettingRow label="Temperature" description="Sampling temperature (0 = deterministic, 2 = creative)">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="range" min={0} max={2} step={0.1}
+                      value={aiSettings.temperature}
+                      onChange={(e) => setAiSettings(s => ({ ...s, temperature: parseFloat(e.target.value) }))}
+                      style={{ width: 90, accentColor: 'var(--accent-blue, #388bfd)' }}
+                    />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', minWidth: 28, textAlign: 'center' }}>
+                      {aiSettings.temperature.toFixed(1)}
+                    </span>
+                  </div>
+                </SettingRow>
+
+                <SettingRow label="Max Tokens" description="Maximum number of tokens in the AI response">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="number"
+                      value={aiSettings.maxTokens}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value, 10)
+                        if (!isNaN(v) && v >= 256 && v <= 128000) setAiSettings(s => ({ ...s, maxTokens: v }))
+                      }}
+                      style={{
+                        width: 80, padding: '4px 8px',
+                        background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                        borderRadius: 6, outline: 'none', fontSize: 12, color: 'var(--text-primary)',
+                        textAlign: 'center',
+                      }}
+                    />
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>tokens</span>
+                  </div>
+                </SettingRow>
+
+                <SectionHeader title="Inline Completions" />
+
+                <SettingRow label="Ghost Text Completions" description="Show AI-powered inline code suggestions as you type">
+                  <Toggle checked={aiSettings.ghostTextEnabled} onChange={(v) => setAiSettings(s => ({ ...s, ghostTextEnabled: v }))} />
+                </SettingRow>
+
+                {aiSettings.ghostTextEnabled && (
+                  <SettingRow label="Completion Delay" description="Delay in ms before showing inline suggestions">
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <input
                         type="number"
-                        value={editorSettings.autoSaveDelay}
+                        value={aiSettings.completionDelay}
                         onChange={(e) => {
                           const v = parseInt(e.target.value, 10)
-                          if (!isNaN(v) && v >= 200) setEditorSettings(s => ({ ...s, autoSaveDelay: v }))
+                          if (!isNaN(v) && v >= 50 && v <= 3000) setAiSettings(s => ({ ...s, completionDelay: v }))
                         }}
                         style={{
                           width: 70, padding: '4px 8px',
                           background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                          borderRadius: 6, outline: 'none',
-                          fontSize: 12, color: 'var(--text-primary)',
+                          borderRadius: 6, outline: 'none', fontSize: 12, color: 'var(--text-primary)',
                           textAlign: 'center',
                         }}
                       />
@@ -1026,26 +1244,9 @@ if (a === b && c >= d) {
                   </SettingRow>
                 )}
 
-                <SettingRow label="Format on Save" description="Automatically format the file when saving">
-                  <Toggle checked={editorSettings.formatOnSave} onChange={(v) => setEditorSettings(s => ({ ...s, formatOnSave: v }))} />
-                </SettingRow>
-
-                <SettingRow label="Trim Trailing Whitespace" description="Remove trailing whitespace from lines when saving">
-                  <Toggle checked={editorSettings.trimTrailingWhitespace ?? true} onChange={(v) => setEditorSettings(s => ({ ...s, trimTrailingWhitespace: v }))} />
-                </SettingRow>
-
-                <SettingRow label="Insert Final Newline" description="Ensure files end with a newline when saving">
-                  <Toggle checked={editorSettings.insertFinalNewline ?? true} onChange={(v) => setEditorSettings(s => ({ ...s, insertFinalNewline: v }))} />
-                </SettingRow>
-              </div>
-            )}
-
-            {/* ---- AI / MODELS ---- */}
-            {activeCategory === 'ai' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <SectionHeader title="API Keys" />
                 <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 8 }}>
-                  Enter your API keys to enable AI responses. Keys are stored locally.
+                  Enter your API keys to enable AI responses. Keys are stored locally and never sent to Orion servers.
                 </p>
                 {providers.map(({ key, label, placeholder, color }) => (
                   <div key={key} style={{ marginBottom: 12 }}>
@@ -1069,7 +1270,7 @@ if (a === b && c >= d) {
                     }}>
                       <input
                         type={showKey[key] ? 'text' : 'password'}
-                        value={keys[key]}
+                        value={keys[key] || ''}
                         onChange={(e) => setKeys({ ...keys, [key]: e.target.value })}
                         placeholder={placeholder}
                         style={{
@@ -1097,10 +1298,28 @@ if (a === b && c >= d) {
             {/* ---- TERMINAL ---- */}
             {activeCategory === 'terminal' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                <SectionHeader title="Shell" />
+
+                <SettingRow label="Default Shell" description="Shell program to launch in new terminal instances">
+                  <SelectDropdown
+                    value={terminalSettings.defaultShell}
+                    onChange={(v) => setTerminalSettings(s => ({ ...s, defaultShell: v }))}
+                    options={TERMINAL_SHELLS}
+                  />
+                </SettingRow>
+
                 <SectionHeader title="Terminal Appearance" />
 
+                <SettingRow label="Font Family" description="Font face used in the terminal">
+                  <SelectDropdown
+                    value={terminalSettings.fontFamily}
+                    onChange={(v) => setTerminalSettings(s => ({ ...s, fontFamily: v }))}
+                    options={TERMINAL_FONTS.map(f => ({ value: f, label: f }))}
+                  />
+                </SettingRow>
+
                 <SettingRow label="Font Size" description="Terminal font size in pixels">
-                  <NumberStepper value={terminalSettings.fontSize} onChange={(v) => setTerminalSettings(s => ({ ...s, fontSize: v }))} min={10} max={24} />
+                  <NumberStepper value={terminalSettings.fontSize} onChange={(v) => setTerminalSettings(s => ({ ...s, fontSize: v }))} min={8} max={28} />
                 </SettingRow>
 
                 <SettingRow label="Cursor Style" description="Shape of the terminal cursor">
