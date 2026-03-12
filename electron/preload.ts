@@ -13,6 +13,9 @@ const api = {
   createDir: (dirPath: string) => ipcRenderer.invoke(IPC.FS_CREATE_DIR, dirPath),
   searchFiles: (rootPath: string, query: string, options?: { caseSensitive?: boolean; regex?: boolean }) =>
     ipcRenderer.invoke(IPC.FS_SEARCH, rootPath, query, options),
+  trashItem: (filePath: string) => ipcRenderer.invoke(IPC.FS_TRASH, filePath),
+  copyPathToClipboard: (filePath: string) => ipcRenderer.invoke(IPC.FS_COPY_PATH, filePath),
+  duplicateFile: (filePath: string) => ipcRenderer.invoke(IPC.FS_DUPLICATE, filePath),
   watchStart: (dirPath: string) => ipcRenderer.send(IPC.FS_WATCH_START, dirPath),
   watchStop: () => ipcRenderer.send(IPC.FS_WATCH_STOP),
   onFsChange: (callback: (event: string, filePath: string) => void) => {

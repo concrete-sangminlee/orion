@@ -12,6 +12,9 @@ export const IPC = {
   FS_CREATE_FILE: 'fs:create-file',
   FS_CREATE_DIR: 'fs:create-dir',
   FS_SEARCH: 'fs:search',
+  FS_DUPLICATE: 'fs:duplicate',
+  FS_COPY_PATH: 'fs:copy-path',
+  FS_TRASH: 'fs:trash',
 
   // Git
   GIT_STATUS: 'git:status',

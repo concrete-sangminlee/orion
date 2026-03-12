@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { Search, FileText, Settings, Terminal, FolderOpen, MessageSquare, Zap, ChevronRight, Columns, Eye, EyeOff, Type, Minus, Plus, GitBranch, Paintbrush, WrapText, Map, PanelLeft, PanelBottom, X, Save, RotateCcw, RotateCw, Scissors, Copy, Clipboard, Keyboard, MousePointer, CaseSensitive, ArrowUpDown, ArrowDownUp, Merge, MessageSquareCode, Braces, ChevronsDownUp, ChevronsUpDown, Palette } from 'lucide-react'
+import { Search, FileText, Settings, Terminal, FolderOpen, MessageSquare, Zap, ChevronRight, Columns, Eye, EyeOff, Type, Minus, Plus, GitBranch, Paintbrush, WrapText, Map, PanelLeft, PanelBottom, X, Save, RotateCcw, RotateCw, Scissors, Copy, Clipboard, Keyboard, MousePointer, CaseSensitive, ArrowUpDown, ArrowDownUp, Merge, MessageSquareCode, Braces, ChevronsDownUp, ChevronsUpDown, Palette, Code } from 'lucide-react'
 import { useEditorStore } from '@/store/editor'
 import { useFileStore } from '@/store/files'
 import { useThemeStore } from '@/store/theme'
@@ -181,6 +181,7 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
     if (open) {
       setQuery('')
       setSelectedIndex(0)
+      setThemeMode(false)
       setTimeout(() => inputRef.current?.focus(), 50)
     }
   }, [open])
@@ -240,16 +241,18 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
           padding: '10px 14px',
           borderBottom: '1px solid var(--border)',
         }}>
-          {isFileMode
-            ? <Search size={15} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-            : <ChevronRight size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+          {themeMode
+            ? <Palette size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+            : isFileMode
+              ? <Search size={15} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+              : <ChevronRight size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} />
           }
           <input
             ref={inputRef}
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isFileMode ? 'Search files by name (type > for commands)' : 'Type a command...'}
+            placeholder={themeMode ? 'Select a color theme...' : isFileMode ? 'Search files by name (type > for commands)' : 'Type a command...'}
             style={{
               flex: 1, background: 'transparent',
               border: 'none', outline: 'none',

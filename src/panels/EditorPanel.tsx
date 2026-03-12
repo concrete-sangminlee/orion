@@ -1,18 +1,22 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import Editor, { type Monaco } from '@monaco-editor/react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
 import { useProblemsStore } from '@/store/problems'
+import { useThemeStore } from '@/store/theme'
+import { useSnippetStore } from '@/store/snippets'
 import TabBar from '@/components/TabBar'
 import InlineEdit from '@/components/InlineEdit'
+import InlineDiff from '@/components/InlineDiff'
 import {
   Zap, FolderOpen, MessageSquare, Terminal, Command,
-  ChevronRight, FilePlus, Loader2, Keyboard, Clock,
+  ChevronRight, ChevronDown, FilePlus, Loader2, Keyboard, Clock,
   Search, Settings, GitBranch, Columns, Sparkles,
   FileText, ZoomIn, ZoomOut, Maximize2, Minimize2,
-  Image as ImageIcon,
+  Image as ImageIcon, Folder, File, Hash, Box, Braces, Type as TypeIcon,
 } from 'lucide-react'
+import { useEditorStore as useBreadcrumbEditorStore } from '@/store/editor'
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'])
 
@@ -40,6 +44,7 @@ function formatFileSize(bytes: number): string {
 export default function EditorPanel() {
   const { openFiles, activeFilePath, updateFileContent, markSaved, closeFile, closeAllFiles } = useEditorStore()
   const addToast = useToastStore((s) => s.addToast)
+  const getSnippetsForLanguage = useSnippetStore((s) => s.getSnippetsForLanguage)
   const activeFile = openFiles.find((f) => f.path === activeFilePath)
   const [saving, setSaving] = useState(false)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null)
@@ -56,12 +61,34 @@ export default function EditorPanel() {
   const [inlineEditText, setInlineEditText] = useState('')
   const [inlineProcessing, setInlineProcessing] = useState(false)
 
+  // Inline diff preview state (shown after AI responds to Ctrl+K)
+  const [diffVisible, setDiffVisible] = useState(false)
+  const [diffOriginalCode, setDiffOriginalCode] = useState('')
+  const [diffSuggestedCode, setDiffSuggestedCode] = useState('')
+  const [diffPos, setDiffPos] = useState({ top: 60, left: 100 })
+  const diffSelectionRef = useRef<MonacoEditor.ISelection | null>(null)
+
   // Split editor state
   const [splitMode, setSplitMode] = useState<'single' | 'split'>('single')
   const [splitFilePath, setSplitFilePath] = useState<string | null>(null)
   const splitFile = splitFilePath ? openFiles.find((f) => f.path === splitFilePath) : null
 
   const scanFile = useProblemsStore((s) => s.scanFile)
+
+  // Current Monaco theme (synced from the theme store)
+  const currentMonacoTheme = useThemeStore((s) => s.activeTheme().monacoTheme)
+
+  // Listen for theme changes and update Monaco accordingly
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail?.monacoTheme && monacoRef.current) {
+        monacoRef.current.editor.setTheme(detail.monacoTheme)
+      }
+    }
+    window.addEventListener('orion:theme-changed', handler)
+    return () => window.removeEventListener('orion:theme-changed', handler)
+  }, [])
 
   // Scan the active file for problems when it changes
   useEffect(() => {
@@ -179,6 +206,157 @@ export default function EditorPanel() {
       },
     })
 
+    // ── Right-click context menu AI actions ──────────────────
+    editor.addAction({
+      id: 'orion-ai-explain',
+      label: 'AI: Explain Selection',
+      contextMenuGroupId: '9_ai',
+      contextMenuOrder: 1,
+      precondition: 'editorHasSelection',
+      run: (ed) => {
+        const sel = ed.getSelection()
+        const mdl = ed.getModel()
+        if (!sel || !mdl) return
+        const text = mdl.getValueInRange(sel)
+        if (!text.trim()) return
+        window.dispatchEvent(
+          new CustomEvent('orion:ai-context-action', {
+            detail: {
+              action: 'explain',
+              selectedText: text,
+              filePath: activeFilePath,
+              language: activeFile?.language || '',
+            },
+          }),
+        )
+      },
+    })
+
+    editor.addAction({
+      id: 'orion-ai-refactor',
+      label: 'AI: Refactor Selection',
+      contextMenuGroupId: '9_ai',
+      contextMenuOrder: 2,
+      precondition: 'editorHasSelection',
+      run: (ed) => {
+        const sel = ed.getSelection()
+        const mdl = ed.getModel()
+        if (!sel || !mdl) return
+        const text = mdl.getValueInRange(sel)
+        if (!text.trim()) return
+
+        // Store selection for diff preview
+        diffSelectionRef.current = sel
+
+        // Position diff near selection
+        const vPos = ed.getScrolledVisiblePosition(sel.getStartPosition())
+        const domNode = ed.getDomNode()
+        if (vPos && domNode) {
+          const rect = domNode.getBoundingClientRect()
+          setDiffPos({
+            top: vPos.top + rect.top - 10,
+            left: Math.max(vPos.left + rect.left, rect.left + 40),
+          })
+        } else {
+          setDiffPos({ top: 100, left: 100 })
+        }
+
+        window.dispatchEvent(
+          new CustomEvent('orion:ai-context-action', {
+            detail: {
+              action: 'refactor',
+              selectedText: text,
+              filePath: activeFilePath,
+              language: activeFile?.language || '',
+              fullContext: mdl.getValue().substring(0, 2000),
+            },
+          }),
+        )
+      },
+    })
+
+    editor.addAction({
+      id: 'orion-ai-add-comments',
+      label: 'AI: Add Comments',
+      contextMenuGroupId: '9_ai',
+      contextMenuOrder: 3,
+      precondition: 'editorHasSelection',
+      run: (ed) => {
+        const sel = ed.getSelection()
+        const mdl = ed.getModel()
+        if (!sel || !mdl) return
+        const text = mdl.getValueInRange(sel)
+        if (!text.trim()) return
+
+        diffSelectionRef.current = sel
+
+        const vPos = ed.getScrolledVisiblePosition(sel.getStartPosition())
+        const domNode = ed.getDomNode()
+        if (vPos && domNode) {
+          const rect = domNode.getBoundingClientRect()
+          setDiffPos({
+            top: vPos.top + rect.top - 10,
+            left: Math.max(vPos.left + rect.left, rect.left + 40),
+          })
+        } else {
+          setDiffPos({ top: 100, left: 100 })
+        }
+
+        window.dispatchEvent(
+          new CustomEvent('orion:ai-context-action', {
+            detail: {
+              action: 'add-comments',
+              selectedText: text,
+              filePath: activeFilePath,
+              language: activeFile?.language || '',
+              fullContext: mdl.getValue().substring(0, 2000),
+            },
+          }),
+        )
+      },
+    })
+
+    editor.addAction({
+      id: 'orion-ai-fix-issues',
+      label: 'AI: Fix Issues',
+      contextMenuGroupId: '9_ai',
+      contextMenuOrder: 4,
+      precondition: 'editorHasSelection',
+      run: (ed) => {
+        const sel = ed.getSelection()
+        const mdl = ed.getModel()
+        if (!sel || !mdl) return
+        const text = mdl.getValueInRange(sel)
+        if (!text.trim()) return
+
+        diffSelectionRef.current = sel
+
+        const vPos = ed.getScrolledVisiblePosition(sel.getStartPosition())
+        const domNode = ed.getDomNode()
+        if (vPos && domNode) {
+          const rect = domNode.getBoundingClientRect()
+          setDiffPos({
+            top: vPos.top + rect.top - 10,
+            left: Math.max(vPos.left + rect.left, rect.left + 40),
+          })
+        } else {
+          setDiffPos({ top: 100, left: 100 })
+        }
+
+        window.dispatchEvent(
+          new CustomEvent('orion:ai-context-action', {
+            detail: {
+              action: 'fix-issues',
+              selectedText: text,
+              filePath: activeFilePath,
+              language: activeFile?.language || '',
+              fullContext: mdl.getValue().substring(0, 2000),
+            },
+          }),
+        )
+      },
+    })
+
     // Dispatch cursor position changes to status bar
     editor.onDidChangeCursorPosition((e) => {
       window.dispatchEvent(new CustomEvent('orion:cursor-change', {
@@ -199,6 +377,35 @@ export default function EditorPanel() {
         window.dispatchEvent(new CustomEvent('orion:selection-change', { detail: null }))
       }
     })
+
+    // ── Register snippet completion providers ──────────────────
+    const snippetLanguages = ['typescript', 'javascript', 'typescriptreact', 'javascriptreact', 'python']
+    for (const lang of snippetLanguages) {
+      monaco.languages.registerCompletionItemProvider(lang, {
+        triggerCharacters: [],
+        provideCompletionItems: (model, position) => {
+          const word = model.getWordUntilPosition(position)
+          const range = {
+            startLineNumber: position.lineNumber,
+            endLineNumber: position.lineNumber,
+            startColumn: word.startColumn,
+            endColumn: word.endColumn,
+          }
+          const langSnippets = getSnippetsForLanguage(lang)
+          const suggestions = langSnippets.map((snippet) => ({
+            label: snippet.prefix,
+            kind: monaco.languages.CompletionItemKind.Snippet,
+            documentation: snippet.description,
+            insertText: snippet.body,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            detail: `Snippet: ${snippet.description}`,
+            range,
+            sortText: `!${snippet.prefix}`,
+          }))
+          return { suggestions }
+        },
+      })
+    }
   }
 
   const handleInlineEditSubmit = async (instruction: string) => {
@@ -497,7 +704,7 @@ export default function EditorPanel() {
       {/* Breadcrumbs */}
       {activeFile && (
         <div className="shrink-0 flex items-center" style={{ borderBottom: '1px solid var(--border)' }}>
-          <Breadcrumbs path={activeFile.path} saving={saving} />
+          <Breadcrumbs path={activeFile.path} saving={saving} content={activeFile.content} language={activeFile.language} />
           {/* Split editor toggle */}
           <button
             onClick={handleSplitToggle}
@@ -531,7 +738,7 @@ export default function EditorPanel() {
               ) : (
                 <>
                   <Editor
-                    theme="vs-dark"
+                    theme={currentMonacoTheme}
                     language={activeFile.language}
                     value={activeFile.content}
                     onChange={handleChange}
@@ -595,7 +802,7 @@ export default function EditorPanel() {
                     </select>
                   </div>
                   <Editor
-                    theme="vs-dark"
+                    theme={currentMonacoTheme}
                     language={splitFile.language}
                     value={splitFile.content}
                     onChange={(val) => {

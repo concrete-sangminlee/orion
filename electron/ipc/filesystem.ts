@@ -1,4 +1,5 @@
 import type { IpcMain, BrowserWindow } from 'electron'
+import { shell, clipboard } from 'electron'
 import fs from 'fs/promises'
 import path from 'path'
 import { IPC } from '../../shared/ipc-channels'
@@ -113,6 +114,61 @@ export function registerFilesystemHandlers(ipcMain: IpcMain, getWindow: () => Br
     return results
   })
 
+  // Trash – attempt shell.trashItem first, fall back to rm
+  ipcMain.handle(IPC.FS_TRASH, async (_event, itemPath: string) => {
+    try {
+      await shell.trashItem(itemPath)
+      return { success: true }
+    } catch {
+      try {
+        await fs.rm(itemPath, { recursive: true })
+        return { success: true }
+      } catch (err: any) {
+        return { success: false, error: err.message }
+      }
+    }
+  })
+
+  // Copy path to clipboard
+  ipcMain.handle(IPC.FS_COPY_PATH, async (_event, itemPath: string) => {
+    try {
+      clipboard.writeText(itemPath)
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  })
+
+  // Duplicate a file – creates "<name> (copy).<ext>" next to original
+  ipcMain.handle(IPC.FS_DUPLICATE, async (_event, srcPath: string) => {
+    try {
+      const dir = path.dirname(srcPath)
+      const ext = path.extname(srcPath)
+      const base = path.basename(srcPath, ext)
+      let copyPath = path.join(dir, `${base} (copy)${ext}`)
+      // Avoid collisions
+      let counter = 2
+      while (true) {
+        try {
+          await fs.access(copyPath)
+          copyPath = path.join(dir, `${base} (copy ${counter})${ext}`)
+          counter++
+        } catch {
+          break // path doesn't exist, safe to use
+        }
+      }
+      const stat = await fs.stat(srcPath)
+      if (stat.isDirectory()) {
+        await copyDir(srcPath, copyPath)
+      } else {
+        await fs.copyFile(srcPath, copyPath)
+      }
+      return { success: true, newPath: copyPath }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  })
+
   ipcMain.on(IPC.FS_WATCH_START, (_event, dirPath: string) => {
     startWatching(dirPath, getWindow)
   })
@@ -120,4 +176,19 @@ export function registerFilesystemHandlers(ipcMain: IpcMain, getWindow: () => Br
   ipcMain.on(IPC.FS_WATCH_STOP, () => {
     stopWatching()
   })
+}
+
+/** Recursively copy a directory */
+async function copyDir(src: string, dest: string) {
+  await fs.mkdir(dest, { recursive: true })
+  const entries = await fs.readdir(src, { withFileTypes: true })
+  for (const entry of entries) {
+    const srcChild = path.join(src, entry.name)
+    const destChild = path.join(dest, entry.name)
+    if (entry.isDirectory()) {
+      await copyDir(srcChild, destChild)
+    } else {
+      await fs.copyFile(srcChild, destChild)
+    }
+  }
 }
