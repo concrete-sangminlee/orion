@@ -1,7 +1,8 @@
-import { useState, useCallback } from 'react'
-import { Search, ChevronRight, ChevronDown, FileText, Loader2 } from 'lucide-react'
+import { useState, useCallback, useRef, useEffect } from 'react'
+import { Search, ChevronRight, ChevronDown, FileText, Loader2, Replace, X, ChevronsUpDown, ChevronsDownUp } from 'lucide-react'
 import { useEditorStore } from '@/store/editor'
 import { useFileStore } from '@/store/files'
+import { useToastStore } from '@/store/toast'
 
 interface SearchMatch {
   file: string
@@ -22,8 +23,20 @@ export default function SearchPanel() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [caseSensitive, setCaseSensitive] = useState(false)
   const [useRegex, setUseRegex] = useState(false)
+  const [wholeWord, setWholeWord] = useState(false)
+  const [replaceQuery, setReplaceQuery] = useState('')
+  const [showReplace, setShowReplace] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
   const { openFile } = useEditorStore()
   const rootPath = useFileStore((s) => s.rootPath)
+  const addToast = useToastStore((s) => s.addToast)
+
+  // Focus input on Ctrl+Shift+F
+  useEffect(() => {
+    const handler = () => inputRef.current?.focus()
+    window.addEventListener('orion:show-search', handler)
+    return () => window.removeEventListener('orion:show-search', handler)
+  }, [])
 
   const handleSearch = useCallback(async () => {
     if (!query.trim() || !rootPath) return
@@ -78,6 +91,33 @@ export default function SearchPanel() {
 
   const totalMatches = results.reduce((sum, r) => sum + r.matches.length, 0)
 
+  const collapseAll = () => setExpanded(new Set())
+  const expandAll = () => setExpanded(new Set(results.map(r => r.filePath)))
+  const clearResults = () => { setResults([]); setQuery('') }
+
+  // Highlight matching text in search results
+  const highlightMatch = (text: string) => {
+    if (!query.trim()) return text
+    try {
+      let pattern: string
+      if (useRegex) {
+        pattern = query
+      } else {
+        pattern = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      }
+      if (wholeWord) pattern = `\\b${pattern}\\b`
+      const regex = new RegExp(`(${pattern})`, caseSensitive ? 'g' : 'gi')
+      const parts = text.split(regex)
+      return parts.map((part, i) =>
+        regex.test(part) ? (
+          <span key={i} style={{ background: 'rgba(88,166,255,0.25)', color: 'var(--text-primary)', borderRadius: 2, padding: '0 1px' }}>{part}</span>
+        ) : part
+      )
+    } catch {
+      return text
+    }
+  }
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div className="panel-header">
@@ -86,68 +126,67 @@ export default function SearchPanel() {
       </div>
 
       <div style={{ padding: '8px 12px' }}>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            background: 'var(--bg-primary)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-md)',
-            overflow: 'hidden',
-          }}
-        >
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Search in files..."
+        <div style={{ display: 'flex', gap: 4 }}>
+          {/* Toggle replace */}
+          <button
+            onClick={() => setShowReplace(!showReplace)}
+            title={showReplace ? 'Hide Replace' : 'Show Replace'}
             style={{
-              flex: 1,
-              padding: '6px 10px',
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              fontSize: 12,
-              color: 'var(--text-primary)',
+              width: 20, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderRadius: 3, color: showReplace ? 'var(--accent)' : 'var(--text-muted)',
+              background: 'transparent', border: 'none', cursor: 'pointer', flexShrink: 0,
+              transition: 'color 0.1s',
             }}
-          />
-          <div style={{ display: 'flex', gap: 2, padding: '0 4px' }}>
-            <button
-              onClick={() => setCaseSensitive(!caseSensitive)}
-              title="Match Case"
+          >
+            <ChevronRight size={12} style={{ transform: showReplace ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
+          </button>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {/* Search input */}
+            <div
               style={{
-                padding: '2px 4px',
-                borderRadius: 3,
-                fontSize: 11,
-                fontWeight: 700,
-                fontFamily: 'var(--font-mono)',
-                color: caseSensitive ? 'var(--accent)' : 'var(--text-muted)',
-                background: caseSensitive ? 'rgba(88,166,255,0.1)' : 'transparent',
+                display: 'flex', alignItems: 'center',
+                background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)', overflow: 'hidden',
               }}
             >
-              Aa
-            </button>
-            <button
-              onClick={() => setUseRegex(!useRegex)}
-              title="Use Regex"
-              style={{
-                padding: '2px 4px',
-                borderRadius: 3,
-                fontSize: 11,
-                fontWeight: 700,
-                fontFamily: 'var(--font-mono)',
-                color: useRegex ? 'var(--accent)' : 'var(--text-muted)',
-                background: useRegex ? 'rgba(88,166,255,0.1)' : 'transparent',
-              }}
-            >
-              .*
-            </button>
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Search in files..."
+                style={{ flex: 1, padding: '6px 10px', background: 'transparent', border: 'none', outline: 'none', fontSize: 12, color: 'var(--text-primary)' }}
+              />
+              <div style={{ display: 'flex', gap: 1, padding: '0 4px' }}>
+                <button onClick={() => setCaseSensitive(!caseSensitive)} title="Match Case (Alt+C)"
+                  style={{ padding: '2px 4px', borderRadius: 3, fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-mono)', color: caseSensitive ? 'var(--accent)' : 'var(--text-muted)', background: caseSensitive ? 'rgba(88,166,255,0.1)' : 'transparent', border: 'none', cursor: 'pointer' }}>Aa</button>
+                <button onClick={() => setWholeWord(!wholeWord)} title="Match Whole Word (Alt+W)"
+                  style={{ padding: '2px 4px', borderRadius: 3, fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-mono)', color: wholeWord ? 'var(--accent)' : 'var(--text-muted)', background: wholeWord ? 'rgba(88,166,255,0.1)' : 'transparent', border: 'none', cursor: 'pointer' }}>ab</button>
+                <button onClick={() => setUseRegex(!useRegex)} title="Use Regular Expression (Alt+R)"
+                  style={{ padding: '2px 4px', borderRadius: 3, fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-mono)', color: useRegex ? 'var(--accent)' : 'var(--text-muted)', background: useRegex ? 'rgba(88,166,255,0.1)' : 'transparent', border: 'none', cursor: 'pointer' }}>.*</button>
+              </div>
+            </div>
+            {/* Replace input */}
+            {showReplace && (
+              <div style={{ display: 'flex', alignItems: 'center', background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
+                <input
+                  value={replaceQuery}
+                  onChange={(e) => setReplaceQuery(e.target.value)}
+                  placeholder="Replace..."
+                  style={{ flex: 1, padding: '6px 10px', background: 'transparent', border: 'none', outline: 'none', fontSize: 12, color: 'var(--text-primary)' }}
+                />
+                <div style={{ display: 'flex', gap: 2, padding: '0 4px' }}>
+                  <button title="Replace All" onClick={() => addToast({ type: 'info', message: 'Replace All coming soon' })}
+                    style={{ padding: '2px 6px', borderRadius: 3, fontSize: 10, color: 'var(--text-muted)', background: 'transparent', border: 'none', cursor: 'pointer' }}>
+                    <Replace size={12} />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
         {!rootPath && (
-          <p style={{ fontSize: 11, color: 'var(--accent-orange)', marginTop: 6 }}>
-            Open a folder first to search
-          </p>
+          <p style={{ fontSize: 11, color: 'var(--accent-orange)', marginTop: 6 }}>Open a folder first to search</p>
         )}
       </div>
 
@@ -176,9 +215,19 @@ export default function SearchPanel() {
         )}
 
         {!searching && results.length > 0 && (
-          <div style={{ padding: '4px 12px 4px', color: 'var(--text-muted)', fontSize: 11 }}>
-            {totalMatches} result{totalMatches !== 1 ? 's' : ''} in {results.length} file
-            {results.length !== 1 ? 's' : ''}
+          <div style={{ padding: '4px 12px', color: 'var(--text-muted)', fontSize: 11, display: 'flex', alignItems: 'center' }}>
+            <span>{totalMatches} result{totalMatches !== 1 ? 's' : ''} in {results.length} file{results.length !== 1 ? 's' : ''}</span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 2 }}>
+              <button onClick={expandAll} title="Expand All" style={{ padding: 2, borderRadius: 3, color: 'var(--text-muted)', background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex' }}>
+                <ChevronsUpDown size={12} />
+              </button>
+              <button onClick={collapseAll} title="Collapse All" style={{ padding: 2, borderRadius: 3, color: 'var(--text-muted)', background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex' }}>
+                <ChevronsDownUp size={12} />
+              </button>
+              <button onClick={clearResults} title="Clear Results" style={{ padding: 2, borderRadius: 3, color: 'var(--text-muted)', background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex' }}>
+                <X size={12} />
+              </button>
+            </div>
           </div>
         )}
 
@@ -248,7 +297,7 @@ export default function SearchPanel() {
                   <span style={{ color: 'var(--text-muted)', marginRight: 8, fontSize: 10 }}>
                     {match.line}
                   </span>
-                  {match.text}
+                  {highlightMatch(match.text)}
                 </div>
               ))}
           </div>

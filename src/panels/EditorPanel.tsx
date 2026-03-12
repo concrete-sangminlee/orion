@@ -9,6 +9,7 @@ import {
   Zap, FolderOpen, MessageSquare, Terminal, Command,
   ChevronRight, FilePlus, Loader2, Keyboard, Clock,
   Search, Settings, GitBranch, Columns, Sparkles,
+  FileText,
 } from 'lucide-react'
 
 export default function EditorPanel() {
@@ -350,6 +351,11 @@ export default function EditorPanel() {
     <div className="h-full flex flex-col" style={{ background: 'var(--bg-primary)' }}>
       <TabBar />
 
+      {/* Separator between tab bar and breadcrumbs */}
+      {activeFile && (
+        <div style={{ height: 1, background: 'var(--border)', flexShrink: 0 }} />
+      )}
+
       {/* Breadcrumbs */}
       {activeFile && (
         <div className="shrink-0 flex items-center" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -471,37 +477,66 @@ export default function EditorPanel() {
 }
 
 function Breadcrumbs({ path, saving }: { path: string; saving: boolean }) {
-  const segments = path.replace(/\\/g, '/').split('/').filter(Boolean)
+  const normalizedPath = path.replace(/\\/g, '/')
+  const segments = normalizedPath.split('/').filter(Boolean)
   const fileName = segments.pop() || ''
   const dirSegments = segments.slice(-3)
+  // How many segments were truncated (for building the full directory path on click)
+  const truncatedCount = Math.max(0, segments.length - 3)
+
+  const handleDirClick = (segmentIndex: number) => {
+    // Build the full directory path up to the clicked segment.
+    // segmentIndex is relative to dirSegments; map it back to the full segments array.
+    const fullIndex = truncatedCount + segmentIndex
+    const dirPath = segments.slice(0, fullIndex + 1).join('/')
+    // Prefix with / on Unix-style paths (the original path starts with /)
+    const prefix = normalizedPath.startsWith('/') ? '/' : ''
+    window.dispatchEvent(
+      new CustomEvent('orion:show-explorer', { detail: { directory: prefix + dirPath } })
+    )
+  }
 
   return (
     <div
-      className="flex-1 flex items-center gap-0.5 px-3 overflow-x-auto"
+      className="flex-1 flex items-center overflow-x-auto"
       style={{
-        height: 26,
+        height: 24,
         background: 'var(--bg-primary)',
-        fontSize: 11,
+        fontSize: 12,
         color: 'var(--text-muted)',
+        padding: '0 12px',
+        gap: 2,
       }}
     >
       {segments.length > 3 && (
         <>
-          <span style={{ opacity: 0.5 }}>...</span>
-          <ChevronRight size={10} style={{ opacity: 0.4, flexShrink: 0 }} />
+          <span style={{ opacity: 0.5, flexShrink: 0 }}>...</span>
+          <ChevronRight size={10} style={{ opacity: 0.4, flexShrink: 0, margin: '0 1px' }} />
         </>
       )}
       {dirSegments.map((seg, i) => (
-        <span key={i} className="flex items-center gap-0.5" style={{ flexShrink: 0 }}>
+        <span key={i} className="flex items-center" style={{ flexShrink: 0, gap: 2 }}>
           <span
-            className="cursor-pointer"
-            style={{ color: 'var(--text-muted)', padding: '1px 2px', borderRadius: 3 }}
+            role="button"
+            tabIndex={0}
+            onClick={() => handleDirClick(i)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleDirClick(i) } }}
+            style={{
+              color: 'var(--text-muted)',
+              padding: '1px 3px',
+              borderRadius: 3,
+              cursor: 'pointer',
+              textDecoration: 'none',
+              transition: 'color 0.15s, text-decoration 0.15s, background 0.15s',
+            }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'var(--text-secondary)'
+              e.currentTarget.style.color = 'var(--accent)'
+              e.currentTarget.style.textDecoration = 'underline'
               e.currentTarget.style.background = 'rgba(255,255,255,0.05)'
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.color = 'var(--text-muted)'
+              e.currentTarget.style.textDecoration = 'none'
               e.currentTarget.style.background = 'transparent'
             }}
           >
@@ -510,6 +545,7 @@ function Breadcrumbs({ path, saving }: { path: string; saving: boolean }) {
           <ChevronRight size={10} style={{ opacity: 0.4, flexShrink: 0 }} />
         </span>
       ))}
+      {/* File name segment - not clickable */}
       <span style={{ color: 'var(--text-primary)', fontWeight: 500, flexShrink: 0 }}>
         {fileName}
       </span>
@@ -544,125 +580,255 @@ function EditorLoading() {
 }
 
 function WelcomeScreen() {
+  const { openFiles, setActiveFile } = useEditorStore()
+
+  const dispatch = (event: string) => {
+    window.dispatchEvent(new CustomEvent(event))
+  }
+
+  const quickActions = [
+    {
+      icon: FileText,
+      label: 'New File',
+      action: () => dispatch('orion:new-file'),
+    },
+    {
+      icon: FolderOpen,
+      label: 'Open Folder',
+      action: () => window.api?.openFolder(),
+    },
+    {
+      icon: Terminal,
+      label: 'Open Terminal',
+      action: () => dispatch('orion:toggle-terminal'),
+    },
+    {
+      icon: MessageSquare,
+      label: 'AI Chat',
+      action: () => dispatch('orion:toggle-chat'),
+    },
+  ]
+
+  const shortcuts = [
+    { keys: ['Ctrl', 'P'], description: 'Quick Open' },
+    { keys: ['Ctrl', 'Shift', 'P'], description: 'Command Palette' },
+    { keys: ['Ctrl', 'K'], description: 'AI Inline Edit' },
+    { keys: ['Ctrl', 'B'], description: 'Toggle Sidebar' },
+    { keys: ['Ctrl', '`'], description: 'Toggle Terminal' },
+    { keys: ['Ctrl', 'L'], description: 'AI Chat' },
+  ]
+
   return (
     <div
-      className="h-full flex flex-col items-center justify-center"
-      style={{ background: 'var(--bg-primary)', flex: 1 }}
+      style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'var(--bg-primary)',
+        overflow: 'auto',
+        animation: 'fade-in 0.4s ease-out',
+      }}
     >
-      <div className="flex flex-col items-center gap-10" style={{ marginTop: -60, maxWidth: 480 }}>
-        {/* Logo */}
-        <div style={{ position: 'relative' }}>
-          <div
-            style={{
-              width: 88,
-              height: 88,
-              borderRadius: 22,
-              background: 'linear-gradient(135deg, rgba(88,166,255,0.1) 0%, rgba(188,140,255,0.12) 50%, rgba(63,185,80,0.08) 100%)',
-              border: '1px solid rgba(255,255,255,0.06)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: '0 12px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04)',
-            }}
-          >
-            <Zap size={36} style={{ color: 'var(--accent)' }} />
-          </div>
-          <div
-            style={{
-              position: 'absolute',
-              bottom: -4,
-              right: -4,
-              width: 24,
-              height: 24,
-              borderRadius: 8,
-              background: 'rgba(63,185,80,0.1)',
-              border: '1px solid rgba(63,185,80,0.2)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <span
-              className="anim-pulse"
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: 'var(--accent-green)',
-                boxShadow: '0 0 8px rgba(63,185,80,0.4)',
-              }}
-            />
-          </div>
-        </div>
+      <div style={{ maxWidth: 500, width: '100%', padding: '40px 32px' }}>
 
-        <div className="text-center">
-          <h1 style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>
+        {/* Logo area */}
+        <div style={{ textAlign: 'center', marginBottom: 36 }}>
+          <h1
+            style={{
+              fontSize: 24,
+              fontWeight: 700,
+              letterSpacing: '-0.03em',
+              background: 'linear-gradient(135deg, var(--accent), var(--accent-purple))',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text',
+              lineHeight: 1.2,
+            }}
+          >
             Orion
           </h1>
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, letterSpacing: '0.02em', opacity: 0.7 }}>
+          <p style={{
+            fontSize: 12,
+            color: 'var(--text-muted)',
+            marginTop: 6,
+            letterSpacing: '0.02em',
+          }}>
             by Bebut
           </p>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6, letterSpacing: '0.01em' }}>
-            AI-Powered Code Editor
-          </p>
         </div>
 
-        <div style={{ width: '100%', maxWidth: 340 }}>
-          <h2 style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8, paddingLeft: 2 }}>
-            Start
+        {/* Quick actions grid */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 8,
+          marginBottom: 32,
+        }}>
+          {quickActions.map(({ icon: Icon, label, action }) => (
+            <button
+              key={label}
+              onClick={action}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '12px 14px',
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                cursor: 'pointer',
+                color: 'var(--text-secondary)',
+                fontSize: 12,
+                fontFamily: 'var(--font-sans)',
+                textAlign: 'left',
+                transition: 'transform 0.15s ease, background 0.15s ease, border-color 0.15s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--bg-hover)'
+                e.currentTarget.style.borderColor = 'var(--border-bright)'
+                e.currentTarget.style.transform = 'translateY(-1px)'
+                const iconEl = e.currentTarget.querySelector('.welcome-action-icon') as HTMLElement
+                if (iconEl) iconEl.style.color = 'var(--accent)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'var(--bg-secondary)'
+                e.currentTarget.style.borderColor = 'var(--border)'
+                e.currentTarget.style.transform = 'translateY(0)'
+                const iconEl = e.currentTarget.querySelector('.welcome-action-icon') as HTMLElement
+                if (iconEl) iconEl.style.color = 'var(--text-muted)'
+              }}
+            >
+              <Icon
+                size={16}
+                className="welcome-action-icon"
+                style={{
+                  color: 'var(--text-muted)',
+                  flexShrink: 0,
+                  transition: 'color 0.15s ease',
+                }}
+              />
+              <span style={{ fontWeight: 500 }}>{label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Keyboard shortcuts */}
+        <div style={{ marginBottom: 32 }}>
+          <h2 style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: 'var(--text-muted)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.08em',
+            marginBottom: 10,
+          }}>
+            Keyboard Shortcuts
           </h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {[
-              { Icon: FilePlus, label: 'New File', key: 'Ctrl+N' },
-              { Icon: FolderOpen, label: 'Open Folder', key: 'Ctrl+O' },
-            ].map(({ Icon, label, key }) => (
-              <WelcomeRow key={label} Icon={Icon} label={label} shortcut={key} />
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 0,
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            overflow: 'hidden',
+          }}>
+            {shortcuts.map(({ keys, description }, i) => (
+              <div
+                key={description}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '8px 14px',
+                  borderTop: i > 0 ? '1px solid var(--border)' : 'none',
+                }}
+              >
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {description}
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                  {keys.map((key, ki) => (
+                    <span key={ki} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <kbd className="kbd">{key}</kbd>
+                      {ki < keys.length - 1 && (
+                        <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>+</span>
+                      )}
+                    </span>
+                  ))}
+                </span>
+              </div>
             ))}
           </div>
         </div>
 
-        <div style={{ width: '100%', maxWidth: 340 }}>
-          <h2 style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8, paddingLeft: 2 }}>
-            <Keyboard size={11} style={{ display: 'inline', marginRight: 5, verticalAlign: 'middle', opacity: 0.6 }} />
-            Shortcuts
-          </h2>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
-            {[
-              { Icon: Sparkles, label: 'Inline Edit', key: 'Ctrl+K' },
-              { Icon: MessageSquare, label: 'AI Chat', key: 'Ctrl+L' },
-              { Icon: Terminal, label: 'Terminal', key: 'Ctrl+`' },
-              { Icon: Search, label: 'Search Files', key: 'Ctrl+P' },
-              { Icon: Command, label: 'Commands', key: 'Ctrl+Shift+P' },
-              { Icon: Settings, label: 'Settings', key: 'Ctrl+,' },
-              { Icon: GitBranch, label: 'Source Control', key: 'Ctrl+Shift+G' },
-              { Icon: Columns, label: 'Split Editor', key: 'Click icon' },
-            ].map(({ Icon, label, key }) => (
-              <WelcomeRow key={label} Icon={Icon} label={label} shortcut={key} compact />
-            ))}
+        {/* Recent files */}
+        {openFiles.length > 0 && (
+          <div>
+            <h2 style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: 'var(--text-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.08em',
+              marginBottom: 10,
+            }}>
+              Recent Files
+            </h2>
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 0,
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              overflow: 'hidden',
+            }}>
+              {openFiles.map((file, i) => {
+                const fileName = file.path.replace(/\\/g, '/').split('/').pop() || file.name
+                const dirPath = file.path.replace(/\\/g, '/').split('/').slice(-3, -1).join('/')
+                return (
+                  <button
+                    key={file.path}
+                    onClick={() => setActiveFile(file.path)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      padding: '8px 14px',
+                      background: 'transparent',
+                      border: 'none',
+                      borderTop: i > 0 ? '1px solid var(--border)' : 'none',
+                      cursor: 'pointer',
+                      color: 'var(--text-secondary)',
+                      fontSize: 12,
+                      fontFamily: 'var(--font-sans)',
+                      textAlign: 'left',
+                      width: '100%',
+                      transition: 'background 0.1s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'var(--bg-hover)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent'
+                    }}
+                  >
+                    <FileText size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                    <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{fileName}</span>
+                    {dirPath && (
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                        {dirPath}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
           </div>
-        </div>
+        )}
       </div>
-    </div>
-  )
-}
-
-function WelcomeRow({ Icon, label, shortcut, compact }: { Icon: typeof Zap; label: string; shortcut: string; compact?: boolean }) {
-  return (
-    <div
-      className="flex items-center gap-3 cursor-pointer transition-colors duration-100"
-      style={{ padding: compact ? '6px 10px' : '8px 14px', borderRadius: 8 }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.03)' }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-    >
-      <Icon size={compact ? 12 : 14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-      <span style={{ fontSize: compact ? 11 : 12, color: 'var(--text-secondary)', flex: 1 }}>{label}</span>
-      <kbd style={{
-        fontSize: compact ? 9 : 10, color: 'var(--text-muted)', background: 'var(--bg-secondary)',
-        border: '1px solid var(--border)', borderRadius: 4, padding: '2px 6px',
-        fontFamily: 'var(--font-mono, monospace)', lineHeight: 1.4,
-      }}>
-        {shortcut}
-      </kbd>
     </div>
   )
 }

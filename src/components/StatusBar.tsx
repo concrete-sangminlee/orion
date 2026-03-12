@@ -15,6 +15,7 @@ import {
   MessageSquare,
   Terminal,
   ArrowUpDown,
+  Bell,
 } from 'lucide-react'
 
 interface Props {
@@ -68,7 +69,11 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
   )
   const model = useChatStore((s) => s.selectedModel)
   const rootPath = useFileStore((s) => s.rootPath)
+  const logs = useAgentStore((s) => s.logs)
   const activeAgents = agents.filter((a) => a.status !== 'idle').length
+  const errorCount = logs.filter((l) => l.type === 'error').length
+  const warningCount = logs.filter((l) => l.type === 'action').length
+  const unreadNotifications = errorCount + activeAgents
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null)
   const [cursorPos, setCursorPos] = useState({ line: 1, column: 1 })
   const [selectionInfo, setSelectionInfo] = useState<{ chars: number; lines: number } | null>(null)
@@ -236,19 +241,34 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
             <span>{activeAgents} active</span>
           </StatusItem>
         )}
+
+        {/* Divider */}
+        <div className="status-divider" />
+
+        {/* Error & warning counters (always visible, like VS Code) */}
+        <StatusItem title={`${errorCount} error(s), ${warningCount} warning(s)`}>
+          <XCircle
+            size={10}
+            style={{ color: errorCount > 0 ? 'var(--accent-red, #f44747)' : 'var(--text-muted)' }}
+          />
+          <span style={{ color: errorCount > 0 ? 'var(--accent-red, #f44747)' : undefined }}>
+            {errorCount}
+          </span>
+          <AlertTriangle
+            size={10}
+            style={{
+              color: warningCount > 0 ? 'var(--accent-orange, #cca700)' : 'var(--text-muted)',
+              marginLeft: 4,
+            }}
+          />
+          <span style={{ color: warningCount > 0 ? 'var(--accent-orange, #cca700)' : undefined }}>
+            {warningCount}
+          </span>
+        </StatusItem>
       </div>
 
-      {/* CENTER SECTION */}
-      <div className="flex-1 flex items-center justify-center" style={{ height: '100%' }}>
-        <StatusItem>
-          <XCircle size={10} style={{ color: 'var(--text-muted)' }} />
-          <span>0</span>
-        </StatusItem>
-        <StatusItem>
-          <AlertTriangle size={10} style={{ color: 'var(--text-muted)' }} />
-          <span>0</span>
-        </StatusItem>
-      </div>
+      {/* SPACER pushes right section to the end */}
+      <div className="flex-1" />
 
       {/* RIGHT SECTION */}
       <div className="flex items-center" style={{ height: '100%' }}>
@@ -281,6 +301,42 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
           </>
         )}
 
+        {/* Divider before bell */}
+        <div className="status-divider" />
+
+        {/* Notification bell */}
+        <StatusItem
+          title={unreadNotifications > 0 ? `${unreadNotifications} notification(s)` : 'No notifications'}
+          onClick={() => window.dispatchEvent(new CustomEvent('orion:show-agents'))}
+        >
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <Bell size={11} style={{ color: unreadNotifications > 0 ? 'var(--accent, #58a6ff)' : 'var(--text-muted)' }} />
+            {unreadNotifications > 0 && (
+              <span
+                style={{
+                  position: 'absolute',
+                  top: -4,
+                  right: -6,
+                  background: 'var(--accent-red, #f44747)',
+                  color: '#fff',
+                  fontSize: 8,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                  minWidth: 12,
+                  height: 12,
+                  borderRadius: 6,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '0 3px',
+                }}
+              >
+                {unreadNotifications > 99 ? '99+' : unreadNotifications}
+              </span>
+            )}
+          </div>
+        </StatusItem>
+
         {/* Toggle buttons */}
         <StatusItem onClick={onToggleTerminal} title="Toggle Terminal (Ctrl+`)">
           <Terminal size={11} />
@@ -294,6 +350,20 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
           <Zap size={9} />
           <span>{model}</span>
         </StatusItem>
+
+        {/* Divider */}
+        <div className="status-divider" />
+
+        {/* Feedback button */}
+        <StatusItem
+          title="Send feedback"
+          onClick={() => window.open('https://github.com/orion-editor/orion/issues', '_blank')}
+        >
+          <span style={{ fontSize: 10 }}>Feedback</span>
+        </StatusItem>
+
+        {/* Divider */}
+        <div className="status-divider" />
 
         {/* Status */}
         <StatusItem>
