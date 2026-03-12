@@ -2349,6 +2349,31 @@ export default function ChatPanel() {
   const [mentionIndex, setMentionIndex] = useState(0)
   const [attachedFiles, setAttachedFiles] = useState<{ path: string; name: string; content?: string }[]>([])
 
+  // ── Slash command system ──────────────────────────────────
+  const SLASH_COMMANDS = useMemo(() => [
+    { command: '/edit', label: 'Edit Code', description: 'Edit selected code with instructions', icon: '✏️' },
+    { command: '/explain', label: 'Explain', description: 'Explain selected code in detail', icon: '💡' },
+    { command: '/fix', label: 'Fix Bug', description: 'Find and fix bugs in code', icon: '🔧' },
+    { command: '/test', label: 'Generate Tests', description: 'Generate unit tests for code', icon: '🧪' },
+    { command: '/refactor', label: 'Refactor', description: 'Refactor code for better quality', icon: '♻️' },
+    { command: '/doc', label: 'Document', description: 'Generate documentation/comments', icon: '📝' },
+    { command: '/review', label: 'Code Review', description: 'Review code for issues and improvements', icon: '👀' },
+    { command: '/optimize', label: 'Optimize', description: 'Optimize code for performance', icon: '⚡' },
+    { command: '/type', label: 'Add Types', description: 'Add TypeScript types and interfaces', icon: '📐' },
+    { command: '/commit', label: 'Commit Message', description: 'Generate a commit message for changes', icon: '📋' },
+  ], [])
+
+  const [showSlashDropdown, setShowSlashDropdown] = useState(false)
+  const [slashQuery, setSlashQuery] = useState('')
+  const [slashIndex, setSlashIndex] = useState(0)
+
+  const filteredSlashCommands = useMemo(() => {
+    if (!slashQuery) return SLASH_COMMANDS
+    return SLASH_COMMANDS.filter(c =>
+      c.command.includes(slashQuery.toLowerCase()) || c.label.toLowerCase().includes(slashQuery.toLowerCase())
+    )
+  }, [slashQuery, SLASH_COMMANDS])
+
   // Listen for selection context from editor
   useEffect(() => {
     const handler = (e: Event) => {
@@ -2643,12 +2668,39 @@ export default function ChatPanel() {
         return
       }
     }
+    // Slash command keyboard nav
+    if (showSlashDropdown && filteredSlashCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashIndex(i => Math.min(i + 1, filteredSlashCommands.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashIndex(i => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        const cmd = filteredSlashCommands[slashIndex]
+        if (cmd) {
+          setInput(cmd.command + ' ')
+          setShowSlashDropdown(false)
+          setTimeout(autoResizeTextarea, 0)
+        }
+        return
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
     if (e.key === 'Escape' && showMentionDropdown) {
       setShowMentionDropdown(false)
+    }
+    if (e.key === 'Escape' && showSlashDropdown) {
+      setShowSlashDropdown(false)
     }
   }
 
@@ -2668,9 +2720,21 @@ export default function ChatPanel() {
       setShowMentionDropdown(true)
       setMentionQuery(atMatch[1].toLowerCase())
       setMentionIndex(0)
+      setShowSlashDropdown(false)
     } else {
       setShowMentionDropdown(false)
       setMentionQuery('')
+    }
+
+    // Detect / slash commands (only at start of input)
+    const slashMatch = val.match(/^\/(\S*)$/)
+    if (slashMatch && !showMentionDropdown) {
+      setShowSlashDropdown(true)
+      setSlashQuery(slashMatch[1])
+      setSlashIndex(0)
+    } else {
+      setShowSlashDropdown(false)
+      setSlashQuery('')
     }
   }
 
@@ -3458,6 +3522,63 @@ export default function ChatPanel() {
                 )
               })}
               <style>{`.mention-item:hover { background: var(--bg-hover, rgba(255,255,255,0.06)) !important; }`}</style>
+            </div>
+          )}
+
+          {/* Slash command dropdown */}
+          {showSlashDropdown && filteredSlashCommands.length > 0 && (
+            <div
+              style={{
+                position: 'absolute',
+                bottom: '100%',
+                left: 0,
+                right: 0,
+                marginBottom: 4,
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                padding: 4,
+                boxShadow: '0 -4px 16px rgba(0,0,0,0.3)',
+                zIndex: 50,
+                maxHeight: 280,
+                overflowY: 'auto',
+              }}
+            >
+              <div style={{ fontSize: 9, color: 'var(--text-muted)', padding: '4px 8px 2px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                Slash Commands
+              </div>
+              {filteredSlashCommands.map((cmd, idx) => (
+                <div key={cmd.command}>
+                  <button
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      width: '100%',
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      fontSize: 12,
+                      background: idx === slashIndex ? 'var(--bg-hover, rgba(255,255,255,0.06))' : 'transparent',
+                      color: 'var(--text-primary)',
+                      border: 'none',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                    onMouseEnter={() => setSlashIndex(idx)}
+                    onClick={() => {
+                      setInput(cmd.command + ' ')
+                      setShowSlashDropdown(false)
+                      textareaRef.current?.focus()
+                    }}
+                  >
+                    <span style={{ fontSize: 16, width: 24, textAlign: 'center' }}>{cmd.icon}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, color: 'var(--accent)' }}>{cmd.command}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>{cmd.description}</div>
+                    </div>
+                  </button>
+                </div>
+              ))}
             </div>
           )}
 

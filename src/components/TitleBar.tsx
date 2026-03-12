@@ -335,6 +335,98 @@ function buildMenus(
         },
       ],
     },
+    /* ======================== Selection =================== */
+    {
+      label: 'Selection',
+      accelerator: 'S',
+      items: [
+        {
+          type: 'action',
+          label: 'Select All',
+          shortcut: 'Ctrl+A',
+          action: () => dispatch('orion:select-all'),
+        },
+        {
+          type: 'action',
+          label: 'Expand Selection',
+          shortcut: 'Shift+Alt+Right',
+          action: () => dispatch('orion:expand-selection'),
+        },
+        {
+          type: 'action',
+          label: 'Shrink Selection',
+          shortcut: 'Shift+Alt+Left',
+          action: () => dispatch('orion:shrink-selection'),
+        },
+        { type: 'separator' },
+        {
+          type: 'action',
+          label: 'Copy Line Up',
+          shortcut: 'Shift+Alt+Up',
+          action: () => dispatch('orion:copy-line-up'),
+        },
+        {
+          type: 'action',
+          label: 'Copy Line Down',
+          shortcut: 'Shift+Alt+Down',
+          action: () => dispatch('orion:copy-line-down'),
+        },
+        {
+          type: 'action',
+          label: 'Move Line Up',
+          shortcut: 'Alt+Up',
+          action: () => dispatch('orion:move-line-up'),
+        },
+        {
+          type: 'action',
+          label: 'Move Line Down',
+          shortcut: 'Alt+Down',
+          action: () => dispatch('orion:move-line-down'),
+        },
+        {
+          type: 'action',
+          label: 'Duplicate Selection',
+          action: () => dispatch('orion:duplicate-selection'),
+        },
+        { type: 'separator' },
+        {
+          type: 'action',
+          label: 'Add Cursor Above',
+          shortcut: 'Ctrl+Alt+Up',
+          action: () => dispatch('orion:add-cursor-above'),
+        },
+        {
+          type: 'action',
+          label: 'Add Cursor Below',
+          shortcut: 'Ctrl+Alt+Down',
+          action: () => dispatch('orion:add-cursor-below'),
+        },
+        {
+          type: 'action',
+          label: 'Add Cursors to Line Ends',
+          shortcut: 'Shift+Alt+I',
+          action: () => dispatch('orion:add-cursors-line-ends'),
+        },
+        {
+          type: 'action',
+          label: 'Add Next Occurrence',
+          shortcut: 'Ctrl+D',
+          action: () => dispatch('orion:add-selection-next-match'),
+        },
+        {
+          type: 'action',
+          label: 'Select All Occurrences',
+          shortcut: 'Ctrl+Shift+L',
+          action: () => dispatch('orion:select-all-occurrences'),
+        },
+        { type: 'separator' },
+        {
+          type: 'action',
+          label: 'Column Selection Mode',
+          action: () => dispatch('orion:toggle-column-selection'),
+        },
+      ],
+    },
     /* ======================== View ======================== */
     {
       label: 'View',
@@ -535,6 +627,74 @@ function buildMenus(
           type: 'action',
           label: 'Clear Terminal',
           action: () => dispatch('orion:clear-terminal'),
+        },
+      ],
+    },
+    /* ======================== Run ========================= */
+    {
+      label: 'Run',
+      accelerator: 'R',
+      items: [
+        {
+          type: 'action',
+          label: 'Start Debugging',
+          shortcut: 'F5',
+          action: () => dispatch('orion:debug-start'),
+        },
+        {
+          type: 'action',
+          label: 'Run Without Debugging',
+          shortcut: 'Ctrl+F5',
+          action: () => dispatch('orion:debug-run-no-debug'),
+        },
+        {
+          type: 'action',
+          label: 'Stop Debugging',
+          shortcut: 'Shift+F5',
+          action: () => dispatch('orion:debug-stop'),
+        },
+        {
+          type: 'action',
+          label: 'Restart Debugging',
+          shortcut: 'Ctrl+Shift+F5',
+          action: () => dispatch('orion:debug-restart'),
+        },
+        { type: 'separator' },
+        {
+          type: 'action',
+          label: 'Step Over',
+          shortcut: 'F10',
+          action: () => dispatch('orion:debug-step-over'),
+        },
+        {
+          type: 'action',
+          label: 'Step Into',
+          shortcut: 'F11',
+          action: () => dispatch('orion:debug-step-into'),
+        },
+        {
+          type: 'action',
+          label: 'Step Out',
+          shortcut: 'Shift+F11',
+          action: () => dispatch('orion:debug-step-out'),
+        },
+        {
+          type: 'action',
+          label: 'Continue',
+          shortcut: 'F5',
+          action: () => dispatch('orion:debug-continue'),
+        },
+        { type: 'separator' },
+        {
+          type: 'action',
+          label: 'Toggle Breakpoint',
+          shortcut: 'F9',
+          action: () => dispatch('orion:debug-toggle-breakpoint'),
+        },
+        {
+          type: 'action',
+          label: 'Add Configuration...',
+          action: () => dispatch('orion:debug-add-config'),
         },
       ],
     },
