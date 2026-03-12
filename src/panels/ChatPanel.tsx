@@ -731,7 +731,7 @@ function ThinkingIndicator() {
   )
 }
 
-function StreamingDots() {
+function StreamingDots({ streamStats }: { streamStats?: { tokensPerSec: number; elapsed: number; estimatedRemaining: number } | null }) {
   return (
     <div className="flex items-center gap-1" style={{ padding: '12px 0' }}>
       <div
@@ -771,6 +771,49 @@ function StreamingDots() {
           }
         `}</style>
       </div>
+      {/* Streaming speed stats */}
+      {streamStats && streamStats.tokensPerSec > 0 && (
+        <div className="flex items-center gap-2 ml-3" style={{ height: 24 }}>
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 3,
+            fontSize: 9,
+            color: 'var(--accent-green)',
+            fontFamily: 'var(--font-mono, monospace)',
+            fontVariantNumeric: 'tabular-nums',
+            padding: '1px 5px',
+            borderRadius: 3,
+            background: 'rgba(63,185,80,0.08)',
+          }}>
+            <Gauge size={8} />
+            {streamStats.tokensPerSec.toFixed(1)} tok/s
+          </span>
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 3,
+            fontSize: 9,
+            color: 'var(--text-muted)',
+            fontFamily: 'var(--font-mono, monospace)',
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            <Timer size={8} />
+            {streamStats.elapsed.toFixed(1)}s
+          </span>
+          {streamStats.estimatedRemaining > 0 && (
+            <span style={{
+              fontSize: 9,
+              color: 'var(--text-muted)',
+              fontFamily: 'var(--font-mono, monospace)',
+              fontVariantNumeric: 'tabular-nums',
+              opacity: 0.7,
+            }}>
+              ~{streamStats.estimatedRemaining.toFixed(0)}s
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -781,14 +824,29 @@ function MessageBubble({
   message,
   showThinking,
   onRegenerate,
+  isPinned,
+  onTogglePin,
+  onDelete,
+  onEdit,
+  onFork,
+  streamStats,
 }: {
   message: ChatMessage
   showThinking?: boolean
   onRegenerate?: (msgId: string) => void
+  isPinned?: boolean
+  onTogglePin?: (msgId: string) => void
+  onDelete?: (msgId: string) => void
+  onEdit?: (msgId: string, newContent: string) => void
+  onFork?: (msgId: string) => void
+  streamStats?: { tokensPerSec: number; elapsed: number; estimatedRemaining: number } | null
 }) {
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
   const [msgCopied, setMsgCopied] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editContent, setEditContent] = useState(message.content)
+  const editRef = useRef<HTMLTextAreaElement>(null)
   const { addToast } = useToastStore()
   const rendered = useMemo(
     () => (isUser ? null : renderMarkdown(message.content)),
@@ -808,7 +866,6 @@ function MessageBubble({
       addToast({ type: 'error', message: 'No file open to insert code' })
       return
     }
-    // Extract code blocks from the message
     const codeBlockRegex = /```[\w]*\n([\s\S]*?)```/g
     const matches = [...message.content.matchAll(codeBlockRegex)]
     if (matches.length === 0) {
@@ -822,6 +879,25 @@ function MessageBubble({
       }),
     )
     addToast({ type: 'success', message: 'Code inserted at cursor position' })
+  }
+
+  const handleStartEdit = () => {
+    setEditContent(message.content)
+    setIsEditing(true)
+    setTimeout(() => editRef.current?.focus(), 0)
+  }
+
+  const handleSubmitEdit = () => {
+    const trimmed = editContent.trim()
+    if (trimmed && trimmed !== message.content) {
+      onEdit?.(message.id, trimmed)
+    }
+    setIsEditing(false)
+  }
+
+  const handleCancelEdit = () => {
+    setIsEditing(false)
+    setEditContent(message.content)
   }
 
   const actionBtnStyle: React.CSSProperties = {
@@ -844,25 +920,51 @@ function MessageBubble({
       style={{
         padding: '10px 0',
         position: 'relative',
-        ...(isUser
+        ...(isPinned
           ? {
-              background: 'rgba(88, 166, 255, 0.06)',
-              borderLeft: '2px solid var(--accent)',
+              background: 'rgba(188,140,255,0.04)',
+              borderLeft: '2px solid var(--accent-purple)',
               paddingLeft: 10,
               marginLeft: -12,
               marginRight: -12,
               paddingRight: 12,
             }
-          : {}),
+          : isUser
+            ? {
+                background: 'rgba(88, 166, 255, 0.06)',
+                borderLeft: '2px solid var(--accent)',
+                paddingLeft: 10,
+                marginLeft: -12,
+                marginRight: -12,
+                paddingRight: 12,
+              }
+            : {}),
       }}
     >
-      {/* Hover action toolbar for assistant messages */}
-      {isAssistant && message.content.trim().length > 0 && (
+      {/* Pinned indicator */}
+      {isPinned && (
+        <div style={{
+          position: 'absolute',
+          top: 2,
+          left: isPinned && isUser ? 2 : -8,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 3,
+        }}>
+          <Pin size={9} style={{ color: 'var(--accent-purple)', transform: 'rotate(-45deg)' }} />
+          <span style={{ fontSize: 8, color: 'var(--accent-purple)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Pinned
+          </span>
+        </div>
+      )}
+
+      {/* Hover action toolbar */}
+      {message.content.trim().length > 0 && (
         <div
           className="chat-msg-actions"
           style={{
             position: 'absolute',
-            top: 4,
+            top: isPinned ? 16 : 4,
             right: 4,
             display: 'flex',
             gap: 2,
@@ -871,6 +973,7 @@ function MessageBubble({
             zIndex: 5,
           }}
         >
+          {/* Copy - available for both user and assistant */}
           <button
             onClick={handleCopyMessage}
             title={msgCopied ? 'Copied!' : 'Copy message'}
@@ -880,7 +983,35 @@ function MessageBubble({
           >
             {msgCopied ? <Check size={12} /> : <Copy size={12} />}
           </button>
-          {onRegenerate && (
+
+          {/* Pin/Unpin */}
+          {onTogglePin && (
+            <button
+              onClick={() => onTogglePin(message.id)}
+              title={isPinned ? 'Unpin message' : 'Pin message'}
+              style={actionBtnStyle}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent-purple)'; e.currentTarget.style.background = 'rgba(255,255,255,0.08)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'var(--bg-tertiary)' }}
+            >
+              {isPinned ? <PinOff size={12} /> : <Pin size={12} />}
+            </button>
+          )}
+
+          {/* Edit (user messages only) */}
+          {isUser && onEdit && (
+            <button
+              onClick={handleStartEdit}
+              title="Edit and resend"
+              style={actionBtnStyle}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.background = 'rgba(255,255,255,0.08)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'var(--bg-tertiary)' }}
+            >
+              <Pencil size={12} />
+            </button>
+          )}
+
+          {/* Regenerate (assistant messages only) */}
+          {isAssistant && onRegenerate && (
             <button
               onClick={() => onRegenerate(message.id)}
               title="Regenerate response"
@@ -891,15 +1022,45 @@ function MessageBubble({
               <RotateCw size={12} />
             </button>
           )}
-          <button
-            onClick={handleInsertCodeToEditor}
-            title="Insert code blocks to editor"
-            style={actionBtnStyle}
-            onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.background = 'rgba(255,255,255,0.08)' }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'var(--bg-tertiary)' }}
-          >
-            <Code size={12} />
-          </button>
+
+          {/* Insert code (assistant messages only) */}
+          {isAssistant && (
+            <button
+              onClick={handleInsertCodeToEditor}
+              title="Insert code blocks to editor"
+              style={actionBtnStyle}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.background = 'rgba(255,255,255,0.08)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'var(--bg-tertiary)' }}
+            >
+              <Code size={12} />
+            </button>
+          )}
+
+          {/* Fork conversation from this point */}
+          {onFork && (
+            <button
+              onClick={() => onFork(message.id)}
+              title="Fork conversation from here"
+              style={actionBtnStyle}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#3fb950'; e.currentTarget.style.background = 'rgba(255,255,255,0.08)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'var(--bg-tertiary)' }}
+            >
+              <GitFork size={12} />
+            </button>
+          )}
+
+          {/* Delete message */}
+          {onDelete && (
+            <button
+              onClick={() => onDelete(message.id)}
+              title="Delete message"
+              style={actionBtnStyle}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#f85149'; e.currentTarget.style.background = 'rgba(248,81,73,0.08)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'var(--bg-tertiary)' }}
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
         </div>
       )}
 
@@ -973,21 +1134,126 @@ function MessageBubble({
 
           {/* Message body */}
           {isUser ? (
-            <div
-              style={{
-                fontSize: 12.5,
-                lineHeight: 1.65,
-                color: 'var(--text-primary)',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-              }}
-            >
-              {message.content}
-            </div>
+            isEditing ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <textarea
+                  ref={editRef}
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmitEdit() }
+                    if (e.key === 'Escape') handleCancelEdit()
+                  }}
+                  style={{
+                    width: '100%',
+                    minHeight: 50,
+                    maxHeight: 200,
+                    padding: '8px 10px',
+                    fontSize: 12.5,
+                    lineHeight: 1.65,
+                    color: 'var(--text-primary)',
+                    background: 'var(--bg-primary)',
+                    border: '1px solid var(--accent)',
+                    borderRadius: 6,
+                    resize: 'vertical',
+                    fontFamily: 'inherit',
+                    outline: 'none',
+                  }}
+                />
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button
+                    onClick={handleSubmitEdit}
+                    style={{
+                      fontSize: 10,
+                      padding: '3px 10px',
+                      borderRadius: 4,
+                      border: '1px solid var(--accent)',
+                      background: 'rgba(88,166,255,0.15)',
+                      color: 'var(--accent)',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                    }}
+                  >
+                    Save & Resend
+                  </button>
+                  <button
+                    onClick={handleCancelEdit}
+                    style={{
+                      fontSize: 10,
+                      padding: '3px 10px',
+                      borderRadius: 4,
+                      border: '1px solid var(--border)',
+                      background: 'transparent',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div
+                style={{
+                  fontSize: 12.5,
+                  lineHeight: 1.65,
+                  color: 'var(--text-primary)',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {message.content}
+              </div>
+            )
           ) : (
             <div>
               {rendered}
               {showThinking && <ThinkingIndicator />}
+              {/* Streaming stats */}
+              {streamStats && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  marginTop: 6,
+                  padding: '4px 0',
+                }}>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    fontSize: 9,
+                    color: 'var(--accent-green)',
+                    fontFamily: 'var(--font-mono, monospace)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    <Gauge size={9} />
+                    {streamStats.tokensPerSec.toFixed(1)} tok/s
+                  </span>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    fontSize: 9,
+                    color: 'var(--text-muted)',
+                    fontFamily: 'var(--font-mono, monospace)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    <Timer size={9} />
+                    {streamStats.elapsed.toFixed(1)}s
+                  </span>
+                  {streamStats.estimatedRemaining > 0 && (
+                    <span style={{
+                      fontSize: 9,
+                      color: 'var(--text-muted)',
+                      fontFamily: 'var(--font-mono, monospace)',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}>
+                      ~{streamStats.estimatedRemaining.toFixed(0)}s left
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -1066,25 +1332,32 @@ function ModelDropdown({
   models,
   selectedModel,
   onSelect,
+  customEndpoint,
+  onCustomEndpointChange,
 }: {
-  models: { id: string; label: string; color: string }[]
+  models: ModelDef[]
   selectedModel: string
   onSelect: (id: string) => void
+  customEndpoint?: string
+  onCustomEndpointChange?: (url: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [showCustomInput, setShowCustomInput] = useState(false)
+  const [customUrl, setCustomUrl] = useState(customEndpoint || '')
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         setOpen(false)
+        setShowCustomInput(false)
       }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const current = models.find((m) => m.id === selectedModel)
+  const current = models.find((m) => m.id === selectedModel) || (selectedModel === '__custom_endpoint__' ? customEndpointModel : null)
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
@@ -1118,6 +1391,19 @@ function ModelDropdown({
           }}
         />
         {current?.label || selectedModel}
+        {current?.badge && (
+          <span style={{
+            fontSize: 8,
+            padding: '0 3px',
+            borderRadius: 3,
+            background: (current.color || 'var(--text-muted)') + '20',
+            color: current.color,
+            fontWeight: 700,
+            lineHeight: 1.4,
+          }}>
+            {current.badge}
+          </span>
+        )}
         <ChevronDown
           size={10}
           style={{
@@ -1134,13 +1420,15 @@ function ModelDropdown({
             bottom: '100%',
             left: 0,
             marginBottom: 4,
-            minWidth: 180,
+            minWidth: 240,
             background: 'var(--bg-secondary)',
             border: '1px solid var(--border)',
             borderRadius: 8,
             padding: 4,
             boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
             zIndex: 50,
+            maxHeight: 400,
+            overflowY: 'auto',
           }}
         >
           {/* API Models */}
@@ -1157,7 +1445,7 @@ function ModelDropdown({
             API Models
           </div>
           {models
-            .filter((m) => !nvidiaModels.some((n) => n.id === m.id))
+            .filter((m) => !nvidiaModels.some((n) => n.id === m.id) && m.id !== '__custom_endpoint__')
             .map((model) => (
               <DropdownItem
                 key={model.id}
@@ -1202,6 +1490,108 @@ function ModelDropdown({
                 }}
               />
             ))}
+
+          {/* Custom Endpoint */}
+          <div
+            style={{
+              height: 1,
+              background: 'var(--border)',
+              margin: '4px 8px',
+            }}
+          />
+          <div
+            style={{
+              fontSize: 9,
+              color: 'var(--text-muted)',
+              padding: '4px 8px 2px',
+              fontWeight: 600,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+            }}
+          >
+            Custom
+          </div>
+          <button
+            onClick={() => {
+              setShowCustomInput(!showCustomInput)
+              if (!showCustomInput) {
+                onSelect('__custom_endpoint__')
+              }
+            }}
+            className="flex items-center gap-2 w-full transition-colors duration-75"
+            style={{
+              fontSize: 11,
+              padding: '5px 8px',
+              borderRadius: 5,
+              background: selectedModel === '__custom_endpoint__' ? 'rgba(139,148,158,0.15)' : 'transparent',
+              color: selectedModel === '__custom_endpoint__' ? '#8b949e' : 'var(--text-secondary)',
+              border: 'none',
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+            onMouseEnter={(e) => {
+              if (selectedModel !== '__custom_endpoint__')
+                e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
+            }}
+            onMouseLeave={(e) => {
+              if (selectedModel !== '__custom_endpoint__')
+                e.currentTarget.style.background = 'transparent'
+            }}
+          >
+            <Globe size={12} style={{ flexShrink: 0, opacity: 0.6 }} />
+            <span style={{ flex: 1 }}>Custom API Endpoint</span>
+            <ExternalLink size={10} style={{ opacity: 0.4 }} />
+          </button>
+          {showCustomInput && (
+            <div style={{ padding: '4px 8px 6px' }}>
+              <input
+                type="text"
+                value={customUrl}
+                onChange={(e) => setCustomUrl(e.target.value)}
+                placeholder="https://api.example.com/v1/chat"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    onCustomEndpointChange?.(customUrl)
+                    setOpen(false)
+                    setShowCustomInput(false)
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  fontSize: 10,
+                  padding: '4px 8px',
+                  borderRadius: 4,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-primary)',
+                  color: 'var(--text-primary)',
+                  outline: 'none',
+                  fontFamily: 'var(--font-mono, monospace)',
+                }}
+                onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)' }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)' }}
+              />
+              <button
+                onClick={() => {
+                  onCustomEndpointChange?.(customUrl)
+                  setOpen(false)
+                  setShowCustomInput(false)
+                }}
+                style={{
+                  marginTop: 4,
+                  fontSize: 9,
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  border: '1px solid var(--accent)',
+                  background: 'rgba(88,166,255,0.1)',
+                  color: 'var(--accent)',
+                  cursor: 'pointer',
+                  fontWeight: 500,
+                }}
+              >
+                Connect
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1213,7 +1603,7 @@ function DropdownItem({
   isSelected,
   onSelect,
 }: {
-  model: { id: string; label: string; color: string }
+  model: ModelDef
   isSelected: boolean
   onSelect: () => void
 }) {
@@ -1249,7 +1639,49 @@ function DropdownItem({
           opacity: isSelected ? 1 : 0.5,
         }}
       />
-      <span style={{ flex: 1 }}>{model.label}</span>
+      <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4 }}>
+        {model.label}
+        {model.badge && (
+          <span style={{
+            fontSize: 8,
+            padding: '0 3px',
+            borderRadius: 3,
+            background: model.color + '20',
+            color: model.color,
+            fontWeight: 700,
+            lineHeight: 1.4,
+          }}>
+            {model.badge}
+          </span>
+        )}
+      </span>
+      {/* Capability tags */}
+      {model.capabilities && model.capabilities.length > 0 && (
+        <div style={{ display: 'flex', gap: 2 }}>
+          {model.capabilities.slice(0, 3).map((cap) => {
+            const meta = capabilityMeta[cap]
+            return (
+              <span
+                key={cap}
+                title={meta.label}
+                style={{
+                  fontSize: 7,
+                  padding: '0 3px',
+                  borderRadius: 2,
+                  background: meta.color + '15',
+                  color: meta.color,
+                  fontWeight: 600,
+                  letterSpacing: '0.02em',
+                  lineHeight: 1.6,
+                  textTransform: 'uppercase',
+                }}
+              >
+                {meta.label}
+              </span>
+            )
+          })}
+        </div>
+      )}
       {isSelected && (
         <Check size={11} style={{ color: model.color, flexShrink: 0 }} />
       )}
@@ -1789,6 +2221,11 @@ export default function ChatPanel() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [systemPrompt, setSystemPrompt] = useState('')
   const [showSystemPromptEditor, setShowSystemPromptEditor] = useState(false)
+  const [pinnedMessages, setPinnedMessages] = useState<Set<string>>(new Set())
+  const [customEndpoint, setCustomEndpoint] = useState('')
+  const [streamStartTime, setStreamStartTime] = useState<number | null>(null)
+  const [streamTokenCount, setStreamTokenCount] = useState(0)
+  const [streamStats, setStreamStats] = useState<{ tokensPerSec: number; elapsed: number; estimatedRemaining: number } | null>(null)
 
   // On first mount, ensure there is an active conversation
   useEffect(() => {

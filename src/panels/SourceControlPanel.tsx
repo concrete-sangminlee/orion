@@ -3,7 +3,7 @@ import { useFileStore } from '@/store/files'
 import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
 import { useOutputStore } from '@/store/output'
-import { GitBranch, Check, Plus, Minus, RotateCw, FileText, Trash2, ChevronRight, ChevronDown, X, Clock, GitCommit, User, ArrowUp, ArrowDown, Download, Archive, Plus as PlusIcon, AlertTriangle, Package, Play, XCircle } from 'lucide-react'
+import { GitBranch, Check, Plus, Minus, RotateCw, FileText, Trash2, ChevronRight, ChevronDown, X, Clock, GitCommit, User, ArrowUp, ArrowDown, Download, Archive, Plus as PlusIcon, AlertTriangle, Package, Play, XCircle, Tag, GitMerge, CherryIcon, Copy, Bookmark, BookmarkPlus, Square, CheckSquare, List } from 'lucide-react'
 
 interface GitFile {
   path: string
@@ -34,6 +34,72 @@ interface CommitDetail {
   message: string
   filesChanged: { file: string; changes: string }[]
   summary: string
+}
+
+interface DiffHunk {
+  header: string
+  lines: string[]
+  startLine: number
+  endLine: number
+}
+
+interface CommitTemplate {
+  id: string
+  name: string
+  template: string
+}
+
+interface GitTag {
+  name: string
+  hash: string
+}
+
+const CONVENTIONAL_COMMIT_TYPES = [
+  { type: 'feat', label: 'feat:', description: 'A new feature', color: '#3fb950' },
+  { type: 'fix', label: 'fix:', description: 'A bug fix', color: '#f85149' },
+  { type: 'refactor', label: 'refactor:', description: 'Code refactoring', color: '#d2a8ff' },
+  { type: 'docs', label: 'docs:', description: 'Documentation changes', color: '#388bfd' },
+  { type: 'test', label: 'test:', description: 'Adding/updating tests', color: '#d29922' },
+  { type: 'chore', label: 'chore:', description: 'Maintenance tasks', color: '#8b949e' },
+  { type: 'style', label: 'style:', description: 'Code style changes', color: '#f78166' },
+  { type: 'perf', label: 'perf:', description: 'Performance improvements', color: '#7ee787' },
+  { type: 'ci', label: 'ci:', description: 'CI/CD changes', color: '#a5d6ff' },
+] as const
+
+const BRANCH_COLORS = [
+  '#388bfd', '#3fb950', '#d29922', '#f85149', '#d2a8ff',
+  '#f78166', '#a5d6ff', '#7ee787', '#ff7b72', '#79c0ff',
+]
+
+const getBranchColor = (name: string): string => {
+  let hash = 0
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash)
+  }
+  return BRANCH_COLORS[Math.abs(hash) % BRANCH_COLORS.length]
+}
+
+const parseDiffIntoHunks = (diff: string): DiffHunk[] => {
+  const hunks: DiffHunk[] = []
+  const lines = diff.split('\n')
+  let currentHunk: DiffHunk | null = null
+
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      if (currentHunk) hunks.push(currentHunk)
+      const match = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/)
+      currentHunk = {
+        header: line,
+        lines: [line],
+        startLine: match ? parseInt(match[1]) : 0,
+        endLine: match ? parseInt(match[1]) + parseInt(match[2] || '1') : 0,
+      }
+    } else if (currentHunk) {
+      currentHunk.lines.push(line)
+    }
+  }
+  if (currentHunk) hunks.push(currentHunk)
+  return hunks
 }
 
 const STATUS_COLORS: Record<GitFile['state'], string> = {
@@ -91,6 +157,31 @@ export default function SourceControlPanel() {
   // Merge conflict state
   const [isMerging, setIsMerging] = useState(false)
   const [conflictFiles, setConflictFiles] = useState<string[]>([])
+
+  // Conventional commits & templates state
+  const [showCommitTypes, setShowCommitTypes] = useState(false)
+  const [savedTemplates, setSavedTemplates] = useState<CommitTemplate[]>([])
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const commitTypesRef = useRef<HTMLDivElement>(null)
+  const templatesRef = useRef<HTMLDivElement>(null)
+
+  // Interactive staging state
+  const [selectedFileChecks, setSelectedFileChecks] = useState<Set<string>>(new Set())
+  const [inlineDiffs, setInlineDiffs] = useState<Record<string, string>>({})
+  const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set())
+  const [loadingInlineDiffs, setLoadingInlineDiffs] = useState<Set<string>>(new Set())
+  const [hunkSelections, setHunkSelections] = useState<Record<string, Set<number>>>(new Set() as any)
+
+  // Branch management enhancements
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
+  const [showMergePicker, setShowMergePicker] = useState(false)
+  const [isRebasing, setIsRebasing] = useState(false)
+  const mergePickerRef = useRef<HTMLDivElement>(null)
+
+  // Git graph enhancements
+  const [tags, setTags] = useState<GitTag[]>([])
 
   const rootPath = useFileStore((s) => s.rootPath)
   const openFile = useEditorStore((s) => s.openFile)

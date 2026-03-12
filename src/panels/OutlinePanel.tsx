@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useEditorStore } from '@/store/editor'
-import { ListTree, ChevronRight, ChevronDown, Hash, Braces, Type, Box, Variable, ArrowDownAZ, ArrowDown01, Search, Layers, Code2, Package, FileCode, Shield, Navigation, Eye, Copy, PenLine, FileText, Files } from 'lucide-react'
+import { ListTree, ChevronRight, ChevronDown, Hash, Braces, Type, Box, Variable, ArrowDownAZ, ArrowDown01, Search, Layers, Code2, Package, FileCode, Shield, Navigation, Eye, Copy, PenLine, FileText, Files, Circle, Diamond, Parentheses, SquareFunction, Minus } from 'lucide-react'
 
 interface DocSymbol {
   name: string
@@ -11,6 +11,7 @@ interface DocSymbol {
   exported?: boolean
   params?: string
   endLine?: number
+  returnType?: string
 }
 
 // Comprehensive regex-based symbol extraction (multi-language)
@@ -37,20 +38,30 @@ function extractSymbols(content: string, language: string): DocSymbol[] {
         return undefined
       }
 
+      // Extract return type
+      const extractReturnType = (str: string): string | undefined => {
+        const rMatch = str.match(/\)\s*:\s*([^{=]+)/)
+        if (rMatch && rMatch[1].trim()) {
+          const rt = rMatch[1].trim().replace(/\s*\{?\s*$/, '')
+          return rt || undefined
+        }
+        return undefined
+      }
+
       // Export default function
       let match = trimmed.match(/^export\s+default\s+function\s+(\w+)/)
-      if (match) { symbols.push({ name: match[1], kind: 'function', line: i + 1, indent, exported: true, params: extractParams(trimmed) }); continue }
+      if (match) { symbols.push({ name: match[1], kind: 'function', line: i + 1, indent, exported: true, params: extractParams(trimmed), returnType: extractReturnType(trimmed) }); continue }
 
       // Function declarations
       match = trimmed.match(/^(export\s+)?(async\s+)?function\s+(\w+)/)
-      if (match) { symbols.push({ name: match[3], kind: 'function', line: i + 1, indent, exported: isExported, params: extractParams(trimmed) }); continue }
+      if (match) { symbols.push({ name: match[3], kind: 'function', line: i + 1, indent, exported: isExported, params: extractParams(trimmed), returnType: extractReturnType(trimmed) }); continue }
 
       // Arrow functions assigned to const/let/var
       if (/^(export\s+)?(const|let|var)\s+(\w+)\s*=\s*(async\s+)?\(/.test(trimmed) ||
           /^(export\s+)?(const|let|var)\s+(\w+)\s*=\s*(async\s+)?\w+\s*=>/.test(trimmed) ||
           /^(export\s+)?(const|let|var)\s+(\w+)\s*:\s*\w.*=\s*(async\s+)?\(/.test(trimmed)) {
         match = trimmed.match(/^(export\s+)?(const|let|var)\s+(\w+)/)
-        if (match) { symbols.push({ name: match[3], kind: 'function', line: i + 1, indent, exported: isExported, params: extractParams(trimmed) }); continue }
+        if (match) { symbols.push({ name: match[3], kind: 'function', line: i + 1, indent, exported: isExported, params: extractParams(trimmed), returnType: extractReturnType(trimmed) }); continue }
       }
 
       // Class declarations
@@ -87,10 +98,17 @@ function extractSymbols(content: string, language: string): DocSymbol[] {
           match = trimmed.match(/^constructor\s*\(/)
           if (match) { symbols.push({ name: 'constructor', kind: 'method', line: i + 1, indent, params: extractParams(trimmed) }); continue }
 
+          // Property declarations (with type annotation, no parens before =)
+          match = trimmed.match(/^(?:static\s+)?(?:readonly\s+)?(?:private\s+|protected\s+|public\s+)?(?:static\s+)?(?:readonly\s+)?(\w+)\s*[?!]?\s*:\s*[^(]/)
+          if (match && !trimmed.includes('(') && match[1] !== 'new' && match[1] !== 'function' && match[1] !== 'class') {
+            symbols.push({ name: match[1], kind: 'property', line: i + 1, indent })
+            continue
+          }
+
           // static/async/private methods
           match = trimmed.match(/^(?:static\s+)?(?:async\s+)?(?:readonly\s+)?(?:private\s+|protected\s+|public\s+)?(?:static\s+)?(?:async\s+)?(\w+)\s*[(<]/)
           if (match && match[1] !== 'new' && match[1] !== 'function' && match[1] !== 'class') {
-            symbols.push({ name: match[1], kind: 'method', line: i + 1, indent, params: extractParams(trimmed) })
+            symbols.push({ name: match[1], kind: 'method', line: i + 1, indent, params: extractParams(trimmed), returnType: extractReturnType(trimmed) })
             continue
           }
         }
@@ -266,32 +284,66 @@ function findSymbolAtLine(symbols: DocSymbol[], line: number): DocSymbol | null 
   return best
 }
 
+// Find the full ancestry path from root to symbol at line
+function findSymbolPath(symbols: DocSymbol[], line: number): DocSymbol[] {
+  const path: DocSymbol[] = []
+  function walk(syms: DocSymbol[]): boolean {
+    for (const s of syms) {
+      if (line >= s.line && line <= (s.endLine || s.line)) {
+        path.push(s)
+        if (s.children) walk(s.children)
+        return true
+      }
+    }
+    return false
+  }
+  walk(symbols)
+  return path
+}
+
+// Icon mapping per symbol kind - using lucide-react icons
 const kindIcons: Record<DocSymbol['kind'], typeof Hash> = {
-  function: Hash,
+  function: SquareFunction,
   class: Box,
   interface: Braces,
   type: Type,
   variable: Variable,
-  method: Code2,
-  property: FileCode,
+  method: Parentheses,
+  property: Diamond,
   enum: Layers,
   import: Package,
   export: Package,
   namespace: Shield,
 }
 
+// Color mapping per symbol kind - matching VS Code conventions
 const kindColors: Record<DocSymbol['kind'], string> = {
   function: '#b48ead',   // purple
   class: '#d08770',      // orange
   interface: '#5e81ac',  // blue
   type: '#88c0d0',       // cyan
-  variable: '#ebcb8b',   // yellow
-  method: '#c8a2d0',     // lighter purple
-  property: '#9a9a9a',   // gray
-  enum: '#a3be8c',       // green
+  variable: '#81d4fa',   // light blue
+  method: '#c8a2d0',     // purple (lighter)
+  property: '#a3be8c',   // green
+  enum: '#ebcb8b',       // yellow
   import: '#c586c0',
   export: '#c586c0',
   namespace: '#81a1c1',
+}
+
+// Letter-based icon labels (VS Code-style short labels shown in icon badges)
+const kindLetters: Record<DocSymbol['kind'], string> = {
+  function: 'F',
+  class: 'C',
+  interface: 'I',
+  type: 'T',
+  variable: 'V',
+  method: 'M',
+  property: 'P',
+  enum: 'E',
+  import: 'Im',
+  export: 'Ex',
+  namespace: 'N',
 }
 
 const kindLabels: Record<DocSymbol['kind'], string> = {
@@ -327,6 +379,36 @@ const kindOrder: DocSymbol['kind'][] = ['namespace', 'class', 'interface', 'enum
 type SortMode = 'position' | 'name' | 'kind'
 type OutlineScope = 'active' | 'all'
 
+// Highlight matching text in symbol name
+function HighlightedName({ name, filter }: { name: string; filter: string }) {
+  if (!filter.trim()) {
+    return <>{name}</>
+  }
+  const lower = name.toLowerCase()
+  const filterLower = filter.toLowerCase()
+  const idx = lower.indexOf(filterLower)
+  if (idx === -1) {
+    return <>{name}</>
+  }
+  const before = name.slice(0, idx)
+  const match = name.slice(idx, idx + filter.length)
+  const after = name.slice(idx + filter.length)
+  return (
+    <>
+      {before}
+      <span style={{
+        backgroundColor: 'var(--find-match-bg, rgba(234,179,8,0.35))',
+        color: 'var(--find-match-fg, #fbbf24)',
+        borderRadius: 2,
+        padding: '0 1px',
+      }}>
+        {match}
+      </span>
+      {after}
+    </>
+  )
+}
+
 export default function OutlinePanel() {
   const { openFiles, activeFilePath } = useEditorStore()
   const activeFile = openFiles.find((f) => f.path === activeFilePath)
@@ -338,6 +420,7 @@ export default function OutlinePanel() {
   const [followCursor, setFollowCursor] = useState(true)
   const [outlineScope, setOutlineScope] = useState<OutlineScope>('active')
   const symbolListRef = useRef<HTMLDivElement>(null)
+  const filterInputRef = useRef<HTMLInputElement>(null)
 
   // Listen for cursor position changes
   useEffect(() => {
@@ -369,20 +452,48 @@ export default function OutlinePanel() {
 
   const allSymbolsFlat = useMemo(() => flattenSymbols(symbols), [symbols])
 
-  // Find current symbol under cursor
+  // Find current symbol under cursor (deepest match)
   const currentSymbol = useMemo(() => {
     if (!followCursor) return null
     return findSymbolAtLine(symbols, cursorLine)
   }, [symbols, cursorLine, followCursor])
 
+  // Find the path of ancestors for the current cursor position
+  const currentSymbolPath = useMemo(() => {
+    if (!followCursor) return []
+    return findSymbolPath(symbols, cursorLine)
+  }, [symbols, cursorLine, followCursor])
+
+  // Auto-expand ancestors when following cursor
+  useEffect(() => {
+    if (!followCursor || currentSymbolPath.length === 0) return
+    setCollapsedNodes((prev) => {
+      let changed = false
+      const next = new Set(prev)
+      for (const sym of currentSymbolPath) {
+        const key = `${sym.name}-${sym.line}`
+        if (next.has(key)) {
+          next.delete(key)
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [currentSymbolPath, followCursor])
+
   // Auto-scroll to current symbol
   useEffect(() => {
     if (!followCursor || !currentSymbol || !symbolListRef.current) return
     const key = `sym-${currentSymbol.name}-${currentSymbol.line}`
-    const el = symbolListRef.current.querySelector(`[data-sym-key="${key}"]`)
-    if (el) {
-      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-    }
+    // Small delay to let any expand animations complete
+    const timer = setTimeout(() => {
+      if (!symbolListRef.current) return
+      const el = symbolListRef.current.querySelector(`[data-sym-key="${key}"]`)
+      if (el) {
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      }
+    }, 60)
+    return () => clearTimeout(timer)
   }, [currentSymbol, followCursor])
 
   // Filter symbols
@@ -463,6 +574,24 @@ export default function OutlinePanel() {
     )
   }, [])
 
+  const collapseAll = useCallback(() => {
+    const keys = new Set<string>()
+    function walk(syms: DocSymbol[]) {
+      for (const s of syms) {
+        if (s.children && s.children.length > 0) {
+          keys.add(`${s.name}-${s.line}`)
+          walk(s.children)
+        }
+      }
+    }
+    walk(symbols)
+    setCollapsedNodes(keys)
+  }, [symbols])
+
+  const expandAll = useCallback(() => {
+    setCollapsedNodes(new Set())
+  }, [])
+
   const sortLabel = sortMode === 'position' ? 'By position' : sortMode === 'name' ? 'By name' : 'By kind'
   const sortTitle = `Sort: ${sortLabel} (click to cycle)`
 
@@ -495,12 +624,23 @@ export default function OutlinePanel() {
       const hasChildren = sym.children && sym.children.length > 0
       const isCollapsed = collapsedNodes.has(key)
       const isCurrent = currentSymbol && currentSymbol.name === sym.name && currentSymbol.line === sym.line
+      const isInPath = currentSymbolPath.some(s => s.name === sym.name && s.line === sym.line)
 
       return (
-        <div key={`${key}-${i}`}>
+        <div key={`${key}-${i}`} style={{ position: 'relative' }}>
           {/* Indentation guide lines */}
           {depth > 0 && (
-            <div style={{ position: 'absolute', left: 8 + (depth - 1) * 16 + 7, top: 0, bottom: 0, width: 1, background: 'var(--border)', opacity: 0.4, pointerEvents: 'none' }} />
+            <div style={{
+              position: 'absolute',
+              left: 8 + (depth - 1) * 16 + 7,
+              top: 0,
+              bottom: 0,
+              width: 1,
+              background: isInPath ? 'var(--accent, #3b82f6)' : 'var(--border)',
+              opacity: isInPath ? 0.5 : 0.3,
+              pointerEvents: 'none',
+              zIndex: 1,
+            }} />
           )}
           <SymbolItem
             symbol={sym}
@@ -508,6 +648,8 @@ export default function OutlinePanel() {
             hasChildren={hasChildren}
             isCollapsed={isCollapsed}
             isCurrent={!!isCurrent}
+            isAncestorOfCurrent={!isCurrent && isInPath}
+            filter={filter}
             onToggle={() => toggleNode(key)}
             onClick={() => goToLine(sym.line)}
             onCopyName={() => copySymbolName(sym.name)}
@@ -529,8 +671,8 @@ export default function OutlinePanel() {
                   top: 0,
                   bottom: 0,
                   width: 1,
-                  background: 'var(--border)',
-                  opacity: 0.35,
+                  background: isInPath ? 'var(--accent, #3b82f6)' : 'var(--border)',
+                  opacity: isInPath ? 0.5 : 0.25,
                   pointerEvents: 'none',
                   zIndex: 1,
                 }} />
@@ -600,6 +742,7 @@ export default function OutlinePanel() {
                   symbol={sym}
                   depth={1}
                   isCurrent={false}
+                  filter={filter}
                   onClick={() => {
                     // Switch to file first if needed
                     if (file.path !== activeFilePath) {
@@ -640,7 +783,7 @@ export default function OutlinePanel() {
               bottom: 0,
               width: 1,
               background: 'var(--border)',
-              opacity: 0.35,
+              opacity: 0.25,
               pointerEvents: 'none',
             }} />
           )}
@@ -650,6 +793,7 @@ export default function OutlinePanel() {
             hasChildren={hasChildren}
             isCollapsed={isCollapsed}
             isCurrent={false}
+            filter={filter}
             onToggle={() => toggleNode(key)}
             onClick={() => {
               if (filePath !== activeFilePath) {
@@ -671,7 +815,7 @@ export default function OutlinePanel() {
                 bottom: 0,
                 width: 1,
                 background: 'var(--border)',
-                opacity: 0.35,
+                opacity: 0.25,
                 pointerEvents: 'none',
               }} />
               {renderFileTreeSymbols(sym.children!, depth + 1, filePath)}
@@ -688,10 +832,10 @@ export default function OutlinePanel() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {/* Header */}
+      {/* Header toolbar */}
       <div
         style={{
-          padding: '8px 12px',
+          padding: '6px 8px',
           fontSize: 11,
           fontWeight: 600,
           textTransform: 'uppercase',
@@ -701,58 +845,61 @@ export default function OutlinePanel() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 8,
+          gap: 4,
           userSelect: 'none',
         }}
       >
-        <span>Outline</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <ListTree size={13} style={{ opacity: 0.7 }} />
+          Outline
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           {/* Follow cursor toggle */}
-          <button
-            onClick={() => setFollowCursor(f => !f)}
+          <ToolbarButton
+            active={followCursor}
             title={followCursor ? 'Follow cursor: ON' : 'Follow cursor: OFF'}
-            style={{
-              background: followCursor ? 'var(--accent-bg, rgba(59,130,246,0.15))' : 'none',
-              border: followCursor ? '1px solid var(--accent, #3b82f6)' : '1px solid transparent',
-              color: followCursor ? 'var(--accent, #3b82f6)' : 'var(--text-muted)',
-              cursor: 'pointer',
-              padding: 2,
-              display: 'flex',
-              alignItems: 'center',
-              borderRadius: 3,
-            }}
-            onMouseEnter={(e) => { if (!followCursor) (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)' }}
-            onMouseLeave={(e) => { if (!followCursor) (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+            onClick={() => setFollowCursor(f => !f)}
           >
             <Navigation size={13} />
-          </button>
-          <span style={{ fontSize: 9, color: 'var(--text-muted)', marginRight: 2, marginLeft: 2, textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>
+          </ToolbarButton>
+          {/* Collapse all */}
+          <ToolbarButton
+            title="Collapse all"
+            onClick={collapseAll}
+          >
+            <Minus size={13} />
+          </ToolbarButton>
+          {/* Expand all */}
+          <ToolbarButton
+            title="Expand all"
+            onClick={expandAll}
+          >
+            <ListTree size={13} />
+          </ToolbarButton>
+          {/* Sort mode indicator + button */}
+          <span style={{
+            fontSize: 9,
+            color: 'var(--text-muted)',
+            marginRight: 1,
+            marginLeft: 2,
+            textTransform: 'none',
+            fontWeight: 400,
+            letterSpacing: 0,
+          }}>
             {sortLabel}
           </span>
-          <button
-            onClick={cycleSortMode}
+          <ToolbarButton
             title={sortTitle}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-muted)',
-              cursor: 'pointer',
-              padding: 2,
-              display: 'flex',
-              alignItems: 'center',
-              borderRadius: 3,
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)' }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+            onClick={cycleSortMode}
           >
-            {sortMode === 'position' ? <ArrowDown01 size={14} /> : sortMode === 'name' ? <ArrowDownAZ size={14} /> : <Layers size={14} />}
-          </button>
+            {sortMode === 'position' ? <ArrowDown01 size={13} /> : sortMode === 'name' ? <ArrowDownAZ size={13} /> : <Layers size={13} />}
+          </ToolbarButton>
         </div>
       </div>
 
       {/* Scope selector + Search */}
       <div style={{ borderBottom: '1px solid var(--border)' }}>
-        {/* Scope dropdown */}
+        {/* Scope tabs */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 0, padding: '4px 8px 0' }}>
           <button
             onClick={() => setOutlineScope('active')}
@@ -813,10 +960,13 @@ export default function OutlinePanel() {
               borderRadius: 4,
               border: '1px solid var(--border)',
               padding: '4px 8px',
+              transition: 'border-color 0.15s ease',
             }}
+            onFocus={() => {}}
           >
-            <Search size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+            <Search size={12} style={{ color: filter ? 'var(--accent, #3b82f6)' : 'var(--text-muted)', flexShrink: 0, transition: 'color 0.15s' }} />
             <input
+              ref={filterInputRef}
               type="text"
               placeholder="Filter symbols..."
               value={filter}
@@ -832,20 +982,28 @@ export default function OutlinePanel() {
               }}
             />
             {filter && (
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', marginRight: 4, whiteSpace: 'nowrap' }}>
+                {filteredSymbols.length} found
+              </span>
+            )}
+            {filter && (
               <button
-                onClick={() => setFilter('')}
+                onClick={() => { setFilter(''); filterInputRef.current?.focus() }}
                 style={{
                   background: 'none',
                   border: 'none',
                   color: 'var(--text-muted)',
                   cursor: 'pointer',
-                  padding: 0,
+                  padding: '0 2px',
                   fontSize: 14,
                   lineHeight: 1,
                   display: 'flex',
                   alignItems: 'center',
+                  borderRadius: 2,
                 }}
                 title="Clear filter"
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)' }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
               >
                 x
               </button>
@@ -854,8 +1012,52 @@ export default function OutlinePanel() {
         </div>
       </div>
 
+      {/* Breadcrumb: show current symbol ancestry */}
+      {followCursor && currentSymbolPath.length > 0 && !filter.trim() && outlineScope === 'active' && (
+        <div style={{
+          padding: '3px 8px',
+          fontSize: 10,
+          color: 'var(--text-muted)',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 2,
+          overflow: 'hidden',
+          flexShrink: 0,
+          userSelect: 'none',
+        }}>
+          {currentSymbolPath.map((sym, idx) => {
+            const Icon = kindIcons[sym.kind] || Hash
+            const color = kindColors[sym.kind] || 'var(--text-muted)'
+            return (
+              <span key={`${sym.name}-${sym.line}`} style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+                {idx > 0 && (
+                  <ChevronRight size={9} style={{ color: 'var(--text-muted)', opacity: 0.5 }} />
+                )}
+                <Icon size={10} style={{ color, opacity: 0.8 }} />
+                <span
+                  style={{
+                    cursor: 'pointer',
+                    color: idx === currentSymbolPath.length - 1 ? 'var(--text-primary)' : 'var(--text-muted)',
+                    fontWeight: idx === currentSymbolPath.length - 1 ? 500 : 400,
+                    maxWidth: 100,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  onClick={() => goToLine(sym.line)}
+                  title={`${kindLabels[sym.kind]}: ${sym.name} (Ln ${sym.line})`}
+                >
+                  {sym.name}
+                </span>
+              </span>
+            )
+          })}
+        </div>
+      )}
+
       {/* Symbol list */}
-      <div ref={symbolListRef} style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
+      <div ref={symbolListRef} style={{ flex: 1, overflow: 'auto', padding: '2px 0' }}>
         {outlineScope === 'all' ? (
           renderMultiFile()
         ) : (showTree ? symbols.length === 0 : sortedSymbols.length === 0) ? (
@@ -885,6 +1087,7 @@ export default function OutlinePanel() {
             const groupKey = `group-${kind}`
             const isCollapsed = collapsedNodes.has(groupKey)
             const GroupIcon = kindIcons[kind as DocSymbol['kind']] || Hash
+            const groupColor = kindColors[kind as DocSymbol['kind']] || 'var(--text-muted)'
             return (
               <div key={kind}>
                 <button
@@ -892,9 +1095,9 @@ export default function OutlinePanel() {
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 4,
+                    gap: 5,
                     width: '100%',
-                    padding: '4px 8px',
+                    padding: '5px 8px',
                     background: 'none',
                     border: 'none',
                     color: 'var(--text-secondary)',
@@ -908,9 +1111,30 @@ export default function OutlinePanel() {
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'none' }}
                 >
                   {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                  <GroupIcon size={12} style={{ color: kindColors[kind as DocSymbol['kind']] || 'var(--text-muted)' }} />
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 16,
+                    height: 16,
+                    borderRadius: 3,
+                    backgroundColor: `${groupColor}20`,
+                    flexShrink: 0,
+                  }}>
+                    <GroupIcon size={11} style={{ color: groupColor }} />
+                  </span>
                   <span>{groupLabels[kind] || kind}</span>
-                  <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 10 }}>
+                  <span style={{
+                    marginLeft: 'auto',
+                    color: 'var(--text-muted)',
+                    fontSize: 10,
+                    padding: '0 4px',
+                    borderRadius: 8,
+                    background: 'var(--bg-tertiary)',
+                    lineHeight: '16px',
+                    minWidth: 18,
+                    textAlign: 'center',
+                  }}>
                     {syms.length}
                   </span>
                 </button>
@@ -926,6 +1150,7 @@ export default function OutlinePanel() {
                         symbol={sym}
                         depth={1}
                         isCurrent={!!(currentSymbol && currentSymbol.name === sym.name && currentSymbol.line === sym.line)}
+                        filter={filter}
                         onClick={() => goToLine(sym.line)}
                         onCopyName={() => copySymbolName(sym.name)}
                         onPeekReferences={() => peekReferences(sym)}
@@ -944,6 +1169,7 @@ export default function OutlinePanel() {
               symbol={sym}
               depth={0}
               isCurrent={!!(currentSymbol && currentSymbol.name === sym.name && currentSymbol.line === sym.line)}
+              filter={filter}
               onClick={() => goToLine(sym.line)}
               onCopyName={() => copySymbolName(sym.name)}
               onPeekReferences={() => peekReferences(sym)}
@@ -956,19 +1182,72 @@ export default function OutlinePanel() {
       {/* Footer with file info */}
       <div
         style={{
-          padding: '4px 12px',
+          padding: '4px 10px',
           fontSize: 10,
           color: 'var(--text-muted)',
           borderTop: '1px solid var(--border)',
           display: 'flex',
           justifyContent: 'space-between',
+          alignItems: 'center',
           userSelect: 'none',
+          gap: 8,
         }}
       >
         <span>{totalSymbolCount} symbol{totalSymbolCount !== 1 ? 's' : ''}</span>
-        <span>{outlineScope === 'all' ? `${openFiles.length} files` : activeFile?.name || ''}</span>
+        {followCursor && currentSymbol && (
+          <span style={{
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flex: 1,
+            textAlign: 'center',
+            color: 'var(--accent, #3b82f6)',
+            fontSize: 10,
+          }}>
+            {currentSymbol.name}
+          </span>
+        )}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {outlineScope === 'all' ? `${openFiles.length} files` : activeFile?.name || ''}
+        </span>
       </div>
     </div>
+  )
+}
+
+// Toolbar button component
+function ToolbarButton({
+  title,
+  onClick,
+  active,
+  children,
+}: {
+  title: string
+  onClick: () => void
+  active?: boolean
+  children: React.ReactNode
+}) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <button
+      title={title}
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        background: active ? 'var(--accent-bg, rgba(59,130,246,0.15))' : hovered ? 'var(--bg-tertiary)' : 'none',
+        border: active ? '1px solid var(--accent, #3b82f6)' : '1px solid transparent',
+        color: active ? 'var(--accent, #3b82f6)' : hovered ? 'var(--text-primary)' : 'var(--text-muted)',
+        cursor: 'pointer',
+        padding: 3,
+        display: 'flex',
+        alignItems: 'center',
+        borderRadius: 3,
+        transition: 'all 0.1s ease',
+      }}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -978,6 +1257,8 @@ function SymbolItem({
   hasChildren,
   isCollapsed,
   isCurrent,
+  isAncestorOfCurrent,
+  filter = '',
   onToggle,
   onClick,
   onCopyName,
@@ -989,6 +1270,8 @@ function SymbolItem({
   hasChildren?: boolean
   isCollapsed?: boolean
   isCurrent: boolean
+  isAncestorOfCurrent?: boolean
+  filter?: string
   onToggle?: () => void
   onClick: () => void
   onCopyName?: () => void
@@ -1006,7 +1289,7 @@ function SymbolItem({
   // Show tooltip after a short hover delay
   useEffect(() => {
     if (hovered) {
-      hoverTimerRef.current = setTimeout(() => setTooltipVisible(true), 500)
+      hoverTimerRef.current = setTimeout(() => setTooltipVisible(true), 600)
     } else {
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
       setTooltipVisible(false)
@@ -1032,38 +1315,54 @@ function SymbolItem({
           }
           onClick()
         }}
+        onDoubleClick={() => {
+          // Double-click to navigate and expand/collapse
+          if (hasChildren && onToggle) {
+            onToggle()
+          }
+        }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 6,
+          gap: 5,
           width: '100%',
-          padding: `3px 8px 3px ${leftPad}px`,
+          padding: `2px 8px 2px ${leftPad}px`,
           background: isCurrent
             ? 'var(--accent-bg, rgba(59,130,246,0.12))'
-            : hovered
-              ? 'var(--bg-tertiary)'
-              : 'transparent',
+            : isAncestorOfCurrent
+              ? 'var(--accent-bg, rgba(59,130,246,0.05))'
+              : hovered
+                ? 'var(--bg-tertiary)'
+                : 'transparent',
           border: 'none',
-          borderLeft: isCurrent ? '2px solid var(--accent, #3b82f6)' : '2px solid transparent',
+          borderLeft: isCurrent
+            ? '2px solid var(--accent, #3b82f6)'
+            : isAncestorOfCurrent
+              ? '2px solid var(--accent-dim, rgba(59,130,246,0.3))'
+              : '2px solid transparent',
           color: 'var(--text-primary)',
           cursor: 'pointer',
           fontSize: 12,
           fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace",
           textAlign: 'left',
           userSelect: 'none',
-          transition: 'background 0.15s ease, border-left-color 0.15s ease',
+          transition: 'background 0.1s ease, border-left-color 0.1s ease',
           position: 'relative',
+          minHeight: 24,
         }}
       >
+        {/* Collapse/expand chevron */}
         {hasChildren ? (
-          <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-            {isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+          <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0, width: 12 }}>
+            {isCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
           </span>
         ) : (
-          <span style={{ width: 10, flexShrink: 0 }} />
+          <span style={{ width: 12, flexShrink: 0 }} />
         )}
+
+        {/* Symbol icon with kind-colored background badge */}
         <span
           style={{
             display: 'inline-flex',
@@ -1072,14 +1371,58 @@ function SymbolItem({
             width: 16,
             height: 16,
             borderRadius: 3,
-            backgroundColor: `${color}20`,
+            backgroundColor: `${color}22`,
+            border: `1px solid ${color}33`,
             flexShrink: 0,
+            position: 'relative',
           }}
         >
-          <Icon size={11} style={{ color }} />
+          <Icon size={10} style={{ color }} />
         </span>
-        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
-          {symbol.name}
+
+        {/* Symbol name + params + export badge */}
+        <span style={{
+          flex: 1,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 3,
+          lineHeight: '20px',
+        }}>
+          <span style={{ fontWeight: isCurrent ? 500 : 400 }}>
+            <HighlightedName name={symbol.name} filter={filter} />
+          </span>
+          {/* Show parameters inline for functions/methods */}
+          {symbol.params && (
+            <span style={{
+              color: 'var(--text-muted)',
+              fontSize: 10,
+              opacity: 0.75,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              maxWidth: '40%',
+              fontWeight: 400,
+            }}>
+              {symbol.params}
+            </span>
+          )}
+          {/* Return type */}
+          {symbol.returnType && (
+            <span style={{
+              color: 'var(--text-muted)',
+              fontSize: 10,
+              opacity: 0.5,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontWeight: 400,
+            }}>
+              : {symbol.returnType}
+            </span>
+          )}
           {/* Export badge */}
           {symbol.exported && (
             <span style={{
@@ -1097,33 +1440,44 @@ function SymbolItem({
             </span>
           )}
         </span>
-        {/* Line number in muted text */}
-        <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0, opacity: hovered ? 1 : 0.5, fontFamily: 'monospace', minWidth: 28, textAlign: 'right' }}>
-          Ln {symbol.line}
+
+        {/* Line number (always visible but faded) */}
+        <span style={{
+          fontSize: 10,
+          color: 'var(--text-muted)',
+          flexShrink: 0,
+          opacity: hovered ? 0.9 : 0.35,
+          fontFamily: 'monospace',
+          minWidth: 24,
+          textAlign: 'right',
+          transition: 'opacity 0.1s',
+        }}>
+          {symbol.line}
         </span>
+
         {/* Inline action buttons - visible on hover */}
         {hovered && (
           <span
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 1,
-              marginLeft: 2,
+              gap: 0,
+              marginLeft: 1,
               flexShrink: 0,
             }}
             onClick={(e) => e.stopPropagation()}
           >
             <InlineActionButton title="Go to symbol" onClick={onClick}>
-              <Navigation size={11} />
+              <Navigation size={10} />
             </InlineActionButton>
             <InlineActionButton title="Peek references" onClick={onPeekReferences}>
-              <Eye size={11} />
+              <Eye size={10} />
             </InlineActionButton>
             <InlineActionButton title="Copy name" onClick={onCopyName}>
-              <Copy size={11} />
+              <Copy size={10} />
             </InlineActionButton>
             <InlineActionButton title="Rename symbol" onClick={onRename}>
-              <PenLine size={11} />
+              <PenLine size={10} />
             </InlineActionButton>
           </span>
         )}
@@ -1143,19 +1497,33 @@ function SymbolItem({
             padding: '8px 12px',
             fontSize: 11,
             color: 'var(--text-primary)',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
             minWidth: 180,
-            maxWidth: 300,
+            maxWidth: 320,
             pointerEvents: 'none',
             display: 'flex',
             flexDirection: 'column',
             gap: 4,
           }}
         >
+          {/* Symbol name with icon */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
-            <Icon size={12} style={{ color }} />
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 18,
+              height: 18,
+              borderRadius: 3,
+              backgroundColor: `${color}22`,
+              border: `1px solid ${color}33`,
+              flexShrink: 0,
+            }}>
+              <Icon size={11} style={{ color }} />
+            </span>
             <span>{symbol.name}</span>
           </div>
+          {/* Kind badge + line info */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 10, color: 'var(--text-muted)' }}>
             <span style={{
               padding: '1px 5px',
@@ -1166,7 +1534,7 @@ function SymbolItem({
             }}>
               {kindLabels[symbol.kind] || symbol.kind}
             </span>
-            <span>Line {symbol.line}</span>
+            <span>Line {symbol.line}{symbol.endLine && symbol.endLine !== Infinity ? `-${symbol.endLine}` : ''}</span>
             {symbol.exported && (
               <span style={{
                 padding: '1px 5px',
@@ -1179,9 +1547,25 @@ function SymbolItem({
               </span>
             )}
           </div>
+          {/* Parameters */}
           {symbol.params && (
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: "'Cascadia Code', 'Fira Code', monospace", marginTop: 2, wordBreak: 'break-all' }}>
-              {symbol.params}
+            <div style={{
+              fontSize: 10,
+              color: 'var(--text-muted)',
+              fontFamily: "'Cascadia Code', 'Fira Code', monospace",
+              marginTop: 2,
+              wordBreak: 'break-all',
+              padding: '3px 6px',
+              borderRadius: 3,
+              background: 'var(--bg-primary)',
+            }}>
+              {symbol.name}{symbol.params}{symbol.returnType ? `: ${symbol.returnType}` : ''}
+            </div>
+          )}
+          {/* Children count */}
+          {symbol.children && symbol.children.length > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>
+              {symbol.children.length} member{symbol.children.length !== 1 ? 's' : ''}
             </div>
           )}
         </div>
