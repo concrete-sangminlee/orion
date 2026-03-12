@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useFileStore } from '@/store/files'
 import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
+import { useOutputStore } from '@/store/output'
 import { GitBranch, Check, Plus, Minus, RotateCw, FileText, Trash2, ChevronRight, ChevronDown, X, Clock, GitCommit, User } from 'lucide-react'
 
 interface GitFile {
@@ -57,6 +58,7 @@ export default function SourceControlPanel() {
   const rootPath = useFileStore((s) => s.rootPath)
   const openFile = useEditorStore((s) => s.openFile)
   const addToast = useToastStore((s) => s.addToast)
+  const appendOutput = useOutputStore((s) => s.appendOutput)
 
   const refreshStatus = useCallback(async () => {
     if (!rootPath) return
@@ -67,13 +69,18 @@ export default function SourceControlPanel() {
         setStagedFiles(status.staged || [])
         setUnstagedFiles(status.unstaged || [])
         if (status.branch) setBranch(status.branch)
+        const total = (status.staged?.length || 0) + (status.unstaged?.length || 0)
+        if (total > 0) {
+          appendOutput('Git', `[status] Branch: ${status.branch || 'unknown'} | ${total} changed file(s)`, 'info')
+        }
       }
-    } catch (err) {
+    } catch (err: any) {
+      appendOutput('Git', `[status] Error: ${err?.message || 'Failed to refresh'}`, 'error')
       console.error('Failed to refresh git status:', err)
     } finally {
       setIsRefreshing(false)
     }
-  }, [rootPath])
+  }, [rootPath, appendOutput])
 
   const fetchLog = useCallback(async () => {
     if (!rootPath) return
@@ -104,12 +111,15 @@ export default function SourceControlPanel() {
 
   const handleCommit = async () => {
     if (!commitMessage.trim() || !rootPath) return
+    appendOutput('Git', `[commit] Committing: "${commitMessage.trim()}"`, 'info')
     try {
       await (window as any).api.gitCommit(rootPath, commitMessage.trim())
+      appendOutput('Git', `[commit] Success: "${commitMessage.trim()}"`, 'success')
       addToast({ type: 'success', message: 'Changes committed successfully' })
       setCommitMessage('')
       refreshStatus()
     } catch (err: any) {
+      appendOutput('Git', `[commit] Failed: ${err?.message || 'Unknown error'}`, 'error')
       addToast({ type: 'error', message: err?.message || 'Commit failed' })
     }
   }
@@ -118,8 +128,10 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     try {
       await (window as any).api.gitStage(rootPath, filePath)
+      appendOutput('Git', `[stage] Staged: ${filePath}`, 'info')
       refreshStatus()
     } catch (err: any) {
+      appendOutput('Git', `[stage] Failed to stage ${filePath}: ${err?.message}`, 'error')
       addToast({ type: 'error', message: err?.message || 'Failed to stage file' })
     }
   }
@@ -128,8 +140,10 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     try {
       await (window as any).api.gitUnstage(rootPath, filePath)
+      appendOutput('Git', `[unstage] Unstaged: ${filePath}`, 'info')
       refreshStatus()
     } catch (err: any) {
+      appendOutput('Git', `[unstage] Failed to unstage ${filePath}: ${err?.message}`, 'error')
       addToast({ type: 'error', message: err?.message || 'Failed to unstage file' })
     }
   }
@@ -138,9 +152,11 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     try {
       await (window as any).api.gitDiscard(rootPath, filePath)
+      appendOutput('Git', `[discard] Discarded changes: ${filePath}`, 'warn')
       addToast({ type: 'info', message: `Discarded changes in ${filePath.split('/').pop()}` })
       refreshStatus()
     } catch (err: any) {
+      appendOutput('Git', `[discard] Failed to discard ${filePath}: ${err?.message}`, 'error')
       addToast({ type: 'error', message: err?.message || 'Failed to discard changes' })
     }
   }

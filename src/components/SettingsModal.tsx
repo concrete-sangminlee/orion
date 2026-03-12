@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react'
-import { X, Key, Check, Eye, EyeOff, MessageSquare, Sparkles, Code, Monitor, Palette } from 'lucide-react'
+import { X, Key, Check, Eye, EyeOff, MessageSquare, Sparkles, Code, Monitor, Palette, FolderCog, Plus, Trash2 } from 'lucide-react'
 import { useThemeStore } from '@/store/theme'
+import { useWorkspaceStore, DEFAULT_WORKSPACE_SETTINGS } from '@/store/workspace'
+import { useFileStore } from '@/store/files'
 import type { Theme } from '@/themes'
+import type { WorkspaceSettings } from '@shared/types'
 
 interface Props {
   open: boolean
@@ -19,7 +22,7 @@ const providers = [
 const DEFAULT_SYSTEM_PROMPT = 'You are Orion AI by Bebut, an expert coding assistant integrated into a code editor IDE. You help with code analysis, debugging, feature implementation, and code explanations. Be concise and helpful. Use markdown formatting for code blocks. Respond in the same language the user uses.'
 const DEFAULT_USER_TEMPLATE = '{message}'
 
-type TabId = 'keys' | 'prompts' | 'editor' | 'themes'
+type TabId = 'keys' | 'prompts' | 'editor' | 'themes' | 'workspace'
 
 interface EditorSettings {
   fontSize: number
@@ -45,6 +48,16 @@ export default function SettingsModal({ open, onClose }: Props) {
     tabSize: 2, lineNumbers: true, bracketPairColorization: true,
   })
 
+  // Workspace settings
+  const rootPath = useFileStore((s) => s.rootPath)
+  const wsSettings = useWorkspaceStore((s) => s.settings)
+  const wsIsWorkspaceLevel = useWorkspaceStore((s) => s.isWorkspaceLevel)
+  const [wsLocal, setWsLocal] = useState<WorkspaceSettings>({ ...DEFAULT_WORKSPACE_SETTINGS })
+  const [newExclude, setNewExclude] = useState('')
+  const [newAssocExt, setNewAssocExt] = useState('')
+  const [newAssocLang, setNewAssocLang] = useState('')
+  const [wsSaved, setWsSaved] = useState(false)
+
   useEffect(() => {
     if (open) {
       try {
@@ -59,9 +72,21 @@ export default function SettingsModal({ open, onClose }: Props) {
         const storedEditor = localStorage.getItem('orion-editor-settings')
         if (storedEditor) setEditorSettings({ ...editorSettings, ...JSON.parse(storedEditor) })
       } catch {}
+      // Load workspace settings
+      if (rootPath) {
+        useWorkspaceStore.getState().loadWorkspaceSettings(rootPath)
+      }
       setSaved(false)
+      setWsSaved(false)
     }
   }, [open])
+
+  // Keep local workspace state in sync when store updates
+  useEffect(() => {
+    if (open) {
+      setWsLocal({ ...wsSettings })
+    }
+  }, [wsSettings, open])
 
   const handleSave = async () => {
     localStorage.setItem('orion-api-keys', JSON.stringify(keys))
@@ -89,6 +114,7 @@ export default function SettingsModal({ open, onClose }: Props) {
     { id: 'prompts', label: 'Prompts', icon: <MessageSquare size={13} /> },
     { id: 'editor', label: 'Editor', icon: <Code size={13} /> },
     { id: 'themes', label: 'Themes', icon: <Palette size={13} /> },
+    { id: 'workspace', label: 'Workspace', icon: <FolderCog size={13} /> },
   ]
 
   return (
@@ -363,6 +389,262 @@ export default function SettingsModal({ open, onClose }: Props) {
           )}
 
           {activeTab === 'themes' && <ThemePicker />}
+
+          {activeTab === 'workspace' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                Workspace-specific settings{rootPath ? '' : ' (open a folder first)'}.
+                {wsIsWorkspaceLevel && (
+                  <span style={{ color: 'var(--accent-green)', marginLeft: 6, fontSize: 11 }}>
+                    Loaded from .orion/settings.json
+                  </span>
+                )}
+              </p>
+
+              {/* Exclude Patterns */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+                  Exclude Patterns
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                  Glob patterns for files/folders hidden in the explorer.
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {wsLocal.excludePatterns.map((pat) => (
+                    <span key={pat} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      padding: '3px 8px', borderRadius: 4,
+                      background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                      fontSize: 11, color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-mono, monospace)',
+                    }}>
+                      {pat}
+                      <button
+                        onClick={() => setWsLocal(s => ({
+                          ...s,
+                          excludePatterns: s.excludePatterns.filter(p => p !== pat),
+                        }))}
+                        style={{
+                          background: 'transparent', border: 'none', cursor: 'pointer',
+                          color: 'var(--text-muted)', padding: 0, display: 'flex',
+                        }}
+                      >
+                        <X size={10} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    value={newExclude}
+                    onChange={(e) => setNewExclude(e.target.value)}
+                    placeholder="e.g. *.log, build, .cache"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newExclude.trim()) {
+                        setWsLocal(s => ({
+                          ...s,
+                          excludePatterns: [...s.excludePatterns, newExclude.trim()],
+                        }))
+                        setNewExclude('')
+                      }
+                    }}
+                    style={{
+                      flex: 1, padding: '6px 10px',
+                      background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                      borderRadius: 6, outline: 'none',
+                      fontSize: 12, color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-mono, monospace)',
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      if (newExclude.trim()) {
+                        setWsLocal(s => ({
+                          ...s,
+                          excludePatterns: [...s.excludePatterns, newExclude.trim()],
+                        }))
+                        setNewExclude('')
+                      }
+                    }}
+                    style={{
+                      padding: '6px 10px', borderRadius: 6, border: 'none',
+                      background: 'var(--accent)', color: '#fff', cursor: 'pointer',
+                      fontSize: 12, display: 'flex', alignItems: 'center', gap: 4,
+                    }}
+                  >
+                    <Plus size={12} /> Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Toggle settings */}
+              {([
+                ['autoSave', 'Auto Save', 'Automatically save files when switching tabs'],
+                ['formatOnSave', 'Format on Save', 'Format the file each time it is saved'],
+                ['insertSpaces', 'Insert Spaces', 'Use spaces instead of tabs for indentation'],
+              ] as const).map(([key, label, desc]) => (
+                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{label}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{desc}</div>
+                  </div>
+                  <button
+                    onClick={() => setWsLocal(s => ({ ...s, [key]: !s[key] }))}
+                    style={{
+                      width: 40, height: 22, borderRadius: 11, border: 'none', cursor: 'pointer',
+                      background: wsLocal[key] ? 'var(--accent)' : 'var(--bg-hover)',
+                      position: 'relative', transition: 'background 0.2s',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <span style={{
+                      position: 'absolute', top: 3, left: wsLocal[key] ? 21 : 3,
+                      width: 16, height: 16, borderRadius: '50%',
+                      background: '#fff', transition: 'left 0.2s',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                    }} />
+                  </button>
+                </div>
+              ))}
+
+              {/* Tab Size */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>Tab Size</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Number of spaces per tab (workspace)</div>
+                </div>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {[2, 4, 8].map(n => (
+                    <button key={n}
+                      onClick={() => setWsLocal(s => ({ ...s, tabSize: n }))}
+                      style={{
+                        width: 32, height: 28, borderRadius: 6, fontSize: 12, fontWeight: 600,
+                        background: wsLocal.tabSize === n ? 'var(--accent)' : 'var(--bg-primary)',
+                        color: wsLocal.tabSize === n ? '#fff' : 'var(--text-secondary)',
+                        border: wsLocal.tabSize === n ? 'none' : '1px solid var(--border)',
+                        cursor: 'pointer', transition: 'background 0.15s',
+                      }}>{n}</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* File Associations */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+                  File Associations
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                  Map file extensions to language modes.
+                </div>
+                {Object.entries(wsLocal.fileAssociations).length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
+                    {Object.entries(wsLocal.fileAssociations).map(([ext, lang]) => (
+                      <div key={ext} style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '4px 8px', borderRadius: 4,
+                        background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                        fontSize: 11,
+                      }}>
+                        <span style={{ fontFamily: 'var(--font-mono, monospace)', color: 'var(--accent)' }}>.{ext}</span>
+                        <span style={{ color: 'var(--text-muted)' }}>&rarr;</span>
+                        <span style={{ color: 'var(--text-primary)', flex: 1 }}>{lang}</span>
+                        <button
+                          onClick={() => setWsLocal(s => {
+                            const fa = { ...s.fileAssociations }
+                            delete fa[ext]
+                            return { ...s, fileAssociations: fa }
+                          })}
+                          style={{
+                            background: 'transparent', border: 'none', cursor: 'pointer',
+                            color: 'var(--text-muted)', padding: 0, display: 'flex',
+                          }}
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    value={newAssocExt}
+                    onChange={(e) => setNewAssocExt(e.target.value)}
+                    placeholder="ext (e.g. mdx)"
+                    style={{
+                      width: 80, padding: '6px 10px',
+                      background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                      borderRadius: 6, outline: 'none',
+                      fontSize: 12, color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-mono, monospace)',
+                    }}
+                  />
+                  <input
+                    value={newAssocLang}
+                    onChange={(e) => setNewAssocLang(e.target.value)}
+                    placeholder="language (e.g. markdown)"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newAssocExt.trim() && newAssocLang.trim()) {
+                        setWsLocal(s => ({
+                          ...s,
+                          fileAssociations: { ...s.fileAssociations, [newAssocExt.trim().replace(/^\./, '')]: newAssocLang.trim() },
+                        }))
+                        setNewAssocExt('')
+                        setNewAssocLang('')
+                      }
+                    }}
+                    style={{
+                      flex: 1, padding: '6px 10px',
+                      background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                      borderRadius: 6, outline: 'none',
+                      fontSize: 12, color: 'var(--text-primary)',
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      if (newAssocExt.trim() && newAssocLang.trim()) {
+                        setWsLocal(s => ({
+                          ...s,
+                          fileAssociations: { ...s.fileAssociations, [newAssocExt.trim().replace(/^\./, '')]: newAssocLang.trim() },
+                        }))
+                        setNewAssocExt('')
+                        setNewAssocLang('')
+                      }
+                    }}
+                    style={{
+                      padding: '6px 10px', borderRadius: 6, border: 'none',
+                      background: 'var(--accent)', color: '#fff', cursor: 'pointer',
+                      fontSize: 12, display: 'flex', alignItems: 'center', gap: 4,
+                    }}
+                  >
+                    <Plus size={12} /> Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Save workspace settings button */}
+              <button
+                disabled={!rootPath}
+                onClick={async () => {
+                  if (!rootPath) return
+                  useWorkspaceStore.getState().setSettings(wsLocal)
+                  await useWorkspaceStore.getState().saveWorkspaceSettings(rootPath)
+                  setWsSaved(true)
+                  setTimeout(() => setWsSaved(false), 2000)
+                }}
+                style={{
+                  padding: '8px 16px', borderRadius: 6,
+                  fontSize: 12, fontWeight: 600,
+                  background: wsSaved ? 'var(--accent-green)' : !rootPath ? 'var(--bg-hover)' : 'var(--accent)',
+                  color: !rootPath ? 'var(--text-muted)' : '#fff',
+                  border: 'none', cursor: rootPath ? 'pointer' : 'not-allowed',
+                  transition: 'background 0.2s',
+                  alignSelf: 'flex-start',
+                }}
+              >
+                {wsSaved ? '\u2713 Workspace Settings Saved' : 'Save to .orion/settings.json'}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Footer */}

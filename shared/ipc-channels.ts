@@ -27,6 +27,7 @@ export const IPC = {
   GIT_COMMIT: 'git:commit',
   GIT_DISCARD: 'git:discard',
   GIT_BRANCHES: 'git:branches',
+  GIT_CHECKOUT: 'git:checkout',
   GIT_SHOW: 'git:show',
   GIT_FILE_DIFF: 'git:file-diff',
 
@@ -40,6 +41,10 @@ export const IPC = {
   // Settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+
+  // Workspace
+  WORKSPACE_READ_SETTINGS: 'workspace:read-settings',
+  WORKSPACE_WRITE_SETTINGS: 'workspace:write-settings',
 
   // OMO
   OMO_START: 'omo:start',

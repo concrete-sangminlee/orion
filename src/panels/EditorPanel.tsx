@@ -454,8 +454,28 @@ export default function EditorPanel() {
       },
     })
 
-    // Dispatch cursor position changes to status bar
+    // ── Active line highlighting ──────────────────
+    // Highlight the current line with a subtle background using deltaDecorations
+    const updateActiveLineDecoration = (lineNumber: number) => {
+      activeLineDecorationsRef.current = editor.deltaDecorations(
+        activeLineDecorationsRef.current,
+        [{
+          range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+          options: {
+            isWholeLine: true,
+            className: 'orion-active-line-highlight',
+            overviewRuler: { color: 'rgba(255, 255, 255, 0.08)', position: monaco.editor.OverviewRulerLane.Full },
+          },
+        }]
+      )
+    }
+
+    // Set initial active line decoration
+    updateActiveLineDecoration(editor.getPosition()?.lineNumber || 1)
+
+    // Dispatch cursor position changes to status bar + update active line decoration
     editor.onDidChangeCursorPosition((e) => {
+      updateActiveLineDecoration(e.position.lineNumber)
       window.dispatchEvent(new CustomEvent('orion:cursor-change', {
         detail: { line: e.position.lineNumber, column: e.position.column }
       }))
@@ -473,6 +493,75 @@ export default function EditorPanel() {
       } else {
         window.dispatchEvent(new CustomEvent('orion:selection-change', { detail: null }))
       }
+    })
+
+    // ── Color decorators: detect CSS color values and show inline color swatches ──────────────────
+    const updateColorDecorations = () => {
+      const edModel = editor.getModel()
+      if (!edModel) return
+
+      const decorations: MonacoEditor.IModelDeltaDecoration[] = []
+      const lineCount = edModel.getLineCount()
+
+      for (let lineNum = 1; lineNum <= lineCount; lineNum++) {
+        const lineContent = edModel.getLineContent(lineNum)
+        CSS_COLOR_REGEX.lastIndex = 0
+        let colorMatch: RegExpExecArray | null
+        while ((colorMatch = CSS_COLOR_REGEX.exec(lineContent)) !== null) {
+          const startCol = colorMatch.index + 1
+          const colorValue = colorMatch[0]
+
+          decorations.push({
+            range: new monaco.Range(lineNum, startCol, lineNum, startCol),
+            options: {
+              before: {
+                content: '\u00A0',
+                inlineClassName: `orion-color-swatch`,
+                inlineClassNameAffectsLetterSpacing: true,
+              },
+              hoverMessage: { value: `Color: \`${colorValue}\`` },
+            },
+          })
+        }
+      }
+
+      colorDecorationsRef.current = editor.deltaDecorations(
+        colorDecorationsRef.current,
+        decorations
+      )
+
+      // Apply color backgrounds to swatch elements after render
+      requestAnimationFrame(() => {
+        const domNode = editor.getDomNode()
+        if (!domNode) return
+
+        const swatchEls = domNode.querySelectorAll('.orion-color-swatch')
+        swatchEls.forEach((el) => {
+          const htmlEl = el as HTMLElement
+          // Walk forward in the DOM to find the color text
+          const parentLine = htmlEl.closest('.view-line')
+          if (!parentLine) return
+          const textContent = parentLine.textContent || ''
+          CSS_COLOR_REGEX.lastIndex = 0
+          const m = CSS_COLOR_REGEX.exec(textContent)
+          if (m) {
+            htmlEl.style.backgroundColor = m[0]
+            htmlEl.style.border = '1px solid rgba(128,128,128,0.4)'
+            htmlEl.style.borderRadius = '2px'
+            htmlEl.style.marginRight = '4px'
+            htmlEl.style.display = 'inline-block'
+            htmlEl.style.width = '10px'
+            htmlEl.style.height = '10px'
+            htmlEl.style.verticalAlign = 'middle'
+          }
+        })
+      })
+    }
+
+    // Run color decorators on mount and on content changes
+    updateColorDecorations()
+    editor.onDidChangeModelContent(() => {
+      updateColorDecorations()
     })
 
     // ── Register snippet completion providers ──────────────────
@@ -500,6 +589,281 @@ export default function EditorPanel() {
             sortText: `!${snippet.prefix}`,
           }))
           return { suggestions }
+        },
+      })
+    }
+
+    // ── CodeLens provider: show reference counts above functions ──────────────────
+    const codeLensLanguages = ['typescript', 'javascript', 'typescriptreact', 'javascriptreact']
+    const FUNC_DEF_REGEX = /^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?(?:\(|(?:\w+)\s*=>)|class\s+(\w+))/
+    for (const lang of codeLensLanguages) {
+      monaco.languages.registerCodeLensProvider(lang, {
+        provideCodeLenses: (model) => {
+          const lenses: { range: any; id: string; command: { id: string; title: string; arguments?: any[] } }[] = []
+          const text = model.getValue()
+          const lineCount = model.getLineCount()
+
+          // Collect all function/class definitions
+          const definitions: { name: string; line: number }[] = []
+          for (let lineNum = 1; lineNum <= lineCount; lineNum++) {
+            const lineContent = model.getLineContent(lineNum)
+            const match = FUNC_DEF_REGEX.exec(lineContent)
+            if (match) {
+              const name = match[1] || match[2] || match[3]
+              if (name) {
+                definitions.push({ name, line: lineNum })
+              }
+            }
+          }
+
+          // For each definition, count references in the file
+          for (const def of definitions) {
+            // Count occurrences of the name as a whole word, minus the definition itself
+            const nameRegex = new RegExp(`\\b${def.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')
+            const matches = text.match(nameRegex)
+            const refCount = matches ? matches.length - 1 : 0 // subtract the definition itself
+
+            lenses.push({
+              range: new monaco.Range(def.line, 1, def.line, 1),
+              id: `codelens-${def.name}-${def.line}`,
+              command: {
+                id: `orion.showReferences.${def.name}`,
+                title: `${refCount} reference${refCount !== 1 ? 's' : ''}`,
+                arguments: [def.name, def.line],
+              },
+            })
+          }
+
+          return { lenses, dispose: () => {} }
+        },
+        resolveCodeLens: (_model, codeLens) => codeLens,
+      })
+    }
+
+    // Register a command handler for CodeLens clicks (scroll to next reference)
+    editor.addAction({
+      id: 'orion-codelens-show-references',
+      label: 'Show References',
+      run: () => { /* no-op: command dispatch handled below */ },
+    })
+
+    // ── Definition provider: basic go-to-definition for TS/JS ──────────────────
+    const IMPORT_REGEX = /(?:import\s+.*\s+from\s+['"](.+?)['"]|require\s*\(\s*['"](.+?)['"]\s*\))/
+    for (const lang of codeLensLanguages) {
+      monaco.languages.registerDefinitionProvider(lang, {
+        provideDefinition: (model, position) => {
+          const lineContent = model.getLineContent(position.lineNumber)
+          const word = model.getWordAtPosition(position)
+          if (!word) return null
+
+          // Check if cursor is on an import path - resolve the file
+          const importMatch = IMPORT_REGEX.exec(lineContent)
+          if (importMatch) {
+            const importPath = importMatch[1] || importMatch[2]
+            if (importPath) {
+              // Dispatch an event to open the file (let the app resolve the path)
+              window.dispatchEvent(new CustomEvent('orion:open-file-from-import', {
+                detail: { importPath, currentFile: model.uri.toString() },
+              }))
+            }
+            // Return current position as fallback so Monaco doesn't error
+            return {
+              uri: model.uri,
+              range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+            }
+          }
+
+          // Same-file definition: find where the word is defined (function, const, let, var, class)
+          const symbolName = word.word
+          const defRegex = new RegExp(
+            `(?:function\\s+${symbolName}\\b|(?:const|let|var)\\s+${symbolName}\\s*[=:]|class\\s+${symbolName}\\b|interface\\s+${symbolName}\\b|type\\s+${symbolName}\\b)`,
+          )
+          const lineCount = model.getLineCount()
+          for (let lineNum = 1; lineNum <= lineCount; lineNum++) {
+            const content = model.getLineContent(lineNum)
+            if (defRegex.test(content)) {
+              return {
+                uri: model.uri,
+                range: new monaco.Range(lineNum, 1, lineNum, content.length + 1),
+              }
+            }
+          }
+
+          return null
+        },
+      })
+    }
+
+    // ── Hover provider: show type hints, import paths, and color previews ──────────────────
+    const TS_KEYWORDS: Record<string, string> = {
+      'string': 'Primitive type: represents text data.',
+      'number': 'Primitive type: represents numeric values (integers and floats).',
+      'boolean': 'Primitive type: represents true/false values.',
+      'void': 'Type: indicates no return value.',
+      'null': 'Primitive type: intentional absence of any value.',
+      'undefined': 'Primitive type: variable declared but not assigned.',
+      'any': 'Type: opt out of type checking. Any value is allowed.',
+      'unknown': 'Type: type-safe counterpart of any. Must narrow before use.',
+      'never': 'Type: represents values that never occur (e.g. function that always throws).',
+      'object': 'Type: represents non-primitive values.',
+      'Array': 'Built-in generic type: Array<T> or T[].',
+      'Promise': 'Built-in generic type: Promise<T> represents an async result.',
+      'Record': 'Utility type: Record<K, V> constructs an object type.',
+      'Partial': 'Utility type: Partial<T> makes all properties optional.',
+      'Required': 'Utility type: Required<T> makes all properties required.',
+      'Readonly': 'Utility type: Readonly<T> makes all properties readonly.',
+      'Pick': 'Utility type: Pick<T, K> picks a set of properties.',
+      'Omit': 'Utility type: Omit<T, K> omits a set of properties.',
+      'Exclude': 'Utility type: Exclude<T, U> excludes types assignable to U.',
+      'Extract': 'Utility type: Extract<T, U> extracts types assignable to U.',
+      'ReturnType': 'Utility type: ReturnType<T> extracts the return type of a function type.',
+      'Parameters': 'Utility type: Parameters<T> extracts parameter types of a function type.',
+      'useState': 'React Hook: returns [state, setState]. Manages component state.',
+      'useEffect': 'React Hook: runs side effects after render. Cleanup via return function.',
+      'useRef': 'React Hook: returns a mutable ref object that persists across renders.',
+      'useCallback': 'React Hook: returns a memoized callback function.',
+      'useMemo': 'React Hook: returns a memoized value. Recomputes only when dependencies change.',
+      'useContext': 'React Hook: accepts a context object and returns the current context value.',
+      'useReducer': 'React Hook: alternative to useState for complex state logic.',
+      'async': 'Keyword: declares an asynchronous function that returns a Promise.',
+      'await': 'Keyword: pauses async function execution until a Promise settles.',
+      'interface': 'Keyword: declares a TypeScript interface (structural type).',
+      'type': 'Keyword: declares a TypeScript type alias.',
+      'enum': 'Keyword: declares a TypeScript enum (set of named constants).',
+      'const': 'Keyword: declares a block-scoped constant binding.',
+      'let': 'Keyword: declares a block-scoped variable binding.',
+      'function': 'Keyword: declares a function.',
+      'class': 'Keyword: declares a class.',
+      'extends': 'Keyword: used in class/interface inheritance.',
+      'implements': 'Keyword: used to implement an interface in a class.',
+      'import': 'Keyword: imports bindings from another module.',
+      'export': 'Keyword: exports bindings from a module.',
+    }
+
+    const HOVER_IMPORT_REGEX = /import\s+(?:\{[^}]*\}|[^{}]+)\s+from\s+['"](.+?)['"]/
+    const CSS_HEX_REGEX = /#(?:[0-9a-fA-F]{3,4}){1,2}\b/
+    const CSS_RGBA_REGEX = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/
+    const CSS_HSLA_REGEX = /hsla?\(\s*(\d+)\s*,\s*(\d+)%?\s*,\s*(\d+)%?\s*(?:,\s*([\d.]+))?\s*\)/
+
+    for (const lang of codeLensLanguages) {
+      monaco.languages.registerHoverProvider(lang, {
+        provideHover: (model, position) => {
+          const word = model.getWordAtPosition(position)
+          const lineContent = model.getLineContent(position.lineNumber)
+
+          // CSS color preview: check if cursor is on a color value
+          // Check hex colors
+          const hexMatch = CSS_HEX_REGEX.exec(lineContent)
+          if (hexMatch) {
+            const startCol = hexMatch.index + 1
+            const endCol = startCol + hexMatch[0].length
+            if (position.column >= startCol && position.column <= endCol) {
+              const colorVal = hexMatch[0]
+              return {
+                range: new monaco.Range(position.lineNumber, startCol, position.lineNumber, endCol),
+                contents: [
+                  { value: `**Color Preview**` },
+                  { value: `\`${colorVal}\`\n\n${'\\'}u2588${'\\'}u2588${'\\'}u2588 \`${colorVal}\`` },
+                ],
+              }
+            }
+          }
+
+          // Check rgba colors
+          const rgbaMatch = CSS_RGBA_REGEX.exec(lineContent)
+          if (rgbaMatch) {
+            const startCol = rgbaMatch.index + 1
+            const endCol = startCol + rgbaMatch[0].length
+            if (position.column >= startCol && position.column <= endCol) {
+              const colorVal = rgbaMatch[0]
+              const r = rgbaMatch[1], g = rgbaMatch[2], b = rgbaMatch[3], a = rgbaMatch[4] || '1'
+              return {
+                range: new monaco.Range(position.lineNumber, startCol, position.lineNumber, endCol),
+                contents: [
+                  { value: `**Color Preview**` },
+                  { value: `\`${colorVal}\`\n\nR: ${r} G: ${g} B: ${b} A: ${a}` },
+                ],
+              }
+            }
+          }
+
+          // Check hsla colors
+          const hslaMatch = CSS_HSLA_REGEX.exec(lineContent)
+          if (hslaMatch) {
+            const startCol = hslaMatch.index + 1
+            const endCol = startCol + hslaMatch[0].length
+            if (position.column >= startCol && position.column <= endCol) {
+              const colorVal = hslaMatch[0]
+              const h = hslaMatch[1], s = hslaMatch[2], l = hslaMatch[3], a = hslaMatch[4] || '1'
+              return {
+                range: new monaco.Range(position.lineNumber, startCol, position.lineNumber, endCol),
+                contents: [
+                  { value: `**Color Preview**` },
+                  { value: `\`${colorVal}\`\n\nH: ${h} S: ${s}% L: ${l}% A: ${a}` },
+                ],
+              }
+            }
+          }
+
+          if (!word) return null
+
+          // Import path hover: show where a symbol is imported from
+          const importMatch = HOVER_IMPORT_REGEX.exec(lineContent)
+          if (importMatch) {
+            const importPath = importMatch[1]
+            // Check if cursor is on the import specifier names
+            const braceStart = lineContent.indexOf('{')
+            const braceEnd = lineContent.indexOf('}')
+            if (braceStart !== -1 && braceEnd !== -1 && position.column > braceStart && position.column <= braceEnd + 1) {
+              return {
+                range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+                contents: [
+                  { value: `**\`${word.word}\`**` },
+                  { value: `Imported from \`${importPath}\`` },
+                ],
+              }
+            }
+            // Default import
+            const defaultImportMatch = lineContent.match(/import\s+(\w+)\s+from/)
+            if (defaultImportMatch && defaultImportMatch[1] === word.word) {
+              return {
+                range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+                contents: [
+                  { value: `**\`${word.word}\`** (default import)` },
+                  { value: `Imported from \`${importPath}\`` },
+                ],
+              }
+            }
+          }
+
+          // TypeScript/JS keyword hints
+          if (TS_KEYWORDS[word.word]) {
+            return {
+              range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+              contents: [
+                { value: `**\`${word.word}\`**` },
+                { value: TS_KEYWORDS[word.word] },
+              ],
+            }
+          }
+
+          // Check if the hovered word is imported somewhere in the file
+          const fullText = model.getValue()
+          const importLineRegex = new RegExp(
+            `import\\s+(?:\\{[^}]*\\b${word.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[^}]*\\}|${word.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\s+from\\s+['"](.+?)['"]`,
+          )
+          const fileImportMatch = importLineRegex.exec(fullText)
+          if (fileImportMatch) {
+            return {
+              range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+              contents: [
+                { value: `**\`${word.word}\`**` },
+                { value: `Imported from \`${fileImportMatch[1]}\`` },
+              ],
+            }
+          }
+
+          return null
         },
       })
     }
@@ -621,6 +985,87 @@ export default function EditorPanel() {
     window.addEventListener('orion:ai-context-response', handler)
     return () => window.removeEventListener('orion:ai-context-response', handler)
   }, [])
+
+  // ── Git gutter decorations ──────────────────
+  // Show colored indicators in the editor gutter for modified/added/deleted lines
+  useEffect(() => {
+    const editor = editorRef.current
+    const monaco = monacoRef.current
+    if (!editor || !monaco || !activeFilePath || !rootPath) return
+
+    let cancelled = false
+
+    const fetchAndApplyGitGutter = async () => {
+      try {
+        const hunks: DiffHunk[] = await window.api.gitFileDiff(rootPath, activeFilePath)
+        if (cancelled) return
+
+        const decorations: MonacoEditor.IModelDeltaDecoration[] = []
+        for (const hunk of hunks) {
+          if (hunk.type === 'added') {
+            // Green bar in gutter for added lines
+            for (let i = 0; i < hunk.count; i++) {
+              decorations.push({
+                range: new monaco.Range(hunk.startLine + i, 1, hunk.startLine + i, 1),
+                options: {
+                  isWholeLine: true,
+                  linesDecorationsClassName: 'orion-git-gutter-added',
+                  overviewRuler: { color: '#2ea04370', position: monaco.editor.OverviewRulerLane.Left },
+                  minimap: { color: '#2ea04350', position: monaco.editor.MinimapPosition.Gutter },
+                },
+              })
+            }
+          } else if (hunk.type === 'modified') {
+            // Blue bar in gutter for modified lines
+            for (let i = 0; i < hunk.count; i++) {
+              decorations.push({
+                range: new monaco.Range(hunk.startLine + i, 1, hunk.startLine + i, 1),
+                options: {
+                  isWholeLine: true,
+                  linesDecorationsClassName: 'orion-git-gutter-modified',
+                  overviewRuler: { color: '#1f6feb70', position: monaco.editor.OverviewRulerLane.Left },
+                  minimap: { color: '#1f6feb50', position: monaco.editor.MinimapPosition.Gutter },
+                },
+              })
+            }
+          } else if (hunk.type === 'deleted') {
+            // Red triangle indicator at the deleted line position
+            decorations.push({
+              range: new monaco.Range(hunk.startLine, 1, hunk.startLine, 1),
+              options: {
+                isWholeLine: false,
+                linesDecorationsClassName: 'orion-git-gutter-deleted',
+                overviewRuler: { color: '#f8514970', position: monaco.editor.OverviewRulerLane.Left },
+                minimap: { color: '#f8514950', position: monaco.editor.MinimapPosition.Gutter },
+              },
+            })
+          }
+        }
+
+        gitGutterDecorationsRef.current = editor.deltaDecorations(
+          gitGutterDecorationsRef.current,
+          decorations
+        )
+      } catch {
+        // Silently ignore git errors (e.g., file not tracked)
+      }
+    }
+
+    fetchAndApplyGitGutter()
+
+    // Re-fetch git gutter on content changes (debounced)
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+    const disposable = editor.onDidChangeModelContent(() => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(fetchAndApplyGitGutter, 1500)
+    })
+
+    return () => {
+      cancelled = true
+      disposable.dispose()
+      if (debounceTimer) clearTimeout(debounceTimer)
+    }
+  }, [activeFilePath, rootPath])
 
   // Ctrl+S save handler
   useEffect(() => {
@@ -784,15 +1229,28 @@ export default function EditorPanel() {
       }
     }
 
+    // Set language handler (from StatusBar language selector)
+    const setLanguageHandler = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail?.languageId && editorRef.current && monacoRef.current) {
+        const model = editorRef.current.getModel()
+        if (model) {
+          monacoRef.current.editor.setModelLanguage(model, detail.languageId)
+        }
+      }
+    }
+
     Object.entries(handlers).forEach(([event, handler]) => {
       window.addEventListener(event, handler)
     })
     window.addEventListener('orion:go-to-line', goToLineHandler)
+    window.addEventListener('orion:set-language', setLanguageHandler)
     return () => {
       Object.entries(handlers).forEach(([event, handler]) => {
         window.removeEventListener(event, handler)
       })
       window.removeEventListener('orion:go-to-line', goToLineHandler)
+      window.removeEventListener('orion:set-language', setLanguageHandler)
     }
   }, [activeFilePath, activeFile, closeFile, closeAllFiles, markSaved, addToast])
 
@@ -802,11 +1260,9 @@ export default function EditorPanel() {
     fontLigatures: true,
     minimap: {
       enabled: editorConfig.minimap,
-      scale: 1,
+      scale: 2,
       showSlider: 'mouseover',
-      maxColumn: 60,
       renderCharacters: false,
-      side: 'right',
     },
     scrollBeyondLastLine: false,
     smoothScrolling: true,
@@ -854,7 +1310,24 @@ export default function EditorPanel() {
   }
 
   return (
-    <div className="h-full flex flex-col" style={{ background: 'var(--bg-primary)' }}>
+    <div
+      className="h-full flex flex-col"
+      style={{ background: 'var(--bg-primary)', position: 'relative' }}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Drop overlay for OS file drag */}
+      {isDragOver && (
+        <div className="drop-overlay">
+          <div className="drop-overlay-content">
+            <Upload size={32} />
+            <span>Drop file to open</span>
+          </div>
+        </div>
+      )}
+
       <TabBar />
 
       {/* Separator between tab bar and breadcrumbs */}

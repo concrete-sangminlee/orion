@@ -35,6 +35,7 @@ const api = {
   gitCommit: (cwd: string, message: string) => ipcRenderer.invoke(IPC.GIT_COMMIT, cwd, message),
   gitDiscard: (cwd: string, filePath: string) => ipcRenderer.invoke(IPC.GIT_DISCARD, cwd, filePath),
   gitBranches: (cwd: string) => ipcRenderer.invoke(IPC.GIT_BRANCHES, cwd),
+  gitCheckout: (cwd: string, branch: string) => ipcRenderer.invoke(IPC.GIT_CHECKOUT, cwd, branch),
   gitShow: (cwd: string, hash: string) => ipcRenderer.invoke(IPC.GIT_SHOW, cwd, hash),
   gitFileDiff: (cwd: string, filePath: string) => ipcRenderer.invoke(IPC.GIT_FILE_DIFF, cwd, filePath),
 
@@ -52,6 +53,10 @@ const api = {
   // Settings
   getSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET),
   setSettings: (settings: unknown) => ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
+
+  // Workspace settings
+  workspaceReadSettings: (rootPath: string) => ipcRenderer.invoke(IPC.WORKSPACE_READ_SETTINGS, rootPath),
+  workspaceWriteSettings: (rootPath: string, settings: unknown) => ipcRenderer.invoke(IPC.WORKSPACE_WRITE_SETTINGS, rootPath, settings),
 
   // OMO
   omoStart: (projectPath: string) => ipcRenderer.invoke(IPC.OMO_START, projectPath),

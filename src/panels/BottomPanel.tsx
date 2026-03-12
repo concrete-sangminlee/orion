@@ -1,8 +1,10 @@
 import { useState, useCallback } from 'react'
 import TerminalPanel from './TerminalPanel'
 import ProblemsPanel from './ProblemsPanel'
+import OutputPanel from './OutputPanel'
 import { useAgentStore } from '@/store/agents'
 import { useProblemsStore } from '@/store/problems'
+import { useOutputStore } from '@/store/output'
 import {
   Terminal, Activity, AlertTriangle, FileOutput,
   ChevronRight, AlertCircle, Info, Zap, Plus, X, Trash2,
@@ -61,6 +63,11 @@ export default function BottomPanel() {
     })
   }, [activeTerminal])
 
+  // Output channel info
+  const outputActiveChannel = useOutputStore((s) => s.activeChannel)
+  const outputChannels = useOutputStore((s) => s.channels)
+  const outputLineCount = outputChannels.get(outputActiveChannel)?.length ?? 0
+
   // Counts for badges
   const problems = useProblemsStore((s) => s.problems)
   const problemsErrorCount = problems.filter((p) => p.severity === 'error').length
@@ -92,7 +99,14 @@ export default function BottomPanel() {
               ? problemsBadge
               : id === 'agent-log'
                 ? logCount
-                : 0
+                : id === 'output'
+                  ? outputLineCount
+                  : 0
+          // Show channel name in Output tab when not Main
+          const displayLabel =
+            id === 'output' && outputActiveChannel !== 'Main'
+              ? `${label}: ${outputActiveChannel}`
+              : label
 
           return (
             <button
@@ -117,7 +131,7 @@ export default function BottomPanel() {
               }}
             >
               <Icon size={12} />
-              {label}
+              {displayLabel}
 
               {/* Badge */}
               {badge > 0 && (
@@ -337,13 +351,7 @@ export default function BottomPanel() {
 
         {activeTab === 'problems' && <ProblemsPanel />}
 
-        {activeTab === 'output' && (
-          <EmptyTabContent
-            Icon={FileOutput}
-            message="No output"
-            sub="Extension and task output will appear here"
-          />
-        )}
+        {activeTab === 'output' && <OutputPanel />}
       </div>
     </div>
   )

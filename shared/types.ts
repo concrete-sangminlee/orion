@@ -81,6 +81,17 @@ export interface AppSettings {
   agentModelMapping: Record<string, string>
 }
 
+// Workspace settings types
+export interface WorkspaceSettings {
+  excludePatterns: string[]
+  searchExcludes: string[]
+  autoSave: boolean
+  formatOnSave: boolean
+  tabSize: number
+  insertSpaces: boolean
+  fileAssociations: Record<string, string>
+}
+
 // OMO types
 export interface OmoMessage {
   type: 'agent-status' | 'agent-log' | 'file-edit' | 'task-complete' | 'error'

@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useFileStore } from '@/store/files'
 import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
+import { useWorkspaceStore } from '@/store/workspace'
 import {
   ChevronRight, ChevronsDownUp,
   File, FileCode, FileCode2, FileText,
@@ -10,7 +11,7 @@ import {
   FilePlus, Trash2, Edit3, Clipboard, Plus,
   Globe, Palette, Terminal as TermIcon, Coffee, Gem,
   Database, Lock, Package, Copy, FolderIcon,
-  Columns, ExternalLink,
+  Columns, ExternalLink, Upload,
 } from 'lucide-react'
 import type { FileNode } from '@shared/types'
 
@@ -524,6 +525,9 @@ function FileTreeNode({
   inlineInput,
   onInlineSubmit,
   onInlineCancel,
+  dropTargetFolder,
+  onFolderDragOver,
+  onFolderDragLeave,
 }: {
   node: FileNode
   depth: number
@@ -531,6 +535,9 @@ function FileTreeNode({
   inlineInput: InlineInputState | null
   onInlineSubmit: (value: string) => void
   onInlineCancel: () => void
+  dropTargetFolder?: string | null
+  onFolderDragOver?: (e: React.DragEvent, folderPath: string) => void
+  onFolderDragLeave?: (e: React.DragEvent) => void
 }) {
   const { expandedDirs, toggleDir } = useFileStore()
   const { openFile, activeFilePath, pinFile } = useEditorStore()
@@ -618,6 +625,9 @@ function FileTreeNode({
             inlineInput={inlineInput}
             onInlineSubmit={onInlineSubmit}
             onInlineCancel={onInlineCancel}
+            dropTargetFolder={dropTargetFolder}
+            onFolderDragOver={onFolderDragOver}
+            onFolderDragLeave={onFolderDragLeave}
           />
         ))}
       </>
@@ -630,32 +640,38 @@ function FileTreeNode({
     (inlineInput.mode === 'new-file' || inlineInput.mode === 'new-folder') &&
     inlineInput.parentPath === node.path
 
+  const isFolderDropTarget = isDir && dropTargetFolder === node.path
+
   return (
     <>
       <div
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleCtx}
-        className="flex items-center cursor-pointer transition-colors duration-75"
+        className={`flex items-center cursor-pointer transition-colors duration-75${isFolderDropTarget ? ' folder-drop-target' : ''}`}
         style={{
           height: 24,
           paddingLeft: depth * 16 + (isDir ? 6 : 24),
           paddingRight: 8,
           position: 'relative',
-          background: isActive
-            ? 'rgba(88,166,255,0.1)'
-            : contextActive
-              ? 'rgba(88,166,255,0.06)'
-              : undefined,
+          background: isFolderDropTarget
+            ? undefined  /* handled by folder-drop-target class */
+            : isActive
+              ? 'rgba(88,166,255,0.1)'
+              : contextActive
+                ? 'rgba(88,166,255,0.06)'
+                : undefined,
           color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
           fontSize: 12,
         }}
         onMouseEnter={(e) => {
-          if (!isActive) e.currentTarget.style.background = 'rgba(255,255,255,0.035)'
+          if (!isActive && !isFolderDropTarget) e.currentTarget.style.background = 'rgba(255,255,255,0.035)'
         }}
         onMouseLeave={(e) => {
-          if (!isActive && !contextActive) e.currentTarget.style.background = 'transparent'
+          if (!isActive && !contextActive && !isFolderDropTarget) e.currentTarget.style.background = 'transparent'
         }}
+        onDragOver={isDir && onFolderDragOver ? (e) => onFolderDragOver(e, node.path) : undefined}
+        onDragLeave={isDir && onFolderDragLeave ? onFolderDragLeave : undefined}
       >
         {/* Indent guides */}
         <IndentGuides depth={depth} />
@@ -740,6 +756,9 @@ function FileTreeNode({
           inlineInput={inlineInput}
           onInlineSubmit={onInlineSubmit}
           onInlineCancel={onInlineCancel}
+          dropTargetFolder={dropTargetFolder}
+          onFolderDragOver={onFolderDragOver}
+          onFolderDragLeave={onFolderDragLeave}
         />
       ))}
     </>
@@ -765,6 +784,51 @@ function relativePath(root: string, target: string): string {
   return t
 }
 
+/* ── Glob pattern matching (simple) ────────────────────── */
+
+/**
+ * Convert a simple glob pattern to a RegExp.
+ * Supports: * (any chars except /), ** (any chars), ? (single char).
+ * A bare name like "node_modules" matches any segment.
+ */
+function globToRegExp(pattern: string): RegExp {
+  // If the pattern has no path separators and no wildcards, match as a segment name
+  if (!pattern.includes('/') && !pattern.includes('*') && !pattern.includes('?')) {
+    // Match the name exactly as a path segment
+    return new RegExp('(^|[\\\\/])' + escapeRegExp(pattern) + '($|[\\\\/])')
+  }
+  let re = pattern
+    .replace(/\\/g, '/')
+    .replace(/\*\*/g, '\0GLOBSTAR\0')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/\0GLOBSTAR\0/g, '.*')
+  // Escape dots
+  re = re.replace(/\./g, '\\.')
+  return new RegExp('(^|[\\\\/])' + re + '$', 'i')
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function filterTreeByExcludes(tree: FileNode[], patterns: RegExp[]): FileNode[] {
+  return tree
+    .filter((node) => {
+      // Check if the node name matches any exclude pattern
+      for (const re of patterns) {
+        if (re.test(node.name)) return false
+      }
+      return true
+    })
+    .map((node) => {
+      if (node.type === 'directory' && node.children) {
+        return { ...node, children: filterTreeByExcludes(node.children, patterns) }
+      }
+      return node
+    })
+}
+
 /* ── File Explorer panel ───────────────────────────────── */
 
 export default function FileExplorer() {
@@ -773,10 +837,26 @@ export default function FileExplorer() {
   const setFileTree = useFileStore((s) => s.setFileTree)
   const toggleDir = useFileStore((s) => s.toggleDir)
   const addToast = useToastStore((s) => s.addToast)
+  const excludePatterns = useWorkspaceStore((s) => s.settings.excludePatterns)
+
+  // Compile exclude patterns into RegExps and filter the tree
+  const excludeRegExps = useMemo(
+    () => excludePatterns.map(globToRegExp),
+    [excludePatterns],
+  )
+  const filteredTree = useMemo(
+    () => filterTreeByExcludes(fileTree, excludeRegExps),
+    [fileTree, excludeRegExps],
+  )
 
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null)
   const [inlineInput, setInlineInput] = useState<InlineInputState | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<FileNode | null>(null)
+
+  // Drag-and-drop state for OS file drops into explorer
+  const [explorerDragOver, setExplorerDragOver] = useState(false)
+  const [dropTargetFolder, setDropTargetFolder] = useState<string | null>(null)
+  const explorerDragCounterRef = useRef(0)
 
   /* ── Standard handlers ───────────────────────────────── */
 
@@ -1091,6 +1171,95 @@ export default function FileExplorer() {
     setInlineInput(null)
   }, [])
 
+  /* ── Drag-and-drop from OS file explorer ─────────────── */
+
+  const handleExplorerDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    explorerDragCounterRef.current++
+    if (e.dataTransfer.types.includes('Files')) {
+      setExplorerDragOver(true)
+    }
+  }, [])
+
+  const handleExplorerDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    explorerDragCounterRef.current--
+    if (explorerDragCounterRef.current <= 0) {
+      explorerDragCounterRef.current = 0
+      setExplorerDragOver(false)
+      setDropTargetFolder(null)
+    }
+  }, [])
+
+  const handleExplorerDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.dataTransfer.types.includes('Files')) {
+      e.dataTransfer.dropEffect = 'copy'
+    }
+  }, [])
+
+  const handleExplorerDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    explorerDragCounterRef.current = 0
+    setExplorerDragOver(false)
+    setDropTargetFolder(null)
+
+    if (!rootPath) return
+
+    const files = e.dataTransfer.files
+    if (!files || files.length === 0) return
+
+    // Determine the target directory: use dropTargetFolder or root
+    const targetDir = dropTargetFolder || rootPath
+
+    let copiedCount = 0
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const filePath = (file as any).path as string | undefined
+      if (!filePath) continue
+
+      try {
+        const result = await window.api.copyFile(filePath, targetDir)
+        if (result.success) {
+          copiedCount++
+        } else {
+          addToast({ type: 'error', message: `Failed to copy ${file.name}: ${result.error}` })
+        }
+      } catch (err: any) {
+        addToast({ type: 'error', message: `Failed to copy ${file.name}: ${err?.message || err}` })
+      }
+    }
+
+    if (copiedCount > 0) {
+      addToast({
+        type: 'success',
+        message: copiedCount === 1
+          ? `Copied ${files[0].name} to workspace`
+          : `Copied ${copiedCount} files to workspace`,
+      })
+      // Refresh the file tree to show new files
+      await handleRefresh()
+    }
+  }, [rootPath, dropTargetFolder, addToast, handleRefresh])
+
+  /** Handler for when a folder row is dragged over (to highlight target folder) */
+  const handleFolderDragOver = useCallback((e: React.DragEvent, folderPath: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.dataTransfer.types.includes('Files')) {
+      e.dataTransfer.dropEffect = 'copy'
+      setDropTargetFolder(folderPath)
+    }
+  }, [])
+
+  const handleFolderDragLeave = useCallback((_e: React.DragEvent) => {
+    setDropTargetFolder(null)
+  }, [])
+
   /* ── Background click to close context menu ─────────── */
 
   const handleTreeContextMenu = useCallback((e: React.MouseEvent) => {
@@ -1115,7 +1284,24 @@ export default function FileExplorer() {
     inlineInput.parentPath === rootPath
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div
+      className="flex-1 flex flex-col overflow-hidden"
+      style={{ position: 'relative' }}
+      onDragEnter={handleExplorerDragEnter}
+      onDragLeave={handleExplorerDragLeave}
+      onDragOver={handleExplorerDragOver}
+      onDrop={handleExplorerDrop}
+    >
+      {/* Drop overlay for OS file drag into explorer */}
+      {explorerDragOver && (
+        <div className="drop-overlay">
+          <div className="drop-overlay-content">
+            <Upload size={24} />
+            <span>Drop to copy into workspace</span>
+          </div>
+        </div>
+      )}
+
       {/* Section Header */}
       <div
         className="shrink-0 flex items-center px-4"
@@ -1213,6 +1399,9 @@ export default function FileExplorer() {
                 inlineInput={inlineInput}
                 onInlineSubmit={handleInlineSubmit}
                 onInlineCancel={handleInlineCancel}
+                dropTargetFolder={dropTargetFolder}
+                onFolderDragOver={handleFolderDragOver}
+                onFolderDragLeave={handleFolderDragLeave}
               />
             ))}
           </>

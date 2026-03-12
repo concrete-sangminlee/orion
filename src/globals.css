@@ -511,3 +511,47 @@ button {
   outline-offset: -1px;
   border-radius: 3px;
 }
+
+/* ── Editor Decorations ──────────────────────────────── */
+
+/* Active line highlight: subtle background on the current line */
+.orion-active-line-highlight {
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+/* Git gutter decorations */
+.orion-git-gutter-added {
+  width: 3px !important;
+  margin-left: 3px;
+  background: #2ea043 !important;
+  border-radius: 1px;
+}
+
+.orion-git-gutter-modified {
+  width: 3px !important;
+  margin-left: 3px;
+  background: #1f6feb !important;
+  border-radius: 1px;
+}
+
+.orion-git-gutter-deleted {
+  width: 0 !important;
+  height: 0 !important;
+  margin-left: 2px;
+  margin-top: 2px;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid #f85149;
+  background: transparent !important;
+}
+
+/* Color decorator swatch */
+.orion-color-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
