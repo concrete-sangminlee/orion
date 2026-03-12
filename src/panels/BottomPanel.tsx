@@ -1,7 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react'
 import TerminalPanel from './TerminalPanel'
 import ProblemsPanel from './ProblemsPanel'
 import OutputPanel from './OutputPanel'
+
+const DebugConsolePanel = lazy(() => import('./DebugConsolePanel'))
+const PortsPanel = lazy(() => import('./PortsPanel'))
 import { useAgentStore } from '@/store/agents'
 import { useProblemsStore } from '@/store/problems'
 import { useOutputStore } from '@/store/output'
@@ -1294,19 +1297,15 @@ export default function BottomPanel() {
         {activeTab === 'output' && <OutputPanel />}
 
         {activeTab === 'debug-console' && (
-          <EmptyTabContent
-            Icon={Bug}
-            message="No debug session active"
-            sub="Start a debug session to see console output here"
-          />
+          <Suspense fallback={<EmptyTabContent Icon={Bug} message="Loading Debug Console..." sub="" />}>
+            <DebugConsolePanel />
+          </Suspense>
         )}
 
         {activeTab === 'ports' && (
-          <EmptyTabContent
-            Icon={Globe}
-            message="No forwarded ports"
-            sub="Forwarded ports will appear here when detected"
-          />
+          <Suspense fallback={<EmptyTabContent Icon={Globe} message="Loading Ports..." sub="" />}>
+            <PortsPanel />
+          </Suspense>
         )}
       </div>
 
