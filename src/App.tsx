@@ -77,6 +77,23 @@ const SearchReplaceDialog = React.lazy(() => import('./components/SearchReplaceD
 const WorkspaceTrust = React.lazy(() => import('./components/WorkspaceTrust'))
 const SettingsEditor = React.lazy(() => import('./components/SettingsEditor'))
 const KeybindingEditor = React.lazy(() => import('./components/KeybindingEditor'))
+const AIChatWidget = React.lazy(() => import('./components/AIChatWidget'))
+const DebugToolbar = React.lazy(() => import('./components/DebugToolbar'))
+const ProcessExplorer = React.lazy(() => import('./components/ProcessExplorer'))
+const PeekDefinition = React.lazy(() => import('./components/PeekDefinition'))
+const NotificationToast = React.lazy(() => import('./components/NotificationToast'))
+const WelcomePage = React.lazy(() => import('./components/WelcomePage'))
+const ContextMenu = React.lazy(() => import('./components/ContextMenu'))
+const EditorTabContextMenu = React.lazy(() => import('./components/EditorTabContextMenu'))
+const EditorMinimap = React.lazy(() => import('./components/EditorMinimap'))
+const AIInlineActions = React.lazy(() => import('./components/AIInlineActions'))
+const BreadcrumbDropdown = React.lazy(() => import('./components/BreadcrumbDropdown'))
+const StatusBarWidgets = React.lazy(() => import('./components/StatusBarWidgets'))
+const TerminalTabs = React.lazy(() => import('./components/TerminalTabs'))
+const AnalyticsDashboard = React.lazy(() => import('./components/AnalyticsDashboard'))
+const ReleaseNotes = React.lazy(() => import('./components/ReleaseNotes'))
+const QuickOpen = React.lazy(() => import('./components/QuickOpen'))
+const MergeConflictResolver = React.lazy(() => import('./components/MergeConflictResolver'))
 
 /** Workspace trust key prefix in localStorage */
 const WORKSPACE_TRUST_KEY = 'orion-workspace-trust'
