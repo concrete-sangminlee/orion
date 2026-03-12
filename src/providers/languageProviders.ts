@@ -135,22 +135,7 @@ function findAllOccurrences(symbolName: string, text: string): Occurrence[] {
   return results
 }
 
-// ── JSDoc extraction ──────────────────
-function extractJSDoc(lines: string[], defLineIdx: number): string | null {
-  let endIdx = defLineIdx - 1
-  while (endIdx >= 0 && lines[endIdx].trim() === '') endIdx--
-  if (endIdx < 0 || !lines[endIdx].trim().endsWith('*/')) return null
-  let startIdx = endIdx
-  while (startIdx >= 0 && !lines[startIdx].includes('/**')) startIdx--
-  if (startIdx < 0) return null
-  return lines
-    .slice(startIdx, endIdx + 1)
-    .map((l) => l.trim().replace(/^\/\*\*\s?|\s?\*\/$/g, '').replace(/^\*\s?/, ''))
-    .filter((l) => l.length > 0)
-    .join('\n')
-}
-
-// ── Enhanced JSDoc extraction with markdown formatting ──────────────────
+// ── JSDoc extraction with markdown formatting ──────────────────
 function extractJSDocFormatted(lines: string[], defLineIdx: number): string | null {
   let endIdx = defLineIdx - 1
   while (endIdx >= 0 && lines[endIdx].trim() === '') endIdx--

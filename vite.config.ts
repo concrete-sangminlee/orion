@@ -8,17 +8,48 @@ import path from 'path'
 export default defineConfig({
   base: './',
   build: {
+    // Production source maps for debugging
     sourcemap: true,
+
+    // Use esbuild for minification (faster than terser)
+    minify: 'esbuild',
+
+    // Target modern browsers for smaller output
+    target: 'esnext',
+
+    // Inline assets smaller than 4KB as base64
+    assetsInlineLimit: 4096,
+
+    // Raise warning limit for large vendor chunks
     chunkSizeWarningLimit: 1000,
+
+    // Report compressed sizes after build
+    reportCompressedSize: true,
+
     rollupOptions: {
       output: {
         format: 'es',
+
+        // Cache-busting hashed filenames
+        entryFileNames: 'assets/[name]-[hash].js',
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash][extname]',
+
         manualChunks: {
-          'monaco-editor': ['monaco-editor'],
+          // Core framework
           'react-vendor': ['react', 'react-dom'],
-          'xterm': ['xterm', 'xterm-addon-fit', 'xterm-addon-web-links'],
+
+          // State management
           'zustand': ['zustand'],
+
+          // Icons
           'lucide': ['lucide-react'],
+
+          // Heavy editor dependency - isolate for caching
+          'monaco-editor': ['monaco-editor'],
+
+          // Terminal emulator + addons
+          'xterm': ['xterm', 'xterm-addon-fit', 'xterm-addon-web-links'],
         },
       },
     },
@@ -27,7 +58,27 @@ export default defineConfig({
     devSourcemap: true,
   },
   optimizeDeps: {
-    include: ['react', 'react-dom', 'zustand', 'lucide-react'],
+    // Pre-bundle heavy deps for faster dev startup and HMR
+    include: [
+      'react',
+      'react-dom',
+      'zustand',
+      'lucide-react',
+      'monaco-editor',
+      'xterm',
+      'xterm-addon-fit',
+      'xterm-addon-web-links',
+    ],
+  },
+  server: {
+    // HMR optimization
+    hmr: {
+      overlay: true,
+    },
+    // Faster file watching
+    watch: {
+      usePolling: false,
+    },
   },
   plugins: [
     react(),

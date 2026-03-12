@@ -1,60 +1,43 @@
 {
   "name": "orion-ide",
-  "version": "1.0.0",
-  "description": "Orion - AI-Powered Code Editor",
+  "version": "1.2.0",
+  "description": "AI-Powered Code Editor",
   "productName": "Orion IDE",
-  "author": "Orion Team",
+  "author": {
+    "name": "Orion Team",
+    "email": "team@orion-ide.dev",
+    "url": "https://orion-ide.dev"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/orion-ide/orion-ide#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/orion-ide/orion-ide.git"
+  },
+  "bugs": {
+    "url": "https://github.com/orion-ide/orion-ide/issues"
+  },
+  "keywords": [
+    "ide",
+    "editor",
+    "code-editor",
+    "ai",
+    "electron",
+    "typescript",
+    "developer-tools"
+  ],
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && electron-builder",
-    "build:electron": "vite build && electron-builder",
-    "build:win": "vite build && electron-builder --win",
-    "build:mac": "vite build && electron-builder --mac",
-    "build:linux": "vite build && electron-builder --linux",
+    "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest",
-    "electron:dev": "vite build && electron ."
-  },
-  "build": {
-    "appId": "com.orion.ide",
-    "productName": "Orion IDE",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "dist-electron/**/*"
-    ],
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ],
-      "icon": "public/icon.ico"
-    },
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "icon": "public/icon.icns",
-      "category": "public.app-category.developer-tools"
-    },
-    "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "icon": "public/icon.png",
-      "category": "Development"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    }
+    "electron:dev": "vite build && electron .",
+    "package": "tsc && vite build && electron-builder --config electron-builder.yml",
+    "package:win": "tsc && vite build && electron-builder --config electron-builder.yml --win",
+    "package:mac": "tsc && vite build && electron-builder --config electron-builder.yml --mac",
+    "package:linux": "tsc && vite build && electron-builder --config electron-builder.yml --linux",
+    "package:all": "tsc && vite build && electron-builder --config electron-builder.yml -mwl"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
