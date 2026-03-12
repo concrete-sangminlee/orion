@@ -411,4 +411,316 @@ export function registerGitHandlers() {
     const result = await runGit(cwd, 'merge --abort')
     return result
   })
+
+  // ── Cherry-pick ──────────────────────────────────────────────────────
+
+  ipcMain.handle('git:cherry-pick', async (_, cwd: string, commitHash: string) => {
+    const safeHash = commitHash.replace(/[^0-9a-fA-F]/g, '')
+    if (!safeHash) return { success: false, error: 'Invalid commit hash' }
+    try {
+      const result = await runGitExec(cwd, ['cherry-pick', safeHash])
+      return { success: true, output: result }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  // ── Revert ───────────────────────────────────────────────────────────
+
+  ipcMain.handle('git:revert', async (_, cwd: string, commitHash: string) => {
+    const safeHash = commitHash.replace(/[^0-9a-fA-F]/g, '')
+    if (!safeHash) return { success: false, error: 'Invalid commit hash' }
+    try {
+      const result = await runGitExec(cwd, ['revert', '--no-edit', safeHash])
+      return { success: true, output: result }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  // ── Interactive rebase status ────────────────────────────────────────
+
+  ipcMain.handle('git:rebase-status', async (_, cwd: string) => {
+    try {
+      const gitDir = await runGitExec(cwd, ['rev-parse', '--git-dir'])
+      if (!gitDir) return { rebasing: false }
+
+      const rebaseMergePath = path.resolve(cwd, gitDir, 'rebase-merge')
+      const rebaseApplyPath = path.resolve(cwd, gitDir, 'rebase-apply')
+      const isRebasing = fs.existsSync(rebaseMergePath) || fs.existsSync(rebaseApplyPath)
+
+      if (!isRebasing) return { rebasing: false }
+
+      // Determine which directory is active
+      const activeDir = fs.existsSync(rebaseMergePath) ? rebaseMergePath : rebaseApplyPath
+
+      let currentStep = 0
+      let totalSteps = 0
+      let headName = ''
+
+      const msgNumPath = path.join(activeDir, 'msgnum')
+      const endPath = path.join(activeDir, 'end')
+      const headNamePath = path.join(activeDir, 'head-name')
+
+      if (fs.existsSync(msgNumPath)) {
+        currentStep = parseInt(fs.readFileSync(msgNumPath, 'utf-8').trim(), 10) || 0
+      }
+      if (fs.existsSync(endPath)) {
+        totalSteps = parseInt(fs.readFileSync(endPath, 'utf-8').trim(), 10) || 0
+      }
+      if (fs.existsSync(headNamePath)) {
+        headName = fs.readFileSync(headNamePath, 'utf-8').trim().replace(/^refs\/heads\//, '')
+      }
+
+      return { rebasing: true, currentStep, totalSteps, headName }
+    } catch {
+      return { rebasing: false }
+    }
+  })
+
+  // ── Tags ─────────────────────────────────────────────────────────────
+
+  ipcMain.handle('git:tags', async (_, cwd: string) => {
+    try {
+      const raw = await runGitExec(cwd, ['tag', '--sort=-creatordate', '--format=%(refname:short)\x1f%(objectname:short)\x1f%(creatordate:iso)'])
+      if (!raw) return []
+      return raw.split('\n').filter(Boolean).map((line) => {
+        const [name, hash, date] = line.split('\x1f')
+        return { name: name || '', hash: hash || '', date: date || '' }
+      })
+    } catch {
+      return []
+    }
+  })
+
+  ipcMain.handle('git:create-tag', async (_, cwd: string, tagName: string, message?: string, commitHash?: string) => {
+    try {
+      const args = ['tag']
+      if (message) {
+        args.push('-a', tagName, '-m', message)
+      } else {
+        args.push(tagName)
+      }
+      if (commitHash) {
+        const safeHash = commitHash.replace(/[^0-9a-fA-F]/g, '')
+        if (safeHash) args.push(safeHash)
+      }
+      await runGitExec(cwd, args)
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  ipcMain.handle('git:delete-tag', async (_, cwd: string, tagName: string) => {
+    try {
+      await runGitExec(cwd, ['tag', '-d', tagName])
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  // ── Remote management ────────────────────────────────────────────────
+
+  ipcMain.handle('git:remotes', async (_, cwd: string) => {
+    try {
+      const raw = await runGitExec(cwd, ['remote', '-v'])
+      if (!raw) return []
+      const remotes = new Map<string, { name: string; fetchUrl: string; pushUrl: string }>()
+      raw.split('\n').filter(Boolean).forEach((line) => {
+        const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/)
+        if (match) {
+          const [, name, url, type] = match
+          if (!remotes.has(name)) {
+            remotes.set(name, { name, fetchUrl: '', pushUrl: '' })
+          }
+          const entry = remotes.get(name)!
+          if (type === 'fetch') entry.fetchUrl = url
+          else entry.pushUrl = url
+        }
+      })
+      return Array.from(remotes.values())
+    } catch {
+      return []
+    }
+  })
+
+  ipcMain.handle('git:add-remote', async (_, cwd: string, name: string, url: string) => {
+    try {
+      await runGitExec(cwd, ['remote', 'add', name, url])
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  ipcMain.handle('git:remove-remote', async (_, cwd: string, name: string) => {
+    try {
+      await runGitExec(cwd, ['remote', 'remove', name])
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  // ── Git config ───────────────────────────────────────────────────────
+
+  ipcMain.handle('git:config-get', async (_, cwd: string, key: string, scope?: 'local' | 'global' | 'system') => {
+    try {
+      const args = ['config']
+      if (scope) args.push(`--${scope}`)
+      args.push('--get', key)
+      const value = await runGitExec(cwd, args)
+      return { success: true, value }
+    } catch (err: any) {
+      // Exit code 1 means key not found, which is not really an error
+      return { success: false, value: null, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  ipcMain.handle('git:config-set', async (_, cwd: string, key: string, value: string, scope?: 'local' | 'global') => {
+    try {
+      const args = ['config']
+      if (scope) args.push(`--${scope}`)
+      args.push(key, value)
+      await runGitExec(cwd, args)
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  // ── Worktree ─────────────────────────────────────────────────────────
+
+  ipcMain.handle('git:worktree-list', async (_, cwd: string) => {
+    try {
+      const raw = await runGitExec(cwd, ['worktree', 'list', '--porcelain'])
+      if (!raw) return []
+
+      const worktrees: { path: string; head: string; branch: string; bare: boolean }[] = []
+      let current: { path: string; head: string; branch: string; bare: boolean } = { path: '', head: '', branch: '', bare: false }
+
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('worktree ')) {
+          current = { path: line.substring(9), head: '', branch: '', bare: false }
+        } else if (line.startsWith('HEAD ')) {
+          current.head = line.substring(5)
+        } else if (line.startsWith('branch ')) {
+          current.branch = line.substring(7).replace(/^refs\/heads\//, '')
+        } else if (line === 'bare') {
+          current.bare = true
+        } else if (line === '') {
+          if (current.path) worktrees.push({ ...current })
+        }
+      }
+      // Push last entry if file doesn't end with blank line
+      if (current.path && !worktrees.find((w) => w.path === current.path)) {
+        worktrees.push({ ...current })
+      }
+
+      return worktrees
+    } catch {
+      return []
+    }
+  })
+
+  // ── Submodules ───────────────────────────────────────────────────────
+
+  ipcMain.handle('git:submodule-status', async (_, cwd: string) => {
+    try {
+      const raw = await runGitExec(cwd, ['submodule', 'status'])
+      if (!raw) return []
+
+      return raw.split('\n').filter(Boolean).map((line) => {
+        // Format: [+-U ]<sha1> <path> [(describe)]
+        const match = line.match(/^([+-U ]?)([0-9a-f]+)\s+(\S+)(?:\s+\((.+)\))?$/)
+        if (!match) return null
+        const [, statusChar, hash, subPath, describe] = match
+        let status = 'initialized'
+        if (statusChar === '-') status = 'uninitialized'
+        else if (statusChar === '+') status = 'out-of-date'
+        else if (statusChar === 'U') status = 'merge-conflict'
+        return { path: subPath, hash: hash.substring(0, 8), status, describe: describe || '' }
+      }).filter(Boolean)
+    } catch {
+      return []
+    }
+  })
+
+  // ── Git ignore ───────────────────────────────────────────────────────
+
+  ipcMain.handle('git:check-ignored', async (_, cwd: string, filePaths: string[]) => {
+    if (!filePaths || filePaths.length === 0) return []
+    try {
+      const result = await runGitExec(cwd, ['check-ignore', ...filePaths])
+      return result.split('\n').filter(Boolean)
+    } catch {
+      // Exit code 1 means no files are ignored, which is expected
+      return []
+    }
+  })
+
+  // ── Commit amend ─────────────────────────────────────────────────────
+
+  ipcMain.handle('git:commit-amend', async (_, cwd: string, message?: string) => {
+    try {
+      const args = ['commit', '--amend']
+      if (message) {
+        args.push('-m', message)
+      } else {
+        args.push('--no-edit')
+      }
+      const result = await runGitExec(cwd, args)
+      return { success: true, output: result }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  // ── Reset ────────────────────────────────────────────────────────────
+
+  ipcMain.handle('git:reset', async (_, cwd: string, mode: 'soft' | 'mixed' | 'hard', ref?: string) => {
+    const validModes = ['soft', 'mixed', 'hard']
+    if (!validModes.includes(mode)) {
+      return { success: false, error: `Invalid reset mode: ${mode}` }
+    }
+    try {
+      const args = ['reset', `--${mode}`]
+      if (ref) {
+        // Sanitize ref: allow hex, branch names, HEAD~N, etc.
+        const safeRef = ref.replace(/[;&|`$(){}]/g, '')
+        if (safeRef) args.push(safeRef)
+      }
+      const result = await runGitExec(cwd, args)
+      return { success: true, output: result }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message }
+    }
+  })
+
+  // ── Clean ────────────────────────────────────────────────────────────
+
+  ipcMain.handle('git:clean', async (_, cwd: string, options?: { directories?: boolean; force?: boolean; dryRun?: boolean }) => {
+    try {
+      const args = ['clean']
+      // Always require at least -f or -n to prevent accidental data loss
+      if (options?.dryRun) {
+        args.push('-n')
+      } else {
+        args.push('-f')
+      }
+      if (options?.directories) {
+        args.push('-d')
+      }
+      const result = await runGitExec(cwd, args)
+      const removedFiles = result.split('\n').filter(Boolean).map((line) => {
+        // Lines look like "Removing path/to/file" or "Would remove path/to/file"
+        return line.replace(/^(Removing|Would remove)\s+/, '')
+      })
+      return { success: true, removedFiles }
+    } catch (err: any) {
+      return { success: false, error: err.stderr?.trim() || err.message, removedFiles: [] }
+    }
+  })
 }
