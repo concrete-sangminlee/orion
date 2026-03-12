@@ -45,6 +45,14 @@ const AgentPanel = React.lazy(() => import('./panels/AgentPanel'))
 const DebugPanel = React.lazy(() => import('./panels/DebugPanel'))
 const TestingPanel = React.lazy(() => import('./panels/TestingPanel'))
 const ComposerPanel = React.lazy(() => import('./panels/ComposerPanel'))
+const GitBlamePanel = React.lazy(() => import('./panels/GitBlamePanel'))
+const ProfilerPanel = React.lazy(() => import('./panels/ProfilerPanel'))
+const DatabasePanel = React.lazy(() => import('./panels/DatabasePanel'))
+const ApiClientPanel = React.lazy(() => import('./panels/ApiClientPanel'))
+const DockerPanel = React.lazy(() => import('./panels/DockerPanel'))
+const NotebookPanel = React.lazy(() => import('./panels/NotebookPanel'))
+const CICDPanel = React.lazy(() => import('./panels/CICDPanel'))
+const RemoteExplorerPanel = React.lazy(() => import('./panels/RemoteExplorerPanel'))
 
 // Lazy-loaded editor-area components
 const Breadcrumbs = React.lazy(() => import('./components/Breadcrumbs'))
@@ -55,6 +63,11 @@ const SettingsModal = React.lazy(() => import('./components/SettingsModal'))
 const KeyboardShortcuts = React.lazy(() => import('./components/KeyboardShortcuts'))
 const AboutDialog = React.lazy(() => import('./components/AboutDialog'))
 const SnippetManager = React.lazy(() => import('@/components/SnippetManager'))
+const NewProjectWizard = React.lazy(() => import('./components/NewProjectWizard'))
+const ThemeEditor = React.lazy(() => import('./components/ThemeEditor'))
+const OnboardingWalkthrough = React.lazy(() => import('./components/OnboardingWalkthrough'))
+const SearchReplaceDialog = React.lazy(() => import('./components/SearchReplaceDialog'))
+const WorkspaceTrust = React.lazy(() => import('./components/WorkspaceTrust'))
 
 /** Workspace trust key prefix in localStorage */
 const WORKSPACE_TRUST_KEY = 'orion-workspace-trust'
