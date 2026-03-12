@@ -53,10 +53,17 @@ const DockerPanel = React.lazy(() => import('./panels/DockerPanel'))
 const NotebookPanel = React.lazy(() => import('./panels/NotebookPanel'))
 const CICDPanel = React.lazy(() => import('./panels/CICDPanel'))
 const RemoteExplorerPanel = React.lazy(() => import('./panels/RemoteExplorerPanel'))
+const GitStashPanel = React.lazy(() => import('./panels/GitStashPanel'))
+const GitTimelinePanel = React.lazy(() => import('./panels/GitTimelinePanel'))
 
 // Lazy-loaded editor-area components
 const Breadcrumbs = React.lazy(() => import('./components/Breadcrumbs'))
 const DiffEditor = React.lazy(() => import('./components/DiffEditor'))
+const DiffViewer = React.lazy(() => import('./components/DiffViewer'))
+const HexEditor = React.lazy(() => import('./components/HexEditor'))
+const SplitView = React.lazy(() => import('./components/SplitView'))
+const MarkdownPreview = React.lazy(() => import('./components/MarkdownPreview'))
+const ImageEditor = React.lazy(() => import('./components/ImageEditor'))
 
 // Lazy-loaded modal/dialog components (only shown on demand)
 const SettingsModal = React.lazy(() => import('./components/SettingsModal'))
@@ -68,6 +75,8 @@ const ThemeEditor = React.lazy(() => import('./components/ThemeEditor'))
 const OnboardingWalkthrough = React.lazy(() => import('./components/OnboardingWalkthrough'))
 const SearchReplaceDialog = React.lazy(() => import('./components/SearchReplaceDialog'))
 const WorkspaceTrust = React.lazy(() => import('./components/WorkspaceTrust'))
+const SettingsEditor = React.lazy(() => import('./components/SettingsEditor'))
+const KeybindingEditor = React.lazy(() => import('./components/KeybindingEditor'))
 
 /** Workspace trust key prefix in localStorage */
 const WORKSPACE_TRUST_KEY = 'orion-workspace-trust'
