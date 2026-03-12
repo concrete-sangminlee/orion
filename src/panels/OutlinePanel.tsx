@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useEditorStore } from '@/store/editor'
-import { ListTree, ChevronRight, ChevronDown, Hash, Braces, Type, Box, Variable, ArrowDownAZ, ArrowDown01, Search, Layers, Code2, Package, FileCode, Shield, Navigation, Eye, Copy, PenLine, FileText, Files, Circle, Diamond, Parentheses, SquareFunction, Minus } from 'lucide-react'
+import { ListTree, ChevronRight, ChevronDown, Hash, Braces, Type, Box, Variable, ArrowDownAZ, ArrowDown01, Search, Layers, Package, Shield, Navigation, Eye, Copy, PenLine, FileText, Files, Diamond, Parentheses, SquareFunction, Minus } from 'lucide-react'
 
 interface DocSymbol {
   name: string

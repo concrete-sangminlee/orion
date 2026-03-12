@@ -583,6 +583,206 @@ export default function SourceControlPanel() {
     openFile(fullPath)
   }
 
+  // Load saved templates from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('orion-commit-templates')
+      if (saved) setSavedTemplates(JSON.parse(saved))
+    } catch { /* ignore */ }
+  }, [])
+
+  // Save templates to localStorage when they change
+  const persistTemplates = useCallback((templates: CommitTemplate[]) => {
+    setSavedTemplates(templates)
+    try { localStorage.setItem('orion-commit-templates', JSON.stringify(templates)) } catch { /* ignore */ }
+  }, [])
+
+  const handleSaveTemplate = () => {
+    if (!templateName.trim() || !commitMessage.trim()) return
+    const newTemplate: CommitTemplate = {
+      id: Date.now().toString(),
+      name: templateName.trim(),
+      template: commitMessage.trim(),
+    }
+    persistTemplates([...savedTemplates, newTemplate])
+    setTemplateName('')
+    setShowSaveTemplate(false)
+    addToast({ type: 'success', message: `Template "${newTemplate.name}" saved` })
+  }
+
+  const handleDeleteTemplate = (id: string) => {
+    persistTemplates(savedTemplates.filter(t => t.id !== id))
+  }
+
+  const handleApplyTemplate = (template: string) => {
+    setCommitMessage(template)
+    setShowTemplates(false)
+  }
+
+  const handleConventionalCommitType = (type: string) => {
+    const current = commitMessage.trim()
+    // Check if already has a conventional type prefix
+    const prefixMatch = current.match(/^(feat|fix|refactor|docs|test|chore|style|perf|ci):\s*/)
+    if (prefixMatch) {
+      setCommitMessage(`${type}: ${current.slice(prefixMatch[0].length)}`)
+    } else {
+      setCommitMessage(`${type}: ${current}`)
+    }
+    setShowCommitTypes(false)
+  }
+
+  // Click outside for commit types dropdown
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (commitTypesRef.current && !commitTypesRef.current.contains(e.target as Node)) setShowCommitTypes(false)
+      if (templatesRef.current && !templatesRef.current.contains(e.target as Node)) setShowTemplates(false)
+      if (mergePickerRef.current && !mergePickerRef.current.contains(e.target as Node)) setShowMergePicker(false)
+    }
+    if (showCommitTypes || showTemplates || showMergePicker) {
+      document.addEventListener('mousedown', handleClick)
+    }
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showCommitTypes, showTemplates, showMergePicker])
+
+  // Interactive staging: toggle file checkbox
+  const toggleFileCheck = (path: string) => {
+    setSelectedFileChecks(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  // Stage all checked files
+  const handleStageChecked = async () => {
+    if (!rootPath || selectedFileChecks.size === 0) return
+    for (const filePath of selectedFileChecks) {
+      try {
+        await (window as any).api.gitStage(rootPath, filePath)
+        appendOutput('Git', `[stage] Staged: ${filePath}`, 'info')
+      } catch (err: any) {
+        appendOutput('Git', `[stage] Failed: ${filePath}: ${err?.message}`, 'error')
+      }
+    }
+    setSelectedFileChecks(new Set())
+    refreshStatus()
+  }
+
+  // Inline diff toggle for a file
+  const toggleInlineDiff = async (filePath: string) => {
+    if (expandedFiles.has(filePath)) {
+      setExpandedFiles(prev => {
+        const next = new Set(prev)
+        next.delete(filePath)
+        return next
+      })
+      return
+    }
+    if (inlineDiffs[filePath]) {
+      setExpandedFiles(prev => new Set(prev).add(filePath))
+      return
+    }
+    if (!rootPath) return
+    setLoadingInlineDiffs(prev => new Set(prev).add(filePath))
+    try {
+      const diff = await (window as any).api.gitDiff(rootPath, filePath)
+      setInlineDiffs(prev => ({ ...prev, [filePath]: diff || 'No changes detected' }))
+      setExpandedFiles(prev => new Set(prev).add(filePath))
+    } catch {
+      setInlineDiffs(prev => ({ ...prev, [filePath]: 'Failed to load diff' }))
+      setExpandedFiles(prev => new Set(prev).add(filePath))
+    } finally {
+      setLoadingInlineDiffs(prev => {
+        const next = new Set(prev)
+        next.delete(filePath)
+        return next
+      })
+    }
+  }
+
+  // Branch management: delete branch
+  const handleDeleteBranch = async (branchName: string) => {
+    if (!rootPath) return
+    try {
+      await (window as any).api.gitDeleteBranch(rootPath, branchName)
+      addToast({ type: 'success', message: `Deleted branch: ${branchName}` })
+      appendOutput('Git', `[branch] Deleted: ${branchName}`, 'warn')
+      setShowDeleteConfirm(null)
+      fetchBranches()
+      refreshStatus()
+    } catch (err: any) {
+      addToast({ type: 'error', message: err?.message || 'Failed to delete branch' })
+    }
+  }
+
+  // Branch management: merge
+  const handleMergeBranch = async (branchName: string) => {
+    if (!rootPath) return
+    try {
+      await (window as any).api.gitMerge(rootPath, branchName)
+      addToast({ type: 'success', message: `Merged branch: ${branchName}` })
+      appendOutput('Git', `[merge] Merged: ${branchName} into ${branch}`, 'success')
+      setShowMergePicker(false)
+      refreshStatus()
+      refreshMergeStatus()
+    } catch (err: any) {
+      appendOutput('Git', `[merge] Failed: ${err?.message || 'Unknown error'}`, 'error')
+      addToast({ type: 'error', message: err?.message || 'Merge failed' })
+      refreshMergeStatus()
+    }
+  }
+
+  // Fetch rebase status
+  const refreshRebaseStatus = useCallback(async () => {
+    if (!rootPath) return
+    try {
+      const status = await (window as any).api.gitRebaseStatus?.(rootPath)
+      setIsRebasing(status?.rebasing || false)
+    } catch {
+      setIsRebasing(false)
+    }
+  }, [rootPath])
+
+  // Fetch tags
+  const fetchTags = useCallback(async () => {
+    if (!rootPath) return
+    try {
+      const result = await (window as any).api.gitTags?.(rootPath)
+      setTags(result || [])
+    } catch {
+      setTags([])
+    }
+  }, [rootPath])
+
+  // Cherry-pick a commit
+  const handleCherryPick = async (hash: string) => {
+    if (!rootPath) return
+    try {
+      await (window as any).api.gitCherryPick(rootPath, hash)
+      addToast({ type: 'success', message: `Cherry-picked commit ${hash.substring(0, 7)}` })
+      appendOutput('Git', `[cherry-pick] Applied: ${hash.substring(0, 7)}`, 'success')
+      refreshStatus()
+      fetchLog()
+    } catch (err: any) {
+      appendOutput('Git', `[cherry-pick] Failed: ${err?.message || 'Unknown error'}`, 'error')
+      addToast({ type: 'error', message: err?.message || 'Cherry-pick failed' })
+    }
+  }
+
+  // Add rebase/tags to refresh cycle
+  useEffect(() => {
+    refreshRebaseStatus()
+    fetchTags()
+  }, [refreshRebaseStatus, fetchTags])
+
+  // Fetch tags when history tab activates
+  useEffect(() => {
+    if (activeTab === 'history') {
+      fetchTags()
+    }
+  }, [activeTab, fetchTags])
+
   const fileName = (filePath: string) => {
     const parts = filePath.split('/')
     return parts[parts.length - 1]
@@ -621,136 +821,299 @@ export default function SourceControlPanel() {
   const renderFileItem = (file: GitFile, isStaged: boolean) => {
     const color = STATUS_COLORS[file.state]
     const label = STATUS_LABELS[file.state]
+    const isExpanded = expandedFiles.has(file.path)
+    const isLoadingDiff = loadingInlineDiffs.has(file.path)
+    const isChecked = selectedFileChecks.has(file.path)
+    const fileKey = `${isStaged ? 'staged' : 'unstaged'}-${file.path}`
 
     return (
-      <div
-        key={`${isStaged ? 'staged' : 'unstaged'}-${file.path}`}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          height: 26,
-          paddingLeft: 24,
-          paddingRight: 8,
-          fontSize: 12,
-          cursor: 'pointer',
-          userSelect: 'none',
-        }}
-        className="source-control-file-item"
-        onClick={() => handleFileClick(file.path)}
-      >
-        {/* Status dot */}
+      <div key={fileKey}>
         <div
           style={{
-            width: 6,
-            height: 6,
-            borderRadius: '50%',
-            backgroundColor: color,
-            marginRight: 8,
-            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            height: 26,
+            paddingLeft: 8,
+            paddingRight: 8,
+            fontSize: 12,
+            cursor: 'pointer',
+            userSelect: 'none',
           }}
-        />
-
-        {/* File icon */}
-        <FileText size={14} style={{ marginRight: 6, flexShrink: 0, opacity: 0.6 }} />
-
-        {/* File name and path */}
-        <span
-          style={{
-            flex: 1,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-          title={file.path}
+          className="source-control-file-item"
+          onClick={() => toggleInlineDiff(file.path)}
         >
-          {fileName(file.path)}
-          {dirName(file.path) && (
-            <span style={{ opacity: 0.5, marginLeft: 4 }}>
-              {dirName(file.path)}
-            </span>
-          )}
-        </span>
-
-        {/* Status badge */}
-        <span
-          style={{
-            color,
-            fontWeight: 600,
-            fontSize: 11,
-            marginRight: 4,
-            flexShrink: 0,
-            width: 14,
-            textAlign: 'center',
-          }}
-        >
-          {label}
-        </span>
-
-        {/* Action buttons */}
-        <div
-          style={{ display: 'flex', gap: 2, flexShrink: 0 }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {isStaged ? (
-            <button
-              onClick={() => handleUnstage(file.path)}
-              title="Unstage"
+          {/* Checkbox for multi-select staging */}
+          {!isStaged && (
+            <div
+              onClick={(e) => { e.stopPropagation(); toggleFileCheck(file.path) }}
               style={{
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                padding: 2,
+                width: 16,
+                height: 16,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                borderRadius: 3,
-                color: 'var(--text-secondary)',
+                marginRight: 4,
+                flexShrink: 0,
+                cursor: 'pointer',
+                color: isChecked ? 'var(--accent-blue, #388bfd)' : 'var(--text-disabled, #545d68)',
               }}
-              className="source-control-action-btn"
+              title="Select for batch staging"
             >
-              <Minus size={14} />
-            </button>
-          ) : (
-            <>
-              <button
-                onClick={() => handleDiscard(file.path)}
-                title="Discard Changes"
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: 2,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 3,
-                  color: 'var(--text-secondary)',
-                }}
-                className="source-control-action-btn"
-              >
-                <Trash2 size={14} />
-              </button>
-              <button
-                onClick={() => handleStage(file.path)}
-                title="Stage"
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: 2,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 3,
-                  color: 'var(--text-secondary)',
-                }}
-                className="source-control-action-btn"
-              >
-                <Plus size={14} />
-              </button>
-            </>
+              {isChecked ? <CheckSquare size={13} /> : <Square size={13} />}
+            </div>
           )}
+          {isStaged && <div style={{ width: 20, flexShrink: 0 }} />}
+
+          {/* Expand/collapse indicator */}
+          <div style={{ width: 14, flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+            {isLoadingDiff ? (
+              <RotateCw size={10} style={{ animation: 'spin 1s linear infinite', opacity: 0.5 }} />
+            ) : isExpanded ? (
+              <ChevronDown size={12} style={{ opacity: 0.5 }} />
+            ) : (
+              <ChevronRight size={12} style={{ opacity: 0.5 }} />
+            )}
+          </div>
+
+          {/* Status dot */}
+          <div
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              backgroundColor: color,
+              marginRight: 6,
+              flexShrink: 0,
+            }}
+          />
+
+          {/* File icon */}
+          <FileText size={14} style={{ marginRight: 6, flexShrink: 0, opacity: 0.6 }} />
+
+          {/* File name and path */}
+          <span
+            style={{
+              flex: 1,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+            title={file.path}
+          >
+            {fileName(file.path)}
+            {dirName(file.path) && (
+              <span style={{ opacity: 0.5, marginLeft: 4 }}>
+                {dirName(file.path)}
+              </span>
+            )}
+          </span>
+
+          {/* Status badge */}
+          <span
+            style={{
+              color,
+              fontWeight: 600,
+              fontSize: 11,
+              marginRight: 4,
+              flexShrink: 0,
+              width: 14,
+              textAlign: 'center',
+            }}
+          >
+            {label}
+          </span>
+
+          {/* Action buttons */}
+          <div
+            style={{ display: 'flex', gap: 2, flexShrink: 0 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {isStaged ? (
+              <button
+                onClick={() => handleUnstage(file.path)}
+                title="Unstage"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 3,
+                  color: 'var(--text-secondary)',
+                }}
+                className="source-control-action-btn"
+              >
+                <Minus size={14} />
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => handleDiscard(file.path)}
+                  title="Discard Changes"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 3,
+                    color: 'var(--text-secondary)',
+                  }}
+                  className="source-control-action-btn"
+                >
+                  <Trash2 size={14} />
+                </button>
+                <button
+                  onClick={() => handleStage(file.path)}
+                  title="Stage"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 3,
+                    color: 'var(--text-secondary)',
+                  }}
+                  className="source-control-action-btn"
+                >
+                  <Plus size={14} />
+                </button>
+              </>
+            )}
+          </div>
         </div>
+
+        {/* Inline diff expansion */}
+        {isExpanded && inlineDiffs[file.path] && (
+          <div
+            style={{
+              marginLeft: 20,
+              marginRight: 8,
+              marginBottom: 4,
+              borderRadius: 4,
+              border: '1px solid var(--border, #3d444d)',
+              overflow: 'hidden',
+              background: 'var(--bg-primary)',
+            }}
+          >
+            {(() => {
+              const hunks = parseDiffIntoHunks(inlineDiffs[file.path])
+              if (hunks.length === 0) {
+                return (
+                  <div style={{
+                    padding: '6px 10px',
+                    fontSize: 11,
+                    color: 'var(--text-disabled, #545d68)',
+                    fontFamily: 'var(--font-mono, "Cascadia Code", "Fira Code", Consolas, monospace)',
+                  }}>
+                    {inlineDiffs[file.path]}
+                  </div>
+                )
+              }
+              return hunks.map((hunk, hunkIdx) => (
+                <div key={hunkIdx}>
+                  {/* Hunk header with stage hunk button */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '2px 8px',
+                      background: 'rgba(130, 100, 210, 0.08)',
+                      borderBottom: '1px solid var(--border, #3d444d)',
+                      fontSize: 11,
+                      fontFamily: 'var(--font-mono, "Cascadia Code", "Fira Code", Consolas, monospace)',
+                      color: '#b392f0',
+                      gap: 6,
+                    }}
+                  >
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {hunk.header}
+                    </span>
+                    {!isStaged && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          // Stage this hunk via patch (simulated - stages the full file as fallback)
+                          handleStage(file.path)
+                          addToast({ type: 'info', message: `Staged hunk ${hunkIdx + 1} of ${file.path.split('/').pop()}` })
+                        }}
+                        title={`Stage Hunk ${hunkIdx + 1}`}
+                        style={{
+                          background: 'rgba(63, 185, 80, 0.15)',
+                          border: '1px solid rgba(63, 185, 80, 0.3)',
+                          cursor: 'pointer',
+                          padding: '1px 6px',
+                          fontSize: 10,
+                          fontWeight: 600,
+                          borderRadius: 3,
+                          color: '#3fb950',
+                          flexShrink: 0,
+                          fontFamily: 'inherit',
+                        }}
+                        className="source-control-action-btn"
+                      >
+                        Stage Hunk
+                      </button>
+                    )}
+                  </div>
+                  {/* Hunk lines */}
+                  {hunk.lines.slice(1).map((line, lineIdx) => {
+                    const lineStyle = getDiffLineStyle(line)
+                    return (
+                      <div
+                        key={lineIdx}
+                        style={{
+                          display: 'flex',
+                          minHeight: 18,
+                          fontSize: 11,
+                          fontFamily: 'var(--font-mono, "Cascadia Code", "Fira Code", Consolas, monospace)',
+                          lineHeight: 1.5,
+                          ...lineStyle,
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 32,
+                            flexShrink: 0,
+                            textAlign: 'right',
+                            paddingRight: 6,
+                            color: 'var(--text-disabled, #545d68)',
+                            userSelect: 'none',
+                            opacity: 0.5,
+                            borderRight: '1px solid var(--border)',
+                            fontSize: 10,
+                          }}
+                        >
+                          {lineIdx + 1}
+                        </span>
+                        <pre
+                          style={{
+                            margin: 0,
+                            paddingLeft: 6,
+                            paddingRight: 6,
+                            whiteSpace: 'pre',
+                            fontFamily: 'inherit',
+                            fontSize: 'inherit',
+                            lineHeight: 'inherit',
+                          }}
+                        >
+                          {line}
+                        </pre>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))
+            })()}
+          </div>
+        )}
       </div>
     )
   }

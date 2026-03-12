@@ -1,5 +1,17 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { X, Search, Keyboard, ChevronDown, ChevronRight, Pencil, RotateCcw, Download, AlertTriangle } from 'lucide-react'
+import {
+  X,
+  Search,
+  Keyboard,
+  ChevronDown,
+  ChevronRight,
+  Pencil,
+  RotateCcw,
+  Download,
+  Upload,
+  AlertTriangle,
+  Check,
+} from 'lucide-react'
 import { useKeybindingsStore, Keybinding } from '../store/keybindings'
 
 interface Props {
@@ -7,14 +19,87 @@ interface Props {
   onClose: () => void
 }
 
+/* ─── CSS injected once ─── */
+const STYLES = `
+@keyframes keycapture-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--accent); }
+  50% { box-shadow: 0 0 0 2px var(--accent), 0 0 12px rgba(var(--accent-rgb, 100,149,237), 0.35); }
+}
+@keyframes ks-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes ks-toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.ks-row:hover .ks-row-actions { opacity: 1 !important; }
+.ks-btn-ghost {
+  padding: 4px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.ks-btn-ghost:hover {
+  background: rgba(255,255,255,0.08);
+}
+.ks-header-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.ks-header-btn:hover {
+  background: rgba(255,255,255,0.06);
+}
+.ks-modifier-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+  border-radius: 4px;
+  transition: all 0.1s ease;
+  user-select: none;
+}
+.ks-modifier-key[data-active="false"] {
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  opacity: 0.5;
+}
+.ks-modifier-key[data-active="true"] {
+  color: #fff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  opacity: 1;
+  box-shadow: 0 0 8px rgba(var(--accent-rgb, 100,149,237), 0.4);
+}
+`
+
+/* ─── Helpers ─── */
+
 function parseShortcut(shortcut: string): string[][] {
   if (!shortcut) return []
-  // Handle chord shortcuts like "Ctrl+K Z" (space-separated chords)
   return shortcut.split(' ').map((chord) => chord.split('+'))
 }
 
 function keyEventToString(e: KeyboardEvent): string | null {
-  // Ignore lone modifier key presses
   if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return null
 
   const parts: string[] = []
@@ -23,7 +108,6 @@ function keyEventToString(e: KeyboardEvent): string | null {
   if (e.altKey) parts.push('Alt')
 
   let key = e.key
-  // Normalize key names
   if (key === ' ') key = 'Space'
   else if (key === 'ArrowUp') key = 'Up'
   else if (key === 'ArrowDown') key = 'Down'
@@ -39,6 +123,8 @@ function keyEventToString(e: KeyboardEvent): string | null {
   parts.push(key)
   return parts.join('+')
 }
+
+/* ─── Sub-components ─── */
 
 function KbdKey({ keyName }: { keyName: string }) {
   return (
@@ -68,7 +154,13 @@ function KbdKey({ keyName }: { keyName: string }) {
   )
 }
 
-function ShortcutDisplay({ shortcut, isCustomized }: { shortcut: string; isCustomized?: boolean }) {
+function ShortcutDisplay({
+  shortcut,
+  isCustomized,
+}: {
+  shortcut: string
+  isCustomized?: boolean
+}) {
   const chords = parseShortcut(shortcut)
   if (chords.length === 0) {
     return (
@@ -116,20 +208,23 @@ function ShortcutDisplay({ shortcut, isCustomized }: { shortcut: string; isCusto
   )
 }
 
-function KeyCaptureInput({
+/* ─── Keyboard Shortcut Recording Widget ─── */
+
+function KeyCaptureWidget({
   onCapture,
   onCancel,
 }: {
   onCapture: (shortcut: string) => void
   onCancel: () => void
 }) {
-  const inputRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
   const [captured, setCaptured] = useState<string | null>(null)
+  const [modifiers, setModifiers] = useState({ ctrl: false, shift: false, alt: false, meta: false })
 
   useEffect(() => {
-    inputRef.current?.focus()
+    containerRef.current?.focus()
 
-    const handler = (e: KeyboardEvent) => {
+    const handleKeyDown = (e: KeyboardEvent) => {
       e.preventDefault()
       e.stopPropagation()
 
@@ -138,46 +233,238 @@ function KeyCaptureInput({
         return
       }
 
+      // Update modifier state for visual feedback
+      setModifiers({
+        ctrl: e.ctrlKey,
+        shift: e.shiftKey,
+        alt: e.altKey,
+        meta: e.metaKey,
+      })
+
       const combo = keyEventToString(e)
       if (combo) {
         setCaptured(combo)
-        onCapture(combo)
+        // Small delay so user can see what was captured
+        setTimeout(() => onCapture(combo), 150)
       }
     }
 
-    window.addEventListener('keydown', handler, true)
-    return () => window.removeEventListener('keydown', handler, true)
+    const handleKeyUp = (e: KeyboardEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setModifiers({
+        ctrl: e.ctrlKey,
+        shift: e.shiftKey,
+        alt: e.altKey,
+        meta: e.metaKey,
+      })
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+    window.addEventListener('keyup', handleKeyUp, true)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true)
+      window.removeEventListener('keyup', handleKeyUp, true)
+    }
   }, [onCapture, onCancel])
 
   return (
     <div
-      ref={inputRef}
+      ref={containerRef}
       tabIndex={0}
       style={{
-        display: 'inline-flex',
+        display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
-        gap: 6,
-        padding: '3px 10px',
+        gap: 10,
+        padding: '12px 16px',
         background: 'var(--bg-primary)',
         border: '1px solid var(--accent)',
-        borderRadius: 4,
-        fontSize: 11,
-        color: captured ? 'var(--text-primary)' : 'var(--text-muted)',
-        fontStyle: captured ? 'normal' : 'italic',
+        borderRadius: 8,
         outline: 'none',
-        boxShadow: '0 0 0 1px var(--accent)',
         animation: 'keycapture-pulse 2s ease-in-out infinite',
-        minWidth: 180,
+        minWidth: 280,
       }}
     >
-      {captured ? (
-        <ShortcutDisplay shortcut={captured} />
-      ) : (
-        'Press desired key combination...'
-      )}
+      {/* Modifier key indicators */}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <span className="ks-modifier-key" data-active={String(modifiers.ctrl || modifiers.meta)}>
+          Ctrl
+        </span>
+        <span className="ks-modifier-key" data-active={String(modifiers.shift)}>
+          Shift
+        </span>
+        <span className="ks-modifier-key" data-active={String(modifiers.alt)}>
+          Alt
+        </span>
+        <span className="ks-modifier-key" data-active={String(modifiers.meta)}>
+          Meta
+        </span>
+      </div>
+
+      {/* Captured or prompt text */}
+      <div
+        style={{
+          fontSize: 12,
+          color: captured ? 'var(--text-primary)' : 'var(--text-muted)',
+          fontStyle: captured ? 'normal' : 'italic',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+        }}
+      >
+        {captured ? (
+          <>
+            <ShortcutDisplay shortcut={captured} />
+          </>
+        ) : (
+          'Press desired key combination...'
+        )}
+      </div>
+
+      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+        Press <KbdKey keyName="Esc" /> to cancel
+      </span>
     </div>
   )
 }
+
+/* ─── Source badge ─── */
+
+function SourceBadge({ isUser }: { isUser: boolean }) {
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        fontWeight: 600,
+        padding: '2px 6px',
+        borderRadius: 3,
+        letterSpacing: '0.3px',
+        whiteSpace: 'nowrap',
+        ...(isUser
+          ? {
+              color: '#e8a317',
+              background: 'rgba(232, 163, 23, 0.10)',
+              border: '1px solid rgba(232, 163, 23, 0.20)',
+            }
+          : {
+              color: 'var(--text-muted)',
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.06)',
+            }),
+      }}
+    >
+      {isUser ? 'User' : 'Default'}
+    </span>
+  )
+}
+
+/* ─── When badge ─── */
+
+function WhenBadge({ when }: { when?: string }) {
+  if (!when) return <span style={{ fontSize: 10, color: 'var(--text-muted)', opacity: 0.4 }}>--</span>
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        color: 'var(--text-muted)',
+        background: 'rgba(255,255,255,0.05)',
+        padding: '2px 6px',
+        borderRadius: 3,
+        fontFamily: 'var(--font-mono, monospace)',
+        maxWidth: 140,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        display: 'inline-block',
+      }}
+      title={when}
+    >
+      {when}
+    </span>
+  )
+}
+
+/* ─── Confirm Reset All dialog ─── */
+
+function ConfirmResetDialog({
+  customCount,
+  onConfirm,
+  onCancel,
+}: {
+  customCount: number
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 200,
+        background: 'rgba(0,0,0,0.5)',
+        backdropFilter: 'blur(2px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+      onClick={onCancel}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-secondary)',
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+          padding: '24px 28px',
+          maxWidth: 380,
+          boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+          animation: 'ks-fade-in 0.15s ease-out',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <AlertTriangle size={18} style={{ color: '#e05252' }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+            Reset All Keybindings?
+          </span>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '0 0 20px', lineHeight: 1.6 }}>
+          This will reset <strong>{customCount}</strong> customized keybinding{customCount !== 1 ? 's' : ''} back
+          to their default values. This action cannot be undone.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button
+            onClick={onCancel}
+            className="ks-header-btn"
+            style={{
+              color: 'var(--text-secondary)',
+              background: 'transparent',
+              border: '1px solid var(--border)',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="ks-header-btn"
+            style={{
+              color: '#fff',
+              background: '#e05252',
+              border: '1px solid #e05252',
+            }}
+          >
+            <RotateCcw size={12} />
+            Reset All
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─── Shortcut Row ─── */
+
+const GRID_TEMPLATE = '1fr 180px 64px 100px auto'
 
 function ShortcutRow({
   binding,
@@ -192,7 +479,7 @@ function ShortcutRow({
   onCancelEdit: () => void
   onSaveBinding: (id: string, shortcut: string) => void
 }) {
-  const { customBindings, getEffectiveBinding, isCustomized, resetBinding, findConflicts } =
+  const { getEffectiveBinding, isCustomized, resetBinding, findConflicts } =
     useKeybindingsStore()
   const isEditing = editingId === binding.id
   const hasCustom = isCustomized(binding.id)
@@ -232,9 +519,10 @@ function ShortcutRow({
   return (
     <div>
       <div
+        className="ks-row"
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr auto auto auto',
+          gridTemplateColumns: GRID_TEMPLATE,
           alignItems: 'center',
           gap: 8,
           padding: '6px 12px',
@@ -242,6 +530,7 @@ function ShortcutRow({
           transition: 'background 0.1s',
           borderBottom: '1px solid rgba(255,255,255,0.03)',
           background: isEditing ? 'rgba(255, 255, 255, 0.06)' : undefined,
+          cursor: 'default',
         }}
         onMouseEnter={(e) => {
           if (!isEditing) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)'
@@ -249,47 +538,56 @@ function ShortcutRow({
         onMouseLeave={(e) => {
           if (!isEditing) e.currentTarget.style.background = 'transparent'
         }}
+        onDoubleClick={() => {
+          if (!isEditing) onStartEdit(binding.id)
+        }}
       >
+        {/* Command name */}
         <span
           style={{
             fontSize: 12,
             color: hasCustom ? '#e8a317' : 'var(--text-secondary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
           }}
+          title={binding.id}
         >
           {binding.label}
         </span>
 
+        {/* Keybinding */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {isEditing ? (
-            <KeyCaptureInput onCapture={handleCapture} onCancel={onCancelEdit} />
+          {isEditing && pendingConflicts.length === 0 ? (
+            <KeyCaptureWidget onCapture={handleCapture} onCancel={onCancelEdit} />
           ) : (
             <ShortcutDisplay shortcut={effectiveShortcut} isCustomized={hasCustom} />
           )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        {/* Source */}
+        <SourceBadge isUser={hasCustom} />
+
+        {/* When clause */}
+        <WhenBadge when={binding.when} />
+
+        {/* Actions */}
+        <div
+          className="ks-row-actions"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
+            opacity: 0,
+            transition: 'opacity 0.15s',
+          }}
+        >
           {!isEditing && (
             <button
+              className="ks-btn-ghost"
               onClick={() => onStartEdit(binding.id)}
               title="Edit keybinding"
-              style={{
-                padding: 4,
-                borderRadius: 4,
-                color: 'var(--text-muted)',
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                opacity: 0.5,
-                transition: 'opacity 0.15s, background 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = '1'
-                e.currentTarget.style.background = 'rgba(255,255,255,0.08)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = '0.5'
-                e.currentTarget.style.background = 'transparent'
-              }}
+              style={{ color: 'var(--text-muted)' }}
             >
               <Pencil size={12} />
             </button>
@@ -297,46 +595,15 @@ function ShortcutRow({
 
           {hasCustom && !isEditing && (
             <button
+              className="ks-btn-ghost"
               onClick={() => resetBinding(binding.id)}
               title="Reset to default"
-              style={{
-                padding: 4,
-                borderRadius: 4,
-                color: '#e8a317',
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                opacity: 0.7,
-                transition: 'opacity 0.15s, background 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = '1'
-                e.currentTarget.style.background = 'rgba(232,163,23,0.12)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = '0.7'
-                e.currentTarget.style.background = 'transparent'
-              }}
+              style={{ color: '#e8a317' }}
             >
               <RotateCcw size={12} />
             </button>
           )}
         </div>
-
-        {binding.when && (
-          <span
-            style={{
-              fontSize: 10,
-              color: 'var(--text-muted)',
-              background: 'rgba(255,255,255,0.05)',
-              padding: '2px 6px',
-              borderRadius: 3,
-              fontFamily: 'var(--font-mono, monospace)',
-            }}
-          >
-            {binding.when}
-          </span>
-        )}
       </div>
 
       {/* Conflict warning */}
@@ -344,52 +611,52 @@ function ShortcutRow({
         <div
           style={{
             margin: '2px 12px 6px 12px',
-            padding: '8px 12px',
+            padding: '10px 14px',
             background: 'rgba(232, 163, 23, 0.08)',
             border: '1px solid rgba(232, 163, 23, 0.25)',
             borderRadius: 6,
             fontSize: 11,
+            animation: 'ks-fade-in 0.15s ease-out',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
             <AlertTriangle size={13} style={{ color: '#e8a317' }} />
             <span style={{ color: '#e8a317', fontWeight: 600 }}>Keybinding Conflict</span>
           </div>
-          <div style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>
-            <span style={{ fontWeight: 600 }}>{pendingShortcut}</span> is already assigned to:
+          <div style={{ color: 'var(--text-secondary)', marginBottom: 10 }}>
+            This keybinding already exists for:
             {pendingConflicts.map((c) => (
-              <div key={c.id} style={{ marginLeft: 8, marginTop: 2 }}>
-                - {c.label} ({c.category})
+              <div key={c.id} style={{ marginLeft: 8, marginTop: 3 }}>
+                <span style={{ fontWeight: 600 }}>{c.label}</span>
+                <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>({c.category})</span>
               </div>
             ))}
+            <div style={{ marginTop: 6, color: 'var(--text-muted)' }}>
+              Override with <strong style={{ color: 'var(--text-primary)' }}>{pendingShortcut}</strong>?
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               onClick={handleAcceptConflict}
+              className="ks-header-btn"
               style={{
-                padding: '4px 12px',
-                fontSize: 11,
-                fontWeight: 600,
-                borderRadius: 4,
-                border: 'none',
-                cursor: 'pointer',
                 background: 'var(--accent)',
                 color: '#fff',
+                border: 'none',
+                fontWeight: 600,
               }}
             >
+              <Check size={12} />
               Assign Anyway
             </button>
             <button
               onClick={handleRejectConflict}
+              className="ks-header-btn"
               style={{
-                padding: '4px 12px',
-                fontSize: 11,
-                fontWeight: 600,
-                borderRadius: 4,
-                border: '1px solid var(--border)',
-                cursor: 'pointer',
                 background: 'transparent',
                 color: 'var(--text-secondary)',
+                border: '1px solid var(--border)',
+                fontWeight: 600,
               }}
             >
               Cancel
@@ -400,6 +667,8 @@ function ShortcutRow({
     </div>
   )
 }
+
+/* ─── Category Section ─── */
 
 function CategorySection({
   category,
@@ -423,6 +692,8 @@ function CategorySection({
   useEffect(() => {
     setExpanded(defaultExpanded)
   }, [defaultExpanded])
+
+  const customizedCount = bindings.filter((b) => useKeybindingsStore.getState().isCustomized(b.id)).length
 
   return (
     <div style={{ marginBottom: 4 }}>
@@ -463,15 +734,24 @@ function CategorySection({
         >
           {category}
         </span>
-        <span
-          style={{
-            fontSize: 10,
-            color: 'var(--text-muted)',
-            marginLeft: 4,
-          }}
-        >
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 4 }}>
           ({bindings.length})
         </span>
+        {customizedCount > 0 && (
+          <span
+            style={{
+              fontSize: 9,
+              color: '#e8a317',
+              background: 'rgba(232,163,23,0.10)',
+              padding: '1px 6px',
+              borderRadius: 8,
+              fontWeight: 600,
+              marginLeft: 4,
+            }}
+          >
+            {customizedCount} modified
+          </span>
+        )}
       </button>
 
       {expanded && (
@@ -480,37 +760,27 @@ function CategorySection({
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: '1fr auto auto auto',
+              gridTemplateColumns: GRID_TEMPLATE,
               gap: 8,
               padding: '4px 12px',
               borderBottom: '1px solid var(--border)',
               marginBottom: 2,
             }}
           >
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 600,
-                color: 'var(--text-muted)',
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px',
-              }}
-            >
-              Command
-            </span>
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 600,
-                color: 'var(--text-muted)',
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px',
-              }}
-            >
-              Keybinding
-            </span>
-            <span />
-            <span />
+            {['Command', 'Keybinding', 'Source', 'When', ''].map((label) => (
+              <span
+                key={label || 'actions'}
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  color: 'var(--text-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                }}
+              >
+                {label}
+              </span>
+            ))}
           </div>
 
           {bindings.map((binding) => (
@@ -529,34 +799,40 @@ function CategorySection({
   )
 }
 
+/* ─── Main component ─── */
+
 export default function KeyboardShortcuts({ open, onClose }: Props) {
   const { keybindings, customBindings, resetAllBindings, setCustomBinding, getEffectiveBinding } =
     useKeybindingsStore()
   const [filter, setFilter] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [exportToast, setExportToast] = useState(false)
+  const [importToast, setImportToast] = useState<string | null>(null)
+  const [showResetConfirm, setShowResetConfirm] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const importInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (open) {
       setFilter('')
       setEditingId(null)
+      setShowResetConfirm(false)
       setTimeout(() => inputRef.current?.focus(), 50)
     }
   }, [open])
 
-  // Close on Escape (only when not editing)
+  // Close on Escape (only when not editing and no dialog open)
   useEffect(() => {
     if (!open) return
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !editingId) {
+      if (e.key === 'Escape' && !editingId && !showResetConfirm) {
         e.preventDefault()
         onClose()
       }
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [open, onClose, editingId])
+  }, [open, onClose, editingId, showResetConfirm])
 
   const handleSaveBinding = useCallback(
     (commandId: string, shortcut: string) => {
@@ -579,15 +855,70 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
     for (const [id, shortcut] of Object.entries(customBindings)) {
       exportData[id] = shortcut
     }
-    navigator.clipboard.writeText(JSON.stringify(exportData, null, 2)).then(() => {
-      setExportToast(true)
-      setTimeout(() => setExportToast(false), 2000)
+    const json = JSON.stringify(exportData, null, 2)
+
+    // Create downloadable file as well as copying to clipboard
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'orion-keybindings.json'
+    a.click()
+    URL.revokeObjectURL(url)
+
+    navigator.clipboard.writeText(json).catch(() => {
+      /* clipboard may not be available */
     })
+    setExportToast(true)
+    setTimeout(() => setExportToast(false), 2500)
   }, [customBindings])
+
+  const handleImport = useCallback(() => {
+    importInputRef.current?.click()
+  }, [])
+
+  const handleImportFile = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        try {
+          const data = JSON.parse(ev.target?.result as string)
+          if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+            setImportToast('Invalid format: expected a JSON object')
+            setTimeout(() => setImportToast(null), 3000)
+            return
+          }
+
+          let imported = 0
+          for (const [id, shortcut] of Object.entries(data)) {
+            if (typeof shortcut === 'string') {
+              setCustomBinding(id, shortcut)
+              imported++
+            }
+          }
+
+          setImportToast(`Imported ${imported} keybinding${imported !== 1 ? 's' : ''} successfully`)
+          setTimeout(() => setImportToast(null), 3000)
+        } catch {
+          setImportToast('Failed to parse JSON file')
+          setTimeout(() => setImportToast(null), 3000)
+        }
+      }
+      reader.readAsText(file)
+
+      // Reset file input so the same file can be imported again
+      e.target.value = ''
+    },
+    [setCustomBinding]
+  )
 
   const handleResetAll = useCallback(() => {
     resetAllBindings()
     setEditingId(null)
+    setShowResetConfirm(false)
   }, [resetAllBindings])
 
   const customCount = Object.keys(customBindings).length
@@ -605,7 +936,9 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
             k.shortcut.toLowerCase().includes(q) ||
             k.category.toLowerCase().includes(q) ||
             k.id.toLowerCase().includes(q) ||
-            (k.when && k.when.toLowerCase().includes(q))
+            (k.when && k.when.toLowerCase().includes(q)) ||
+            (q === 'user' && k.id in customBindings) ||
+            (q === 'default' && !(k.id in customBindings))
           )
         })
       : keybindings
@@ -642,22 +975,34 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
         justifyContent: 'center',
       }}
       onClick={(e) => {
-        if (!editingId) onClose()
+        if (!editingId && !showResetConfirm) onClose()
       }}
     >
-      {/* Pulse animation for key capture input */}
-      <style>{`
-        @keyframes keycapture-pulse {
-          0%, 100% { box-shadow: 0 0 0 1px var(--accent); }
-          50% { box-shadow: 0 0 0 2px var(--accent), 0 0 8px rgba(var(--accent-rgb, 100,149,237), 0.3); }
-        }
-      `}</style>
+      <style>{STYLES}</style>
+
+      {/* Hidden file input for import */}
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        onChange={handleImportFile}
+      />
+
+      {/* Reset confirmation dialog */}
+      {showResetConfirm && (
+        <ConfirmResetDialog
+          customCount={customCount}
+          onConfirm={handleResetAll}
+          onCancel={() => setShowResetConfirm(false)}
+        />
+      )}
 
       <div
         className="anim-scale-in"
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 750,
+          width: 820,
           maxHeight: '85vh',
           background: 'var(--bg-secondary)',
           border: '1px solid var(--border)',
@@ -668,7 +1013,7 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
           flexDirection: 'column',
         }}
       >
-        {/* Header */}
+        {/* ── Header ── */}
         <div
           style={{
             display: 'flex',
@@ -712,108 +1057,109 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
 
           {/* Header action buttons */}
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
-            {customCount > 0 && (
-              <>
-                <button
-                  onClick={handleExport}
-                  title="Export custom keybindings as JSON"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    padding: '4px 10px',
-                    borderRadius: 4,
-                    fontSize: 11,
-                    color: 'var(--text-secondary)',
-                    background: 'transparent',
-                    border: '1px solid var(--border)',
-                    cursor: 'pointer',
-                    transition: 'background 0.15s',
-                    position: 'relative',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'transparent'
-                  }}
-                >
-                  <Download size={12} />
-                  Export
-                  {exportToast && (
-                    <span
-                      style={{
-                        position: 'absolute',
-                        top: -28,
-                        left: '50%',
-                        transform: 'translateX(-50%)',
-                        background: 'var(--accent)',
-                        color: '#fff',
-                        fontSize: 10,
-                        padding: '3px 8px',
-                        borderRadius: 4,
-                        whiteSpace: 'nowrap',
-                        fontWeight: 600,
-                      }}
-                    >
-                      Copied to clipboard
-                    </span>
-                  )}
-                </button>
+            {/* Import */}
+            <button
+              onClick={handleImport}
+              title="Import keybindings from JSON file"
+              className="ks-header-btn"
+              style={{
+                color: 'var(--text-secondary)',
+                background: 'transparent',
+                border: '1px solid var(--border)',
+              }}
+            >
+              <Upload size={12} />
+              Import
+            </button>
 
-                <button
-                  onClick={handleResetAll}
-                  title="Reset all keybindings to defaults"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    padding: '4px 10px',
-                    borderRadius: 4,
-                    fontSize: 11,
-                    color: '#e05252',
-                    background: 'transparent',
-                    border: '1px solid rgba(224,82,82,0.3)',
-                    cursor: 'pointer',
-                    transition: 'background 0.15s',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'rgba(224,82,82,0.1)'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'transparent'
-                  }}
-                >
-                  <RotateCcw size={12} />
-                  Reset All
-                </button>
-              </>
+            {/* Export */}
+            {customCount > 0 && (
+              <button
+                onClick={handleExport}
+                title="Export custom keybindings as JSON"
+                className="ks-header-btn"
+                style={{
+                  color: 'var(--text-secondary)',
+                  background: 'transparent',
+                  border: '1px solid var(--border)',
+                  position: 'relative',
+                }}
+              >
+                <Download size={12} />
+                Export
+                {exportToast && (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: -30,
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      background: 'var(--accent)',
+                      color: '#fff',
+                      fontSize: 10,
+                      padding: '3px 10px',
+                      borderRadius: 4,
+                      whiteSpace: 'nowrap',
+                      fontWeight: 600,
+                      animation: 'ks-toast-in 0.15s ease-out',
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    Exported & copied
+                  </span>
+                )}
+              </button>
+            )}
+
+            {/* Reset All */}
+            {customCount > 0 && (
+              <button
+                onClick={() => setShowResetConfirm(true)}
+                title="Reset all keybindings to defaults"
+                className="ks-header-btn"
+                style={{
+                  color: '#e05252',
+                  background: 'transparent',
+                  border: '1px solid rgba(224,82,82,0.3)',
+                }}
+              >
+                <RotateCcw size={12} />
+                Reset All
+              </button>
             )}
 
             <button
               onClick={onClose}
-              style={{
-                padding: 4,
-                borderRadius: 4,
-                color: 'var(--text-muted)',
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                marginLeft: 4,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent'
-              }}
+              className="ks-btn-ghost"
+              style={{ color: 'var(--text-muted)', marginLeft: 4 }}
             >
               <X size={16} />
             </button>
           </div>
         </div>
 
-        {/* Search */}
+        {/* ── Import toast ── */}
+        {importToast && (
+          <div
+            style={{
+              padding: '8px 20px',
+              fontSize: 11,
+              fontWeight: 600,
+              color: importToast.startsWith('Failed') || importToast.startsWith('Invalid')
+                ? '#e05252'
+                : '#4ec9b0',
+              background: importToast.startsWith('Failed') || importToast.startsWith('Invalid')
+                ? 'rgba(224,82,82,0.08)'
+                : 'rgba(78,201,176,0.08)',
+              borderBottom: '1px solid var(--border)',
+              animation: 'ks-fade-in 0.15s ease-out',
+            }}
+          >
+            {importToast}
+          </div>
+        )}
+
+        {/* ── Search ── */}
         <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)' }}>
           <div
             style={{
@@ -831,7 +1177,7 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
               type="text"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Type to search keybindings (e.g. save, Ctrl+S, editor)..."
+              placeholder='Search by command, key, source ("user"/"default"), or when clause...'
               style={{
                 flex: 1,
                 padding: '8px 10px',
@@ -845,13 +1191,8 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
             {filter && (
               <button
                 onClick={() => setFilter('')}
-                style={{
-                  padding: 2,
-                  color: 'var(--text-muted)',
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                }}
+                className="ks-btn-ghost"
+                style={{ color: 'var(--text-muted)' }}
               >
                 <X size={12} />
               </button>
@@ -859,7 +1200,7 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
           </div>
         </div>
 
-        {/* Shortcuts list */}
+        {/* ── Shortcuts list ── */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px 16px' }}>
           {activeCats.length === 0 && (
             <div
@@ -888,7 +1229,7 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
           ))}
         </div>
 
-        {/* Footer */}
+        {/* ── Footer ── */}
         <div
           style={{
             display: 'flex',
@@ -899,9 +1240,12 @@ export default function KeyboardShortcuts({ open, onClose }: Props) {
           }}
         >
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            Click <Pencil size={10} style={{ display: 'inline', verticalAlign: 'middle', margin: '0 2px' }} /> to edit
-            {' '}&middot;{' '}
-            Press <KbdKey keyName="Esc" /> to {editingId ? 'cancel edit' : 'close'}
+            Double-click or{' '}
+            <Pencil
+              size={10}
+              style={{ display: 'inline', verticalAlign: 'middle', margin: '0 2px' }}
+            />{' '}
+            to edit &middot; Press <KbdKey keyName="Esc" /> to {editingId ? 'cancel edit' : 'close'}
           </span>
           <button
             onClick={onClose}

@@ -2241,11 +2241,49 @@ export default function ChatPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const allModels = [
+  // Track streaming stats
+  useEffect(() => {
+    if (isStreaming && !streamStartTime) {
+      setStreamStartTime(Date.now())
+      setStreamTokenCount(0)
+    }
+    if (!isStreaming && streamStartTime) {
+      setStreamStartTime(null)
+      setStreamStats(null)
+      setStreamTokenCount(0)
+    }
+  }, [isStreaming, streamStartTime])
+
+  // Update streaming stats periodically
+  useEffect(() => {
+    if (!isStreaming || !streamStartTime) return
+    const interval = setInterval(() => {
+      const lastMsg = messages[messages.length - 1]
+      if (lastMsg?.role === 'assistant') {
+        const tokenEstimate = Math.ceil(lastMsg.content.length / 4)
+        const elapsed = (Date.now() - streamStartTime) / 1000
+        const tps = elapsed > 0 ? tokenEstimate / elapsed : 0
+        // Rough estimate: average response ~500 tokens
+        const estimatedTotal = 500
+        const remaining = tps > 0 ? Math.max(0, (estimatedTotal - tokenEstimate) / tps) : 0
+        setStreamTokenCount(tokenEstimate)
+        setStreamStats({
+          tokensPerSec: tps,
+          elapsed,
+          estimatedRemaining: tokenEstimate < estimatedTotal ? remaining : 0,
+        })
+      }
+    }, 500)
+    return () => clearInterval(interval)
+  }, [isStreaming, streamStartTime, messages])
+
+  const allModels: ModelDef[] = [
     {
       id: 'Ollama',
       label: ollamaAvailable ? `Ollama (${ollamaModels[0] || 'local'})` : 'Ollama',
       color: '#76e3ea',
+      badge: 'Local',
+      capabilities: ['fast'] as ModelCapability[],
     },
     ...apiModels,
     ...nvidiaModels,
@@ -2519,8 +2557,62 @@ export default function ChatPanel() {
 
   const handleClearChat = useCallback(() => {
     clearMessages()
+    setPinnedMessages(new Set())
     addToast({ type: 'info', message: 'Chat cleared' })
   }, [clearMessages, addToast])
+
+  const handleTogglePin = useCallback((msgId: string) => {
+    setPinnedMessages((prev) => {
+      const next = new Set(prev)
+      if (next.has(msgId)) {
+        next.delete(msgId)
+        addToast({ type: 'info', message: 'Message unpinned' })
+      } else {
+        next.add(msgId)
+        addToast({ type: 'info', message: 'Message pinned' })
+      }
+      return next
+    })
+  }, [addToast])
+
+  const handleDeleteMessage = useCallback((msgId: string) => {
+    const msgs = useChatStore.getState().messages
+    const filtered = msgs.filter((m) => m.id !== msgId)
+    loadMessages(filtered)
+    setPinnedMessages((prev) => {
+      const next = new Set(prev)
+      next.delete(msgId)
+      return next
+    })
+    addToast({ type: 'info', message: 'Message deleted' })
+  }, [loadMessages, addToast])
+
+  const handleEditMessage = useCallback((msgId: string, newContent: string) => {
+    // Find the message index, update it, remove all messages after it, then resend
+    const msgs = useChatStore.getState().messages
+    const idx = msgs.findIndex((m) => m.id === msgId)
+    if (idx === -1) return
+    const updatedMsg = { ...msgs[idx], content: newContent, timestamp: Date.now() }
+    const updatedMessages = [...msgs.slice(0, idx), updatedMsg]
+    loadMessages(updatedMessages)
+    // Resend the edited message
+    window.api?.omoSend({
+      type: 'chat',
+      payload: { message: newContent, mode, model: selectedModel },
+    })
+    addToast({ type: 'info', message: 'Message edited and resent' })
+  }, [loadMessages, mode, selectedModel, addToast])
+
+  const handleForkConversation = useCallback((msgId: string) => {
+    const msgs = useChatStore.getState().messages
+    const idx = msgs.findIndex((m) => m.id === msgId)
+    if (idx === -1) return
+    // Create a new conversation with messages up to and including this one
+    const forkedMessages = msgs.slice(0, idx + 1).map((m) => ({ ...m, id: uuid() }))
+    createConversation()
+    loadMessages(forkedMessages)
+    addToast({ type: 'success', message: 'Conversation forked from this point' })
+  }, [createConversation, loadMessages, addToast])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (showMentionDropdown && allMentionResults.length > 0) {
@@ -2936,19 +3028,29 @@ export default function ChatPanel() {
                 isStreaming &&
                 msg.role === 'assistant' &&
                 msg.content.trim().length < 10
+              const isLastAssistantStreaming =
+                isLast &&
+                isStreaming &&
+                msg.role === 'assistant'
               return (
                 <MessageBubble
                   key={msg.id}
                   message={msg}
                   showThinking={isLastAssistantEmpty}
                   onRegenerate={handleRegenerate}
+                  isPinned={pinnedMessages.has(msg.id)}
+                  onTogglePin={handleTogglePin}
+                  onDelete={handleDeleteMessage}
+                  onEdit={msg.role === 'user' ? handleEditMessage : undefined}
+                  onFork={handleForkConversation}
+                  streamStats={isLastAssistantStreaming ? streamStats : null}
                 />
               )
             })}
             {isStreaming &&
               (messages.length === 0 ||
                 messages[messages.length - 1].role !== 'assistant') && (
-                <StreamingDots />
+                <StreamingDots streamStats={streamStats} />
               )}
           </>
         )}
