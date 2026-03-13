@@ -184,7 +184,9 @@ export function getOllamaStatus() {
   return { available: ollamaAvailable, models: ollamaModels }
 }
 
-const DEFAULT_SYSTEM_PROMPT = `You are Orion AI by Bebut, an expert coding assistant integrated into a code editor IDE. You help with code analysis, debugging, feature implementation, and code explanations. Be concise and helpful. Use markdown formatting for code blocks. Respond in the same language the user uses.`
+const DEFAULT_SYSTEM_PROMPT = `You are Orion AI by Bebut, an expert coding assistant integrated into a code editor IDE. You help with code analysis, debugging, feature implementation, and code explanations. Be concise and helpful. Use markdown formatting for code blocks.
+
+IMPORTANT: You MUST always respond in Korean (한국어). All explanations, comments, and descriptions must be written in Korean. Only code itself (variable names, syntax, etc.) should remain in English.`
 
 let customSystemPrompt: string = ''
 let customUserTemplate: string = ''
@@ -221,6 +223,11 @@ export async function callAI(
   let processedMessage = message
   if (customUserTemplate && customUserTemplate !== '{message}') {
     processedMessage = customUserTemplate.replace('{message}', message)
+  }
+
+  // For small local models, prepend Korean instruction directly to user message
+  if (config.provider === 'ollama') {
+    processedMessage = `(반드시 한국어로 답변하세요. Answer in Korean only.)\n\n${processedMessage}`
   }
 
   // Build messages with history
@@ -275,6 +282,11 @@ export async function callAIStreaming(
   let processedMessage = message
   if (customUserTemplate && customUserTemplate !== '{message}') {
     processedMessage = customUserTemplate.replace('{message}', message)
+  }
+
+  // For small local models, prepend Korean instruction directly to user message
+  if (config.provider === 'ollama') {
+    processedMessage = `(반드시 한국어로 답변하세요. Answer in Korean only.)\n\n${processedMessage}`
   }
 
   // Build messages with history

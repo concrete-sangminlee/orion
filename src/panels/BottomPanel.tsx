@@ -294,19 +294,18 @@ export default function BottomPanel() {
   /* ── Output unread tracking ─────────────────────────── */
   const [outputUnread, setOutputUnread] = useState(0)
   const outputActiveChannel = useOutputStore((s) => s.activeChannel)
-  const outputChannels = useOutputStore((s) => s.channels)
-  const outputLineCount = outputChannels.get(outputActiveChannel)?.length ?? 0
+  const outputLineCount = useOutputStore((s) => s.channels.get(s.activeChannel)?.length ?? 0)
   const prevOutputLineCountRef = useRef(outputLineCount)
 
   useEffect(() => {
     if (activeTab === 'output') {
-      setOutputUnread(0)
+      if (outputUnread !== 0) setOutputUnread(0)
       prevOutputLineCountRef.current = outputLineCount
     } else if (outputLineCount > prevOutputLineCountRef.current) {
       setOutputUnread(prev => prev + (outputLineCount - prevOutputLineCountRef.current))
       prevOutputLineCountRef.current = outputLineCount
     }
-  }, [outputLineCount, activeTab])
+  }, [outputLineCount, activeTab, outputUnread])
 
   /* ── Create terminal with optional profile ───────────── */
   const addTerminal = useCallback((profile?: TerminalProfile) => {

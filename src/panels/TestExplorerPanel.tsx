@@ -1386,6 +1386,8 @@ export default function TestExplorerPanel() {
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
+  const suitesRef = useRef(suites)
+  suitesRef.current = suites
   const treeRef = useRef<HTMLDivElement>(null)
   const watchIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -1504,7 +1506,7 @@ export default function TestExplorerPanel() {
       abortRef.current = new AbortController()
 
       const startTime = Date.now()
-      const results = await simulateTestRun(suites, filter, setSuites, abortRef.current.signal)
+      const results = await simulateTestRun(suitesRef.current, filter, setSuites, abortRef.current.signal)
 
       setSuites(results)
       setIsRunning(false)
@@ -1536,7 +1538,7 @@ export default function TestExplorerPanel() {
       }
       setRunHistory((prev) => [summary, ...prev.slice(0, 19)])
     },
-    [suites, isRunning, autoExpandFailed],
+    [isRunning, autoExpandFailed],
   )
 
   const runAllTests = useCallback(() => runTests(), [runTests])
@@ -1548,12 +1550,12 @@ export default function TestExplorerPanel() {
 
   const runSuiteTests = useCallback(
     (suiteId: string) => {
-      const suite = suites.find((s) => s.id === suiteId)
+      const suite = suitesRef.current.find((s) => s.id === suiteId)
       if (!suite) return
       const testIds = new Set(suite.tests.map((t) => t.id))
       runTests((t) => testIds.has(t.id))
     },
-    [suites, runTests],
+    [runTests],
   )
 
   const runSingleTest = useCallback(
@@ -1563,11 +1565,11 @@ export default function TestExplorerPanel() {
 
   const debugTest = useCallback((testId: string) => {
     // In production this would launch a debug session via the debug adapter
-    const test = suites.flatMap((s) => s.tests).find((t) => t.id === testId)
+    const test = suitesRef.current.flatMap((s) => s.tests).find((t) => t.id === testId)
     if (test) {
       console.log(`[TestExplorer] Debug test: ${test.name}`)
     }
-  }, [suites])
+  }, [])
 
   const cancelRun = useCallback(() => {
     abortRef.current?.abort()

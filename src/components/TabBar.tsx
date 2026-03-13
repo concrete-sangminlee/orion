@@ -286,18 +286,16 @@ function TabContextMenu({
   filePath: string
   onClose: () => void
 }) {
-  const {
-    openFiles,
-    closeFile,
-    closeAllFiles,
-    closeOtherFiles,
-    closeToRight,
-    closeSaved,
-    pinnedTabs,
-    pinTab,
-    unpinTab,
-  } = useEditorStore()
-  const { addToast } = useToastStore()
+  const openFiles = useEditorStore((s) => s.openFiles)
+  const closeFile = useEditorStore((s) => s.closeFile)
+  const closeAllFiles = useEditorStore((s) => s.closeAllFiles)
+  const closeOtherFiles = useEditorStore((s) => s.closeOtherFiles)
+  const closeToRight = useEditorStore((s) => s.closeToRight)
+  const closeSaved = useEditorStore((s) => s.closeSaved)
+  const pinnedTabs = useEditorStore((s) => s.pinnedTabs)
+  const pinTab = useEditorStore((s) => s.pinTab)
+  const unpinTab = useEditorStore((s) => s.unpinTab)
+  const addToast = useToastStore((s) => s.addToast)
   const menuRef = useRef<HTMLDivElement>(null)
   const [hoveredItem, setHoveredItem] = useState<string | null>(null)
   const isTabPinned = pinnedTabs.includes(filePath)
@@ -735,26 +733,24 @@ function DropZoneOverlay({
 // ═══════════════════════════════════════════════════════════════════════════
 
 export default function TabBar() {
-  const {
-    openFiles,
-    activeFilePath,
-    setActiveFile,
-    closeFile,
-    closeAllFiles,
-    reorderFiles,
-    pinFile,
-    previewPath,
-    markSaved,
-    pinnedTabs,
-    pinTab,
-    unpinTab,
-    editorGroups,
-    activeGroupId,
-    createGroup,
-    moveTabToGroup,
-    splitEditor,
-  } = useEditorStore()
-  const { addToast } = useToastStore()
+  const openFiles = useEditorStore((s) => s.openFiles)
+  const activeFilePath = useEditorStore((s) => s.activeFilePath)
+  const setActiveFile = useEditorStore((s) => s.setActiveFile)
+  const closeFile = useEditorStore((s) => s.closeFile)
+  const closeAllFiles = useEditorStore((s) => s.closeAllFiles)
+  const reorderFiles = useEditorStore((s) => s.reorderFiles)
+  const pinFile = useEditorStore((s) => s.pinFile)
+  const previewPath = useEditorStore((s) => s.previewPath)
+  const markSaved = useEditorStore((s) => s.markSaved)
+  const pinnedTabs = useEditorStore((s) => s.pinnedTabs)
+  const pinTab = useEditorStore((s) => s.pinTab)
+  const unpinTab = useEditorStore((s) => s.unpinTab)
+  const editorGroups = useEditorStore((s) => s.editorGroups)
+  const activeGroupId = useEditorStore((s) => s.activeGroupId)
+  const createGroup = useEditorStore((s) => s.createGroup)
+  const moveTabToGroup = useEditorStore((s) => s.moveTabToGroup)
+  const splitEditor = useEditorStore((s) => s.splitEditor)
+  const addToast = useToastStore((s) => s.addToast)
   const problems = useProblemsStore((s) => s.problems)
 
   // ─── Local state ─────────────────────────────────────────────────────────

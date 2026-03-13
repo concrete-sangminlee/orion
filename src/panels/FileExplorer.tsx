@@ -651,8 +651,11 @@ function FileTreeNode({
   onFolderDragLeave?: (e: React.DragEvent) => void
   onRequestRename?: (node: FileNode) => void
 }) {
-  const { expandedDirs, toggleDir } = useFileStore()
-  const { openFile, activeFilePath, pinFile } = useEditorStore()
+  const expandedDirs = useFileStore((s) => s.expandedDirs)
+  const toggleDir = useFileStore((s) => s.toggleDir)
+  const openFile = useEditorStore((s) => s.openFile)
+  const activeFilePath = useEditorStore((s) => s.activeFilePath)
+  const pinFile = useEditorStore((s) => s.pinFile)
   const [contextActive, setContextActive] = useState(false)
   const [nestedExpanded, setNestedExpanded] = useState(false)
   const [isSelected, setIsSelected] = useState(false)
@@ -1202,7 +1205,9 @@ function collectVisibleFolderPaths(
 /* ── File Explorer panel ───────────────────────────────── */
 
 export default function FileExplorer() {
-  const { fileTree, rootPath, expandedDirs } = useFileStore()
+  const fileTree = useFileStore((s) => s.fileTree)
+  const rootPath = useFileStore((s) => s.rootPath)
+  const expandedDirs = useFileStore((s) => s.expandedDirs)
   const setRootPath = useFileStore((s) => s.setRootPath)
   const setFileTree = useFileStore((s) => s.setFileTree)
   const toggleDir = useFileStore((s) => s.toggleDir)
@@ -1222,6 +1227,7 @@ export default function FileExplorer() {
   // Search/filter state
   const [searchQuery, setSearchQuery] = useState('')
   const [compactFoldersEnabled, setCompactFoldersEnabled] = useState(true)
+  const [nestingEnabled, setNestingEnabled] = useState(true)
 
   // Apply search filter
   const searchFilteredTree = useMemo(
@@ -1248,7 +1254,6 @@ export default function FileExplorer() {
   const closeFile = useEditorStore((s) => s.closeFile)
 
   const [openEditorsExpanded, setOpenEditorsExpanded] = useState(true)
-  const [nestingEnabled, setNestingEnabled] = useState(true)
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null)
   const [inlineInput, setInlineInput] = useState<InlineInputState | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<FileNode | null>(null)

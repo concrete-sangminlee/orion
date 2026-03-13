@@ -196,13 +196,26 @@ function formatFileSize(bytes: number): string {
 }
 
 export default function EditorPanel() {
-  const { openFiles, activeFilePath, updateFileContent, markSaved, closeFile, closeAllFiles, reloadFileContent, dismissExternalChange } = useEditorStore()
+  const openFiles = useEditorStore((s) => s.openFiles)
+  const activeFilePath = useEditorStore((s) => s.activeFilePath)
+  const updateFileContent = useEditorStore((s) => s.updateFileContent)
+  const markSaved = useEditorStore((s) => s.markSaved)
+  const closeFile = useEditorStore((s) => s.closeFile)
+  const closeAllFiles = useEditorStore((s) => s.closeAllFiles)
+  const reloadFileContent = useEditorStore((s) => s.reloadFileContent)
+  const dismissExternalChange = useEditorStore((s) => s.dismissExternalChange)
   const addToast = useToastStore((s) => s.addToast)
   const getSnippetsForLanguage = useSnippetStore((s) => s.getSnippetsForLanguage)
-  const activeFile = openFiles.find((f) => f.path === activeFilePath)
+  const activeFile = useMemo(() => openFiles.find((f) => f.path === activeFilePath), [openFiles, activeFilePath])
   const [saving, setSaving] = useState(false)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<Monaco | null>(null)
+  const activeFileRef = useRef(activeFile)
+  activeFileRef.current = activeFile
+  const openFilesRef = useRef(openFiles)
+  openFilesRef.current = openFiles
+  const activeFilePathRef = useRef(activeFilePath)
+  activeFilePathRef.current = activeFilePath
   const { scheduleAutoSave } = useAutoSave()
 
   // Editor config state – initialised from saved settings, if any
@@ -2142,6 +2155,73 @@ export default function EditorPanel() {
     return () => window.removeEventListener('keydown', handler)
   }, [activeFile])
 
+  // Toggle split direction handler (for context menu and command palette)
+  const handleToggleSplitDirection = useCallback(() => {
+    if (splitMode === 'horizontal') {
+      setSplitMode('vertical')
+    } else if (splitMode === 'vertical') {
+      setSplitMode('horizontal')
+    }
+  }, [splitMode])
+
+  // Handle split editor right (horizontal)
+  const handleSplitRight = useCallback(() => {
+    if (splitMode === 'single' && activeFileRef.current) {
+      setSplitMode('horizontal')
+      const other = openFilesRef.current.find((f) => f.path !== activeFilePathRef.current)
+      const splitPath = other?.path || activeFilePathRef.current || null
+      setSplitFilePath(splitPath)
+      setGroup1Files(activeFilePathRef.current ? [activeFilePathRef.current] : [])
+      setGroup2Files(splitPath ? [splitPath] : [])
+    } else if (splitMode !== 'single') {
+      setSplitMode('single')
+      setSplitFilePath(null)
+      setGroup1Files([])
+      setGroup2Files([])
+    }
+  }, [splitMode])
+
+  // Handle split editor down (vertical)
+  const handleSplitDown = useCallback(() => {
+    if (splitMode === 'single' && activeFileRef.current) {
+      setSplitMode('vertical')
+      const other = openFilesRef.current.find((f) => f.path !== activeFilePathRef.current)
+      const splitPath = other?.path || activeFilePathRef.current || null
+      setSplitFilePath(splitPath)
+      setGroup1Files(activeFilePathRef.current ? [activeFilePathRef.current] : [])
+      setGroup2Files(splitPath ? [splitPath] : [])
+    } else if (splitMode !== 'single') {
+      setSplitMode('single')
+      setSplitFilePath(null)
+      setGroup1Files([])
+      setGroup2Files([])
+    }
+  }, [splitMode])
+
+  // Toggle split (Ctrl+\) - toggles between single and the last used direction
+  const handleSplitToggle = useCallback(() => {
+    if (splitMode === 'single') {
+      handleSplitRight()
+    } else {
+      setSplitMode('single')
+      setSplitFilePath(null)
+      setGroup1Files([])
+      setGroup2Files([])
+    }
+  }, [splitMode, handleSplitRight])
+
+  // Handle sync scroll toggle
+  const handleToggleSyncScroll = useCallback(() => {
+    setSyncScrollEnabled(prev => !prev)
+  }, [])
+
+  // Handle opening diff editor
+  const handleCompareFiles = useCallback(() => {
+    if (!activeFilePath) return
+    setDiffOriginalPath(activeFilePath)
+    setDiffFilePickerOpen(true)
+  }, [activeFilePath])
+
   // Ctrl+\ to toggle split editor
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -2212,15 +2292,6 @@ export default function EditorPanel() {
     return () => window.removeEventListener('click', handler)
   }, [dividerContextMenu])
 
-  // Toggle split direction handler (for context menu and command palette)
-  const handleToggleSplitDirection = useCallback(() => {
-    if (splitMode === 'horizontal') {
-      setSplitMode('vertical')
-    } else if (splitMode === 'vertical') {
-      setSplitMode('horizontal')
-    }
-  }, [splitMode])
-
   // Ctrl+G to open Go to Line dialog
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -2233,64 +2304,6 @@ export default function EditorPanel() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [])
-
-  // Handle split editor right (horizontal)
-  const handleSplitRight = useCallback(() => {
-    if (splitMode === 'single' && activeFile) {
-      setSplitMode('horizontal')
-      const other = openFiles.find((f) => f.path !== activeFilePath)
-      const splitPath = other?.path || activeFilePath || null
-      setSplitFilePath(splitPath)
-      setGroup1Files(activeFilePath ? [activeFilePath] : [])
-      setGroup2Files(splitPath ? [splitPath] : [])
-    } else if (splitMode !== 'single') {
-      setSplitMode('single')
-      setSplitFilePath(null)
-      setGroup1Files([])
-      setGroup2Files([])
-    }
-  }, [splitMode, activeFile, openFiles, activeFilePath])
-
-  // Handle split editor down (vertical)
-  const handleSplitDown = useCallback(() => {
-    if (splitMode === 'single' && activeFile) {
-      setSplitMode('vertical')
-      const other = openFiles.find((f) => f.path !== activeFilePath)
-      const splitPath = other?.path || activeFilePath || null
-      setSplitFilePath(splitPath)
-      setGroup1Files(activeFilePath ? [activeFilePath] : [])
-      setGroup2Files(splitPath ? [splitPath] : [])
-    } else if (splitMode !== 'single') {
-      setSplitMode('single')
-      setSplitFilePath(null)
-      setGroup1Files([])
-      setGroup2Files([])
-    }
-  }, [splitMode, activeFile, openFiles, activeFilePath])
-
-  // Toggle split (Ctrl+\) - toggles between single and the last used direction
-  const handleSplitToggle = useCallback(() => {
-    if (splitMode === 'single') {
-      handleSplitRight()
-    } else {
-      setSplitMode('single')
-      setSplitFilePath(null)
-      setGroup1Files([])
-      setGroup2Files([])
-    }
-  }, [splitMode, handleSplitRight])
-
-  // Handle sync scroll toggle
-  const handleToggleSyncScroll = useCallback(() => {
-    setSyncScrollEnabled(prev => !prev)
-  }, [])
-
-  // Handle opening diff editor
-  const handleCompareFiles = useCallback(() => {
-    if (!activeFilePath) return
-    setDiffOriginalPath(activeFilePath)
-    setDiffFilePickerOpen(true)
-  }, [activeFilePath])
 
   // Handle selecting the comparison file
   const handleSelectDiffFile = useCallback((path: string) => {
@@ -2451,7 +2464,8 @@ export default function EditorPanel() {
         closeAllFiles()
       },
       'orion:save-file': async () => {
-        if (activeFile) {
+        const af = activeFileRef.current
+        if (af) {
           setSaving(true)
 
           // Format on save
@@ -2462,7 +2476,7 @@ export default function EditorPanel() {
           }
 
           // Get latest content from editor model (may have been formatted)
-          let content = editorRef.current?.getModel()?.getValue() ?? activeFile.content
+          let content = editorRef.current?.getModel()?.getValue() ?? af.content
 
           // Trim trailing whitespace on save
           if (editorConfig.trimTrailingWhitespace) {
@@ -2482,10 +2496,10 @@ export default function EditorPanel() {
             }
           }
 
-          useFileHistoryStore.getState().addSnapshot(activeFile.path, content, 'Saved')
-          window.api.writeFile(activeFile.path, content).then(() => {
-            markSaved(activeFile.path)
-            addToast({ type: 'success', message: `Saved ${activeFile.name}`, duration: 1500 })
+          useFileHistoryStore.getState().addSnapshot(af.path, content, 'Saved')
+          window.api.writeFile(af.path, content).then(() => {
+            markSaved(af.path)
+            addToast({ type: 'success', message: `Saved ${af.name}`, duration: 1500 })
             setTimeout(() => setSaving(false), 800)
           })
         }
@@ -2564,7 +2578,7 @@ export default function EditorPanel() {
         editorRef.current?.getAction('editor.action.trimTrailingWhitespace')?.run()
       },
       'orion:toggle-markdown-preview': () => {
-        if (activeFile?.language === 'markdown') {
+        if (activeFileRef.current?.language === 'markdown') {
           setMarkdownPreview(prev => !prev)
         }
       },
@@ -2708,7 +2722,7 @@ export default function EditorPanel() {
       window.removeEventListener('orion:editor-config', editorConfigHandler)
       window.removeEventListener('orion:toggle-timeline', toggleTimelineHandler)
     }
-  }, [activeFilePath, activeFile, closeFile, closeAllFiles, markSaved, addToast])
+  }, [activeFilePath, closeFile, closeAllFiles, markSaved, addToast])
 
   const editorOptions: MonacoEditor.IStandaloneEditorConstructionOptions = {
     fontSize: editorConfig.fontSize,

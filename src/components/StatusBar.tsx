@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useAgentStore } from '@/store/agents'
 import { useEditorStore } from '@/store/editor'
 import { useChatStore } from '@/store/chat'
@@ -85,9 +85,14 @@ function StatusDropdown({ items, onSelect, onClose, anchorRef, maxHeight = 260, 
   const [filter, setFilter] = useState('')
   const [hoveredIdx, setHoveredIdx] = useState(-1)
 
-  const filtered = filter
+  const filtered = useMemo(() => filter
     ? items.filter((i) => i.label.toLowerCase().includes(filter.toLowerCase()))
-    : items
+    : items, [filter, items])
+
+  const filteredRef = useRef(filtered)
+  filteredRef.current = filtered
+  const hoveredIdxRef = useRef(hoveredIdx)
+  hoveredIdxRef.current = hoveredIdx
 
   // Close on outside click
   useEffect(() => {
@@ -108,23 +113,25 @@ function StatusDropdown({ items, onSelect, onClose, anchorRef, maxHeight = 260, 
   // Close on Escape, navigate with arrows
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      const f = filteredRef.current
+      const idx = hoveredIdxRef.current
       if (e.key === 'Escape') {
         onClose()
       } else if (e.key === 'ArrowDown') {
         e.preventDefault()
-        setHoveredIdx((p) => Math.min(p + 1, filtered.length - 1))
+        setHoveredIdx((p) => Math.min(p + 1, f.length - 1))
       } else if (e.key === 'ArrowUp') {
         e.preventDefault()
         setHoveredIdx((p) => Math.max(p - 1, 0))
-      } else if (e.key === 'Enter' && hoveredIdx >= 0 && hoveredIdx < filtered.length) {
+      } else if (e.key === 'Enter' && idx >= 0 && idx < f.length) {
         e.preventDefault()
-        onSelect(filtered[hoveredIdx].id)
+        onSelect(f[idx].id)
         onClose()
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [onClose, onSelect, filtered, hoveredIdx])
+  }, [onClose, onSelect])
 
   // Focus search input when opened
   useEffect(() => {

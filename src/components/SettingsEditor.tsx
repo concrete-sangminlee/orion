@@ -951,13 +951,17 @@ const JsonView: React.FC<{ scope: SettingsScope }> = ({ scope }) => {
   const [parseError, setParseError] = useState<string | null>(null)
 
   const layerKey: SettingsLayer = scope === 'workspace' ? 'workspace' : scope === 'folder' ? 'folder' : 'user'
-  const currentSettings = layers[layerKey] ?? {}
+  const currentSettings = useMemo(() => layers[layerKey] ?? {}, [layers, layerKey])
 
   const [jsonText, setJsonText] = useState(() => JSON.stringify(currentSettings, null, 2))
 
+  const prevSettingsRef = useRef(currentSettings)
   useEffect(() => {
-    setJsonText(JSON.stringify(currentSettings, null, 2))
-    setParseError(null)
+    if (prevSettingsRef.current !== currentSettings) {
+      prevSettingsRef.current = currentSettings
+      setJsonText(JSON.stringify(currentSettings, null, 2))
+      setParseError(null)
+    }
   }, [currentSettings])
 
   const handleSave = useCallback(() => {

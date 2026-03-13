@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   ChevronRight,
   Minus,
@@ -1116,8 +1116,9 @@ export default function TitleBar() {
 
   const fileStore = useFileStore()
   const editorStore = useEditorStore()
-  const recentFiles = useRecentFilesStore((s) => s.getRecent(5))
-  const menus = buildMenus(fileStore, editorStore, recentFiles)
+  const recentFilesList = useRecentFilesStore((s) => s.recentFiles)
+  const recentFiles = useMemo(() => recentFilesList.slice(0, 5), [recentFilesList])
+  const menus = useMemo(() => buildMenus(fileStore, editorStore, recentFiles), [fileStore, editorStore, recentFiles])
 
   /* Inject CSS variables */
   useEffect(() => {
