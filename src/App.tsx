@@ -94,6 +94,7 @@ const AnalyticsDashboard = React.lazy(() => import('./components/AnalyticsDashbo
 const ReleaseNotes = React.lazy(() => import('./components/ReleaseNotes'))
 const QuickOpen = React.lazy(() => import('./components/QuickOpen'))
 const MergeConflictResolver = React.lazy(() => import('./components/MergeConflictResolver'))
+const TerminalProfileManager = React.lazy(() => import('./components/TerminalProfileManager'))
 
 /** Workspace trust key prefix in localStorage */
 const WORKSPACE_TRUST_KEY = 'orion-workspace-trust'
@@ -161,6 +162,7 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const [snippetsOpen, setSnippetsOpen] = useState(false)
+  const [terminalProfilesOpen, setTerminalProfilesOpen] = useState(false)
   const [sidebarVisible, setSidebarVisible] = useState(initialLayout.sidebarVisible)
   const [bottomVisible, setBottomVisible] = useState(initialLayout.bottomVisible)
   const [chatVisible, setChatVisible] = useState(initialLayout.chatVisible)
@@ -1225,6 +1227,12 @@ export default function App() {
       {snippetsOpen && (
         <Suspense fallback={null}>
           <SnippetManager open={snippetsOpen} onClose={() => closeModal(setSnippetsOpen)} />
+        </Suspense>
+      )}
+
+      {terminalProfilesOpen && (
+        <Suspense fallback={null}>
+          <TerminalProfileManager open={terminalProfilesOpen} onClose={() => closeModal(setTerminalProfilesOpen)} />
         </Suspense>
       )}
 

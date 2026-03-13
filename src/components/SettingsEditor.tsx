@@ -112,6 +112,53 @@ const ADDITIONAL_SETTINGS: ExtendedSettingDescriptor[] = [
     description: 'Enable or disable breadcrumb navigation.', category: 'workbench', tags: ['breadcrumbs'], group: 'Navigation',
   },
   {
+    key: 'workbench.tree.renderIndentGuides', type: 'string', default: 'onHover',
+    description: 'Controls whether the tree offers indent guides.',
+    enum: ['none', 'onHover', 'always'], category: 'workbench', tags: ['tree', 'guides'], group: 'Tree Widget',
+  },
+  {
+    key: 'workbench.tips.enabled', type: 'boolean', default: true,
+    description: 'Show tips and tricks on the Welcome page.',
+    category: 'workbench', tags: ['tips', 'welcome'], group: 'Startup',
+  },
+  {
+    key: 'workbench.editor.revealIfOpen', type: 'boolean', default: false,
+    description: 'Reveal an already opened editor instead of opening a new one.',
+    category: 'workbench', tags: ['editor', 'reveal', 'tabs'], group: 'Editor Management',
+  },
+  {
+    key: 'workbench.editor.pinnedTabSizing', type: 'string', default: 'normal',
+    description: 'Controls the sizing of pinned editor tabs.',
+    enum: ['normal', 'compact', 'shrink'], category: 'workbench', tags: ['tabs', 'pin', 'sizing'], group: 'Editor Management',
+  },
+  {
+    key: 'workbench.panel.defaultLocation', type: 'string', default: 'bottom',
+    description: 'Controls the default location of the panel (output, debug console, terminal).',
+    enum: ['bottom', 'right', 'left'],
+    category: 'workbench', tags: ['panel', 'layout'], group: 'Layout',
+  },
+  {
+    key: 'workbench.editor.closeOnFileDelete', type: 'boolean', default: false,
+    description: 'Automatically close editors when the underlying file is deleted.',
+    category: 'workbench', tags: ['editor', 'close', 'files'], group: 'Editor Management',
+  },
+  {
+    key: 'workbench.editor.highlightModifiedTabs', type: 'boolean', default: false,
+    description: 'Highlight tabs with unsaved changes with a dot indicator.',
+    category: 'workbench', tags: ['tabs', 'unsaved', 'indicator'], group: 'Editor Management',
+  },
+  {
+    key: 'workbench.editor.labelFormat', type: 'string', default: 'default',
+    description: 'Controls the format of the label for an editor tab.',
+    enum: ['default', 'short', 'medium', 'long'],
+    category: 'workbench', tags: ['tabs', 'label', 'format'], group: 'Editor Management',
+  },
+  {
+    key: 'workbench.list.smoothScrolling', type: 'boolean', default: false,
+    description: 'Enable smooth scrolling in lists and trees.',
+    category: 'workbench', tags: ['scroll', 'smooth', 'Experimental'], group: 'Tree Widget',
+  },
+  {
     key: 'workbench.colorCustomizations', type: 'object', default: {},
     description: 'Overrides colors from the currently selected color theme.',
     markdownDescription: 'Overrides colors from the currently selected **color theme**. Use `workbench.colorCustomizations` to customize individual UI colors.',
@@ -1149,6 +1196,11 @@ export const SettingsEditor: React.FC = () => {
 
   const groupedSettings = useMemo(() => groupByField(filteredSettings), [filteredSettings])
 
+  // Count of total modified settings for the badge in header
+  const modifiedCount = useMemo(() => {
+    return UNIQUE_SETTINGS.filter(s => !deepEqual(getEffectiveSetting(s.key), s.default)).length
+  }, [layers])
+
   const recentKeys = useMemo(() => {
     const cutoff = Date.now() - 5 * 60 * 1000
     return new Set(recentlyModified.filter(r => r.timestamp > cutoff).map(r => r.key))
@@ -1208,7 +1260,14 @@ export const SettingsEditor: React.FC = () => {
     <div style={S.container}>
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <div style={S.header}>
-        <div style={S.headerTitle}><Settings size={15} /> Settings</div>
+        <div style={S.headerTitle}>
+          <Settings size={15} /> Settings
+          {modifiedCount > 0 && (
+            <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, background: 'rgba(88,166,255,0.15)', color: 'var(--accent-blue, #58a6ff)', fontWeight: 500, marginLeft: 4 }}>
+              {modifiedCount} modified
+            </span>
+          )}
+        </div>
 
         {/* Scope Tabs */}
         <div style={S.scopeTabs}>
@@ -1259,13 +1318,22 @@ export const SettingsEditor: React.FC = () => {
           </div>
           <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <button style={S.filterChip(showModifiedOnly)} onClick={() => setShowModifiedOnly(v => !v)}>
-              <Filter size={10} /> Modified
+              <Filter size={10} /> Modified {showModifiedOnly && modifiedCount > 0 ? `(${modifiedCount})` : ''}
+            </button>
+            <button style={S.filterChip(false)} onClick={() => { setSearchQuery(''); setActiveCategory('commonly-used'); setShowModifiedOnly(false) }}>
+              <RotateCcw size={10} /> Reset Filters
             </button>
             {searchQuery && (
               <span style={{ fontSize: 11, color: 'var(--text-muted, #666)' }}>
-                {filteredSettings.length} result{filteredSettings.length !== 1 ? 's' : ''}
+                {filteredSettings.length} result{filteredSettings.length !== 1 ? 's' : ''} for &quot;{searchQuery}&quot;
               </span>
             )}
+          </div>
+          {/* Scope description */}
+          <div style={{ fontSize: 11, color: 'var(--text-muted, #666)', marginTop: 6 }}>
+            {scope === 'user' && 'User settings apply globally across all workspaces.'}
+            {scope === 'workspace' && 'Workspace settings override user settings for this project only.'}
+            {scope === 'folder' && 'Folder settings apply to a specific folder within a multi-root workspace.'}
           </div>
         </div>
       )}
@@ -1292,11 +1360,34 @@ export const SettingsEditor: React.FC = () => {
                     <span style={S.sidebarCount}>{recommendedSettings.length}</span>
                   </div>
                 </div>
+
+                {/* Sidebar footer with keyboard hints */}
+                <div style={{ borderTop: '1px solid var(--border-color, #333)', marginTop: 'auto', padding: '10px 14px' }}>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted, #555)', lineHeight: 1.6 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Search</span>
+                      <kbd style={{ fontSize: 10, padding: '0 4px', background: 'var(--bg-tertiary)', borderRadius: 2, border: '1px solid var(--border-color, #444)', fontFamily: 'inherit' }}>Ctrl+F</kbd>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Open JSON</span>
+                      <kbd style={{ fontSize: 10, padding: '0 4px', background: 'var(--bg-tertiary)', borderRadius: 2, border: '1px solid var(--border-color, #444)', fontFamily: 'inherit' }}>Ctrl+,</kbd>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Toggle View</span>
+                      <kbd style={{ fontSize: 10, padding: '0 4px', background: 'var(--bg-tertiary)', borderRadius: 2, border: '1px solid var(--border-color, #444)', fontFamily: 'inherit' }}>Ctrl+Shift+J</kbd>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
             {/* Content Area */}
             <div style={S.content} ref={contentRef}>
+              {/* Sync Panel (toggled from header) */}
+              {showSyncPanel && (
+                <SyncStatusPanel status={syncStatus} onToggle={handleToggleSync} scope={scope} />
+              )}
+
               {/* Recently Modified Section */}
               {!searchQuery && recentlyModifiedSettings.length > 0 && activeCategory === 'commonly-used' && (
                 <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--border-color, #333)', background: 'var(--bg-secondary, #252526)' }}>
@@ -1309,21 +1400,44 @@ export const SettingsEditor: React.FC = () => {
 
               {/* Recommended Settings Section */}
               {!searchQuery && activeCategory === 'recommended' && (
-                <div style={{ padding: '12px 24px 0', borderBottom: '1px solid var(--border-color, #333)', background: 'var(--bg-secondary, #252526)' }}>
+                <div style={{ padding: '16px 24px' }}>
                   <div style={{ ...S.sectionHeader, padding: '0 0 10px 0' }}>
-                    <Lightbulb size={12} /> Recommended settings based on your workspace
+                    <Lightbulb size={12} /> Recommended settings for your workspace
                   </div>
-                  <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '0 0 12px', lineHeight: 1.5 }}>
-                    These settings are recommended for improved developer experience. Adjust them to your preference.
+                  <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '0 0 16px', lineHeight: 1.5 }}>
+                    These settings are suggested for improved developer experience. Enable or adjust them to match your workflow.
                   </p>
+                  {recommendedSettings.map(desc => (
+                    <RecommendedCard key={desc.key} descriptor={desc} scope={scope} onCopyId={handleCopyId} />
+                  ))}
+                </div>
+              )}
+
+              {/* Scope override notice */}
+              {!searchQuery && scope !== 'user' && activeCategory !== 'recommended' && (
+                <div style={{ padding: '8px 24px', borderBottom: '1px solid var(--border-color, #333)', background: 'rgba(88,166,255,0.06)', fontSize: 12, color: 'var(--accent-blue, #58a6ff)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Info size={13} />
+                  <span>
+                    {scope === 'workspace' ? 'Workspace' : 'Folder'} settings override User settings.
+                    Changes here are saved to <code style={{ background: 'var(--bg-tertiary)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: 'var(--font-mono, monospace)' }}>
+                      .vscode/{scope === 'workspace' ? 'settings' : 'folder-settings'}.json
+                    </code>
+                  </span>
                 </div>
               )}
 
               {/* Extension Settings Header */}
               {!searchQuery && activeCategory === 'extensions' && extensionSettings.length > 0 && (
-                <div style={{ padding: '8px 24px', borderBottom: '1px solid var(--border-color, #333)', background: 'var(--bg-secondary, #252526)', fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Puzzle size={13} />
-                  {extensionSettings.length} settings contributed by extensions
+                <div style={{ padding: '10px 24px', borderBottom: '1px solid var(--border-color, #333)', background: 'var(--bg-secondary, #252526)' }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <Puzzle size={13} />
+                    {extensionSettings.length} settings contributed by installed extensions
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {Array.from(new Set(extensionSettings.map(s => s.extensionId).filter(Boolean))).map(extId => (
+                      <span key={extId} style={S.extensionBadge}>{extId}</span>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -1338,11 +1452,22 @@ export const SettingsEditor: React.FC = () => {
               {filteredSettings.length === 0 && (
                 <div style={S.emptyState}>
                   <Search size={32} strokeWidth={1.5} />
-                  <span>No settings found{searchQuery ? ` for "${searchQuery}"` : ''}</span>
-                  {showModifiedOnly && (
-                    <button style={{ ...S.filterChip(false), marginTop: 8, padding: '4px 12px', fontSize: 12 }}
-                      onClick={() => setShowModifiedOnly(false)}>Show all settings</button>
-                  )}
+                  <span style={{ fontWeight: 500 }}>No settings found{searchQuery ? ` for "${searchQuery}"` : ''}</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 360, textAlign: 'center', lineHeight: 1.5 }}>
+                    {searchQuery
+                      ? 'Try different keywords, or search by setting ID (e.g. "editor.fontSize")'
+                      : 'Select a category from the sidebar or use the search bar above'}
+                  </span>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    {showModifiedOnly && (
+                      <button style={{ ...S.filterChip(false), padding: '4px 12px', fontSize: 12 }}
+                        onClick={() => setShowModifiedOnly(false)}>Show all settings</button>
+                    )}
+                    {searchQuery && (
+                      <button style={{ ...S.filterChip(false), padding: '4px 12px', fontSize: 12 }}
+                        onClick={() => setSearchQuery('')}>Clear search</button>
+                    )}
+                  </div>
                 </div>
               )}
 
