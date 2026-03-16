@@ -1,7 +1,7 @@
 /**
  * Orion CLI - Unified AI Client
  * Supports Anthropic, OpenAI, and Ollama providers
- * Auto-detects Ollama availability, streams responses to terminal
+ * Hot-switching between providers with conversation preservation
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -33,6 +33,42 @@ interface ProviderConfig {
   temperature: number;
 }
 
+// ─── Provider Display Names & Colors ─────────────────────────────────────────
+
+const PROVIDER_DISPLAY: Record<AIProvider, { name: string; color: (s: string) => string; badge: string }> = {
+  anthropic: { name: 'Claude', color: chalk.hex('#D4A574'), badge: chalk.bgHex('#D4A574').black.bold(' Claude ') },
+  openai: { name: 'GPT', color: chalk.hex('#74AA9C'), badge: chalk.bgHex('#74AA9C').black.bold(' GPT ') },
+  ollama: { name: 'Ollama', color: chalk.hex('#FFFFFF'), badge: chalk.bgWhite.black.bold(' Ollama ') },
+};
+
+const MODEL_SHORTCUTS: Record<string, { provider: AIProvider; model: string }> = {
+  'claude': { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+  'claude-opus': { provider: 'anthropic', model: 'claude-opus-4-20250514' },
+  'claude-sonnet': { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+  'claude-haiku': { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+  'gpt': { provider: 'openai', model: 'gpt-4o' },
+  'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
+  'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
+  'o3': { provider: 'openai', model: 'o3' },
+  'o3-mini': { provider: 'openai', model: 'o3-mini' },
+  'codex': { provider: 'openai', model: 'gpt-4o' },
+  'ollama': { provider: 'ollama', model: 'llama3.2' },
+  'llama': { provider: 'ollama', model: 'llama3.2' },
+};
+
+export function getProviderDisplay(provider: AIProvider) {
+  return PROVIDER_DISPLAY[provider] || PROVIDER_DISPLAY.ollama;
+}
+
+export function resolveModelShortcut(input: string): { provider: AIProvider; model: string } | null {
+  const lower = input.toLowerCase().trim();
+  return MODEL_SHORTCUTS[lower] || null;
+}
+
+export function listAvailableModels(): string[] {
+  return Object.keys(MODEL_SHORTCUTS);
+}
+
 // ─── Ollama Detection ────────────────────────────────────────────────────────
 
 async function isOllamaAvailable(host: string = 'http://localhost:11434'): Promise<boolean> {
@@ -47,9 +83,47 @@ async function isOllamaAvailable(host: string = 'http://localhost:11434'): Promi
   }
 }
 
+// ─── Available Providers ─────────────────────────────────────────────────────
+
+export interface AvailableProvider {
+  provider: AIProvider;
+  model: string;
+  available: boolean;
+  reason?: string;
+}
+
+export async function getAvailableProviders(): Promise<AvailableProvider[]> {
+  const config = readConfig();
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || config.anthropicApiKey;
+  const openaiKey = process.env.OPENAI_API_KEY || config.openaiApiKey;
+  const ollamaHost = config.ollamaHost || 'http://localhost:11434';
+  const ollamaUp = await isOllamaAvailable(ollamaHost);
+
+  return [
+    {
+      provider: 'anthropic',
+      model: config.provider === 'anthropic' && config.model ? config.model : 'claude-sonnet-4-20250514',
+      available: !!anthropicKey,
+      reason: anthropicKey ? undefined : 'No ANTHROPIC_API_KEY',
+    },
+    {
+      provider: 'openai',
+      model: config.provider === 'openai' && config.model ? config.model : 'gpt-4o',
+      available: !!openaiKey,
+      reason: openaiKey ? undefined : 'No OPENAI_API_KEY',
+    },
+    {
+      provider: 'ollama',
+      model: config.provider === 'ollama' && config.model ? config.model : 'llama3.2',
+      available: ollamaUp,
+      reason: ollamaUp ? undefined : 'Ollama not running',
+    },
+  ];
+}
+
 // ─── Resolve Provider Config ─────────────────────────────────────────────────
 
-async function resolveProviderConfig(): Promise<ProviderConfig> {
+export async function resolveProviderConfig(overrideProvider?: AIProvider, overrideModel?: string): Promise<ProviderConfig> {
   const config = readConfig();
 
   const anthropicKey = process.env.ANTHROPIC_API_KEY || config.anthropicApiKey;
@@ -58,33 +132,34 @@ async function resolveProviderConfig(): Promise<ProviderConfig> {
   const maxTokens = config.maxTokens || 4096;
   const temperature = config.temperature || 0.7;
 
-  // If user has explicitly set a provider, use it
-  if (config.provider === 'anthropic' && anthropicKey) {
+  const targetProvider = overrideProvider || config.provider;
+
+  if (targetProvider === 'anthropic' && anthropicKey) {
     return {
       provider: 'anthropic',
-      model: config.model || 'claude-sonnet-4-20250514',
+      model: overrideModel || config.model || 'claude-sonnet-4-20250514',
       apiKey: anthropicKey,
       maxTokens,
       temperature,
     };
   }
 
-  if (config.provider === 'openai' && openaiKey) {
+  if (targetProvider === 'openai' && openaiKey) {
     return {
       provider: 'openai',
-      model: config.model || 'gpt-4o',
+      model: overrideModel || config.model || 'gpt-4o',
       apiKey: openaiKey,
       maxTokens,
       temperature,
     };
   }
 
-  if (config.provider === 'ollama') {
+  if (targetProvider === 'ollama') {
     const available = await isOllamaAvailable(ollamaHost);
     if (available) {
       return {
         provider: 'ollama',
-        model: config.model || 'llama3.2',
+        model: overrideModel || config.model || 'llama3.2',
         baseUrl: ollamaHost,
         maxTokens,
         temperature,
@@ -92,44 +167,24 @@ async function resolveProviderConfig(): Promise<ProviderConfig> {
     }
   }
 
-  // Auto-detect: try Ollama first, then Anthropic, then OpenAI
+  // Auto-detect: try Anthropic first (best quality), then OpenAI, then Ollama
+  if (anthropicKey) {
+    return { provider: 'anthropic', model: overrideModel || 'claude-sonnet-4-20250514', apiKey: anthropicKey, maxTokens, temperature };
+  }
+  if (openaiKey) {
+    return { provider: 'openai', model: overrideModel || 'gpt-4o', apiKey: openaiKey, maxTokens, temperature };
+  }
   const ollamaUp = await isOllamaAvailable(ollamaHost);
   if (ollamaUp) {
-    return {
-      provider: 'ollama',
-      model: config.model || 'llama3.2',
-      baseUrl: ollamaHost,
-      maxTokens,
-      temperature,
-    };
-  }
-
-  if (anthropicKey) {
-    return {
-      provider: 'anthropic',
-      model: config.model || 'claude-sonnet-4-20250514',
-      apiKey: anthropicKey,
-      maxTokens,
-      temperature,
-    };
-  }
-
-  if (openaiKey) {
-    return {
-      provider: 'openai',
-      model: config.model || 'gpt-4o',
-      apiKey: openaiKey,
-      maxTokens,
-      temperature,
-    };
+    return { provider: 'ollama', model: overrideModel || 'llama3.2', baseUrl: ollamaHost, maxTokens, temperature };
   }
 
   throw new Error(
     `No AI provider available.\n\n` +
     `  ${chalk.bold('Options:')}\n` +
-    `  1. Start Ollama locally     ${chalk.dim('(ollama serve)')}\n` +
-    `  2. Set ANTHROPIC_API_KEY    ${chalk.dim('(export ANTHROPIC_API_KEY=sk-..)')}\n` +
-    `  3. Set OPENAI_API_KEY       ${chalk.dim('(export OPENAI_API_KEY=sk-..)')}\n` +
+    `  1. Set ANTHROPIC_API_KEY    ${chalk.dim('(export ANTHROPIC_API_KEY=sk-ant-..)')}\n` +
+    `  2. Set OPENAI_API_KEY       ${chalk.dim('(export OPENAI_API_KEY=sk-..)')}\n` +
+    `  3. Start Ollama locally     ${chalk.dim('(ollama serve)')}\n` +
     `  4. Run: orion config        ${chalk.dim('(interactive setup)')}\n`
   );
 }
@@ -143,7 +198,6 @@ async function streamAnthropic(
 ): Promise<string> {
   const client = new Anthropic({ apiKey: config.apiKey });
 
-  // Extract system message
   const systemMsg = messages.find(m => m.role === 'system');
   const chatMessages = messages
     .filter(m => m.role !== 'system')
@@ -186,10 +240,7 @@ async function streamOpenAI(
     model: config.model,
     max_tokens: config.maxTokens,
     temperature: config.temperature,
-    messages: messages.map(m => ({
-      role: m.role,
-      content: m.content,
-    })),
+    messages: messages.map(m => ({ role: m.role, content: m.content })),
     stream: true,
   });
 
@@ -213,8 +264,6 @@ async function streamOllama(
   callbacks: AIStreamCallbacks
 ): Promise<string> {
   const baseUrl = config.baseUrl || 'http://localhost:11434';
-
-  // Try streaming first, fall back to non-streaming
   let fullText = '';
 
   try {
@@ -229,9 +278,7 @@ async function streamOllama(
       }),
     });
 
-    if (!response.ok) {
-      throw new Error(`${response.status}`);
-    }
+    if (!response.ok) throw new Error(`${response.status}`);
 
     const reader = response.body?.getReader();
     if (!reader) throw new Error('No body');
@@ -252,7 +299,6 @@ async function streamOllama(
       }
     }
   } catch {
-    // Fallback: non-streaming request
     const response = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -264,9 +310,7 @@ async function streamOllama(
       }),
     });
 
-    if (!response.ok) {
-      throw new Error(`Ollama error: ${response.status} ${response.statusText}`);
-    }
+    if (!response.ok) throw new Error(`Ollama error: ${response.status} ${response.statusText}`);
 
     const data = await response.json() as { message?: { content?: string } };
     fullText = data.message?.content || '';
@@ -279,14 +323,13 @@ async function streamOllama(
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/**
- * Send messages to AI and stream the response
- */
 export async function streamChat(
   messages: AIMessage[],
-  callbacks: AIStreamCallbacks = {}
+  callbacks: AIStreamCallbacks = {},
+  overrideProvider?: AIProvider,
+  overrideModel?: string
 ): Promise<string> {
-  const config = await resolveProviderConfig();
+  const config = await resolveProviderConfig(overrideProvider, overrideModel);
 
   try {
     switch (config.provider) {
@@ -305,9 +348,6 @@ export async function streamChat(
   }
 }
 
-/**
- * Simple one-shot: system prompt + user message, returns full response
- */
 export async function askAI(
   systemPrompt: string,
   userMessage: string,
@@ -320,40 +360,19 @@ export async function askAI(
   return streamChat(messages, callbacks);
 }
 
-/**
- * Get the currently resolved provider info (for display)
- */
-export async function getProviderInfo(): Promise<{ provider: string; model: string }> {
+export async function getProviderInfo(overrideProvider?: AIProvider): Promise<{ provider: AIProvider; model: string }> {
   try {
-    const config = await resolveProviderConfig();
+    const config = await resolveProviderConfig(overrideProvider);
     return { provider: config.provider, model: config.model };
   } catch {
-    return { provider: 'none', model: 'none' };
+    return { provider: 'ollama', model: 'none' };
   }
 }
 
-/**
- * Stream response to stdout with formatting
- */
 export function createTerminalStreamCallbacks(): AIStreamCallbacks {
-  let inCodeBlock = false;
-  let buffer = '';
-
   return {
     onToken(token: string) {
-      buffer += token;
-
-      // Detect code blocks for coloring
-      const ticks = buffer.match(/```/g);
-      if (ticks) {
-        inCodeBlock = (ticks.length % 2) === 1;
-      }
-
-      if (inCodeBlock) {
-        process.stdout.write(colors.code(token));
-      } else {
-        process.stdout.write(colors.ai(token));
-      }
+      process.stdout.write(colors.ai(token));
     },
     onComplete() {
       process.stdout.write('\n');
