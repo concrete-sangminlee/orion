@@ -3,8 +3,6 @@
  * Read file, get edit instructions, preview diff, apply changes
  */
 
-import * as path from 'path';
-import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { askAI } from '../ai-client.js';
 import {
@@ -13,14 +11,18 @@ import {
   printDivider,
   printInfo,
   printSuccess,
-  printError,
   startSpinner,
-  stopSpinner,
-  readFileContent,
   writeFileContent,
   formatDiff,
-  fileExists,
+  loadProjectContext,
 } from '../utils.js';
+import {
+  createSilentStreamHandler,
+  readAndValidateFile,
+  printFileInfo,
+  printCommandError,
+} from '../shared.js';
+import { getPipelineOptions, jsonOutput } from '../pipeline.js';
 
 const EDIT_SYSTEM_PROMPT = `You are Orion, an expert code editor. The user will provide a file and editing instructions.
 
@@ -36,31 +38,23 @@ Rules:
 export async function editCommand(filePath: string): Promise<void> {
   printHeader('Orion AI Edit');
 
-  const resolvedPath = path.resolve(filePath);
-
-  // Check file exists
-  if (!fileExists(filePath)) {
-    printError(`File not found: ${resolvedPath}`);
+  const file = readAndValidateFile(filePath);
+  if (!file) {
     process.exit(1);
   }
 
-  // Read the file
-  const { content: originalContent, language } = readFileContent(filePath);
-  const lineCount = originalContent.split('\n').length;
-
-  printInfo(`File: ${colors.file(resolvedPath)}`);
-  printInfo(`Language: ${language} | Lines: ${lineCount}`);
+  printFileInfo(file);
   console.log();
 
   // Show a preview of the file
-  const previewLines = originalContent.split('\n').slice(0, 20);
+  const previewLines = file.content.split('\n').slice(0, 20);
   console.log(colors.dim('  File preview (first 20 lines):'));
   previewLines.forEach((line, i) => {
     const lineNum = colors.dim(String(i + 1).padStart(4, ' ') + ' |');
     console.log(`  ${lineNum} ${colors.code(line)}`);
   });
-  if (lineCount > 20) {
-    console.log(colors.dim(`  ... and ${lineCount - 20} more lines`));
+  if (file.lineCount > 20) {
+    console.log(colors.dim(`  ... and ${file.lineCount - 20} more lines`));
   }
   console.log();
 
@@ -78,67 +72,77 @@ export async function editCommand(filePath: string): Promise<void> {
   const spinner = startSpinner('Generating edit...');
 
   try {
-    const userMessage = `File: ${path.basename(filePath)} (${language})\n\nInstruction: ${instruction}\n\nOriginal file content:\n${originalContent}`;
+    const userMessage = `File: ${file.fileName} (${file.language})\n\nInstruction: ${instruction}\n\nOriginal file content:\n${file.content}`;
 
-    let modifiedContent = '';
+    const projectContext = loadProjectContext();
+    const fullSystemPrompt = projectContext
+      ? EDIT_SYSTEM_PROMPT + '\n\nProject context:\n' + projectContext
+      : EDIT_SYSTEM_PROMPT;
 
-    await askAI(EDIT_SYSTEM_PROMPT, userMessage, {
-      onToken(token: string) {
-        modifiedContent += token;
-      },
-      onComplete() {
-        stopSpinner(spinner, 'Edit generated');
-      },
-      onError(error: Error) {
-        stopSpinner(spinner, error.message, false);
-      },
-    });
+    const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Edit generated');
+
+    await askAI(fullSystemPrompt, userMessage, callbacks);
+
+    let modifiedContent = getResponse().trim();
 
     // Clean up the response (remove potential code fences)
-    modifiedContent = modifiedContent.trim();
     if (modifiedContent.startsWith('```')) {
       const lines = modifiedContent.split('\n');
-      lines.shift(); // Remove opening fence
+      lines.shift();
       if (lines[lines.length - 1]?.trim() === '```') {
-        lines.pop(); // Remove closing fence
+        lines.pop();
       }
       modifiedContent = lines.join('\n');
     }
 
     // Show diff
-    console.log();
-    printDivider();
-    console.log(colors.label('  Changes Preview:'));
-    console.log();
-    console.log(formatDiff(originalContent, modifiedContent));
-    console.log();
-    printDivider();
+    const pipelineOpts = getPipelineOptions();
 
-    // Ask for confirmation
-    const { action } = await inquirer.prompt([
-      {
-        type: 'list',
-        name: 'action',
-        message: 'Apply these changes?',
-        choices: [
-          { name: 'Apply changes', value: 'apply' },
-          { name: 'Try different instructions', value: 'retry' },
-          { name: 'Cancel', value: 'cancel' },
-        ],
-      },
-    ]);
+    if (pipelineOpts.json) {
+      jsonOutput('edit_preview', { file: file.resolvedPath, original: file.content, modified: modifiedContent });
+    }
+
+    if (!pipelineOpts.quiet) {
+      console.log();
+      printDivider();
+      console.log(colors.label('  Changes Preview:'));
+      console.log();
+      console.log(formatDiff(file.content, modifiedContent));
+      console.log();
+      printDivider();
+    }
+
+    // Auto-confirm when --yes is set (non-interactive / pipeline mode)
+    let action: string;
+    if (pipelineOpts.yes) {
+      action = 'apply';
+    } else {
+      const answer = await inquirer.prompt([
+        {
+          type: 'list',
+          name: 'action',
+          message: 'Apply these changes?',
+          choices: [
+            { name: 'Apply changes', value: 'apply' },
+            { name: 'Try different instructions', value: 'retry' },
+            { name: 'Cancel', value: 'cancel' },
+          ],
+        },
+      ]);
+      action = answer.action;
+    }
 
     if (action === 'apply') {
       writeFileContent(filePath, modifiedContent);
-      printSuccess(`File updated: ${resolvedPath}`);
+      printSuccess(`File updated: ${file.resolvedPath}`);
+      jsonOutput('edit_result', { success: true, file: file.resolvedPath });
     } else if (action === 'retry') {
       await editCommand(filePath);
     } else {
       printInfo('Edit cancelled. File unchanged.');
     }
   } catch (err: any) {
-    stopSpinner(spinner, err.message, false);
-    console.error(colors.error(`  Error: ${err.message}`));
+    printCommandError(err, 'edit', 'Run `orion config` to check your AI provider settings.');
     process.exit(1);
   }
 }

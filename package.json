@@ -46,7 +46,7 @@
     "package:mac": "vite build && electron-builder --config electron-builder.yml --mac",
     "package:linux": "vite build && electron-builder --config electron-builder.yml --linux",
     "package:all": "vite build && electron-builder --config electron-builder.yml -mwl",
-    "cli:build": "npx esbuild cli/index.ts --bundle --platform=node --target=node18 --outfile=dist-cli/index.js --external:@anthropic-ai/sdk --external:openai --external:commander --external:chalk --external:ora --external:inquirer",
+    "cli:build": "npx esbuild cli/index.ts --bundle --platform=node --target=node18 --outfile=dist-cli/index.js --external:@anthropic-ai/sdk --external:openai --external:commander --external:chalk --external:ora --external:inquirer --external:marked --external:marked-terminal --external:cli-highlight",
     "cli:dev": "npx tsx cli/index.ts"
   },
   "dependencies": {
@@ -54,10 +54,13 @@
     "@monaco-editor/react": "^4.7.0",
     "chalk": "^5.6.2",
     "chokidar": "^4.0.0",
+    "cli-highlight": "^2.1.11",
     "commander": "^14.0.3",
     "electron-store": "^10.0.0",
     "inquirer": "^13.3.2",
     "lucide-react": "^0.577.0",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
     "monaco-editor": "^0.52.0",
     "openai": "^6.27.0",
     "ora": "^9.3.0",

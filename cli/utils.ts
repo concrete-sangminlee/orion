@@ -149,21 +149,39 @@ export function printInfo(text: string): void {
   console.log(`  ${chalk.blue('i')} ${text}`);
 }
 
-// ─── ASCII Art Banner ────────────────────────────────────────────────────────
+// ─── Premium Banner ──────────────────────────────────────────────────────────
 
 export function printBanner(): void {
-  const banner = `
-${chalk.hex('#7C5CFC').bold(`   ____       _             `)}
-${chalk.hex('#7C5CFC').bold(`  / __ \\     (_)            `)}
-${chalk.hex('#8B6FFC').bold(`  | |  | |_ __ _  ___  _ __  `)}
-${chalk.hex('#9B82FC').bold(`  | |  | | '__| |/ _ \\| '_ \\ `)}
-${chalk.hex('#AA95FC').bold(`  | |__| | |  | | (_) | | | |`)}
-${chalk.hex('#B9A8FC').bold(`   \\____/|_|  |_|\\___/|_| |_|`)}
-${chalk.hex('#C8BBFC').bold(`                              `)}
-${colors.dim('  AI-Powered Coding Assistant')}
-${colors.dim(`  v2.0.0 | ${chalk.underline('https://orion-ide.dev')}`)}
-`;
-  console.log(banner);
+  const g1 = chalk.hex('#9B59B6');
+  const g2 = chalk.hex('#8E6BBF');
+  const g3 = chalk.hex('#7C5CFC');
+  const g4 = chalk.hex('#6A7FDB');
+  const g5 = chalk.hex('#5B9BD5');
+  const g6 = chalk.hex('#38BDF8');
+  const dm = chalk.dim;
+
+  const w = 44;
+  const pad = (n: number) => ' '.repeat(Math.max(n, 0));
+
+  const top     = '  ' + dm('\u250C') + dm('\u2500'.repeat(w)) + dm('\u2510');
+  const bot     = '  ' + dm('\u2514') + dm('\u2500'.repeat(w)) + dm('\u2518');
+  const empty   = '  ' + dm('\u2502') + pad(w) + dm('\u2502');
+
+  const gradientTitle =
+    g1(' O') + g2(' R') + g3(' I') + g4(' O') + g5(' N') + g6('  CLI');
+
+  const row = (left: string, usedLen: number) =>
+    '  ' + dm('\u2502') + left + pad(w - usedLen) + dm('\u2502');
+
+  console.log();
+  console.log(top);
+  console.log(empty);
+  console.log(row('     ' + gradientTitle, 5 + 16));
+  console.log(row('     ' + dm('AI-Powered Coding Assistant'), 5 + 27));
+  console.log(row('     ' + g3('v2.0.0'), 5 + 6));
+  console.log(empty);
+  console.log(bot);
+  console.log();
 }
 
 // ─── Git Command Runner ──────────────────────────────────────────────────────
@@ -198,11 +216,17 @@ export function getStagedDiff(): string {
 
 export function getStagedFiles(): string[] {
   const output = runGitCommand('diff --cached --name-only');
-  return output ? output.split('\n').filter(Boolean) : [];
+  return output ? output.split(/\r?\n/).filter(Boolean) : [];
 }
 
 export function commitWithMessage(message: string): string {
-  return runGitCommand(`commit -m "${message.replace(/"/g, '\\"')}"`);
+  const tmpFile = path.join(os.tmpdir(), `orion-commit-${Date.now()}.txt`);
+  fs.writeFileSync(tmpFile, message, 'utf-8');
+  try {
+    return runGitCommand(`commit -F "${tmpFile}"`);
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch {}
+  }
 }
 
 // ─── File Utilities ──────────────────────────────────────────────────────────
@@ -303,8 +327,8 @@ export function fileExists(filePath: string): boolean {
 // ─── Diff Formatting ─────────────────────────────────────────────────────────
 
 export function formatDiff(original: string, modified: string): string {
-  const origLines = original.split('\n');
-  const modLines = modified.split('\n');
+  const origLines = original.split(/\r?\n/);
+  const modLines = modified.split(/\r?\n/);
   const output: string[] = [];
 
   const maxLines = Math.max(origLines.length, modLines.length);
@@ -358,4 +382,156 @@ export function getCurrentDirectoryContext(): string {
 export function maskApiKey(key: string): string {
   if (!key || key.length < 8) return '****';
   return key.substring(0, 4) + '****' + key.substring(key.length - 4);
+}
+
+// ─── Project Context (Memory) ────────────────────────────────────────────────
+
+/**
+ * Loads project context from hierarchical context files.
+ * 1. Global context: ~/.orion/global-context.md
+ * 2. Project context: .orion/context.md (in current working directory)
+ *
+ * Returns the combined context string, ready to inject into system prompts.
+ */
+export function loadProjectContext(): string {
+  let context = '';
+
+  // 1. Global context
+  const globalCtx = path.join(os.homedir(), '.orion', 'global-context.md');
+  if (fs.existsSync(globalCtx)) {
+    context += fs.readFileSync(globalCtx, 'utf-8') + '\n\n';
+  }
+
+  // 2. Project context
+  const projectCtx = path.join(process.cwd(), '.orion', 'context.md');
+  if (fs.existsSync(projectCtx)) {
+    context += fs.readFileSync(projectCtx, 'utf-8') + '\n\n';
+  }
+
+  return context;
+}
+
+// ─── Chat History Management ─────────────────────────────────────────────────
+
+const HISTORY_DIR = path.join(CONFIG_DIR, 'history');
+
+export function ensureHistoryDir(): void {
+  if (!fs.existsSync(HISTORY_DIR)) {
+    fs.mkdirSync(HISTORY_DIR, { recursive: true });
+  }
+}
+
+export function getHistoryDir(): string {
+  return HISTORY_DIR;
+}
+
+export interface ChatSession {
+  id: string;
+  timestamp: string;
+  provider: string;
+  model: string;
+  messageCount: number;
+  messages: Array<{ role: string; content: string }>;
+  preview: string;
+}
+
+export function saveChatSession(session: ChatSession): string {
+  ensureHistoryDir();
+  const filename = `${session.id}.json`;
+  const filepath = path.join(HISTORY_DIR, filename);
+  fs.writeFileSync(filepath, JSON.stringify(session, null, 2), 'utf-8');
+  return filepath;
+}
+
+export function loadChatSession(id: string): ChatSession | null {
+  ensureHistoryDir();
+  const filepath = path.join(HISTORY_DIR, `${id}.json`);
+  if (!fs.existsSync(filepath)) return null;
+  try {
+    const raw = fs.readFileSync(filepath, 'utf-8');
+    return JSON.parse(raw) as ChatSession;
+  } catch {
+    return null;
+  }
+}
+
+export function listChatSessions(): ChatSession[] {
+  ensureHistoryDir();
+  try {
+    const files = fs.readdirSync(HISTORY_DIR)
+      .filter(f => f.endsWith('.json'))
+      .sort()
+      .reverse();
+
+    const sessions: ChatSession[] = [];
+    for (const file of files.slice(0, 20)) {
+      try {
+        const raw = fs.readFileSync(path.join(HISTORY_DIR, file), 'utf-8');
+        const session = JSON.parse(raw) as ChatSession;
+        sessions.push(session);
+      } catch { /* skip corrupt files */ }
+    }
+    return sessions;
+  } catch {
+    return [];
+  }
+}
+
+// ─── Model Validation ────────────────────────────────────────────────────────
+
+const KNOWN_MODELS: Record<string, string[]> = {
+  anthropic: [
+    'claude-opus-4-20250514',
+    'claude-sonnet-4-20250514',
+    'claude-haiku-4-5-20251001',
+    'claude-3-5-sonnet-20241022',
+    'claude-3-haiku-20240307',
+  ],
+  openai: [
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4-turbo',
+    'gpt-4',
+    'gpt-3.5-turbo',
+    'o3',
+    'o3-mini',
+    'o1',
+    'o1-mini',
+  ],
+  ollama: [
+    'llama3.2',
+    'llama3.1',
+    'llama3',
+    'codellama',
+    'mistral',
+    'mixtral',
+    'phi3',
+    'gemma2',
+    'qwen2',
+    'deepseek-coder',
+  ],
+};
+
+export function validateModelName(model: string, provider?: string): { valid: boolean; suggestion?: string } {
+  if (!model || !model.trim()) {
+    return { valid: false, suggestion: 'Model name cannot be empty.' };
+  }
+
+  // If provider is specified, check against known models
+  if (provider && KNOWN_MODELS[provider]) {
+    const known = KNOWN_MODELS[provider];
+    if (known.includes(model)) {
+      return { valid: true };
+    }
+    // Find closest match
+    const lower = model.toLowerCase();
+    const match = known.find(m => m.toLowerCase().includes(lower) || lower.includes(m.toLowerCase()));
+    if (match) {
+      return { valid: true, suggestion: `Did you mean "${match}"?` };
+    }
+    // Allow unknown models (custom/fine-tuned) but warn
+    return { valid: true, suggestion: `"${model}" is not a recognized ${provider} model. Proceeding anyway.` };
+  }
+
+  return { valid: true };
 }

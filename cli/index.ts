@@ -9,7 +9,7 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { printBanner, colors } from './utils.js';
+import { printBanner, colors, printError, printInfo } from './utils.js';
 import { chatCommand } from './commands/chat.js';
 import { askCommand } from './commands/ask.js';
 import { reviewCommand } from './commands/review.js';
@@ -18,6 +18,20 @@ import { editCommand } from './commands/edit.js';
 import { explainCommand } from './commands/explain.js';
 import { fixCommand } from './commands/fix.js';
 import { configCommand, initCommand } from './commands/config.js';
+import { setPipelineOptions } from './pipeline.js';
+
+// ─── Error Handler Factory ──────────────────────────────────────────────────
+
+function handleCommandError(err: any, command: string, suggestion?: string): void {
+  console.log();
+  printError(err.message || 'An unexpected error occurred.');
+  if (suggestion) {
+    printInfo(suggestion);
+  }
+  printInfo(`Run ${colors.command(`orion ${command} --help`)} for usage.`);
+  console.log();
+  process.exit(1);
+}
 
 // ─── Program Setup ──────────────────────────────────────────────────────────
 
@@ -27,9 +41,22 @@ program
   .name('orion')
   .version('2.0.0', '-v, --version', 'Show Orion CLI version')
   .description('AI-powered coding assistant for the terminal')
+  .option('--json', 'Output structured JSON to stdout (for CI/CD pipelines)')
+  .option('-y, --yes', 'Auto-confirm all prompts (non-interactive mode)')
+  .option('--no-color', 'Disable color output')
+  .option('--quiet', 'Minimal output')
   .addHelpText('beforeAll', () => {
     printBanner();
     return '';
+  })
+  .hook('preAction', () => {
+    const opts = program.opts();
+    setPipelineOptions({
+      json: opts.json || false,
+      yes: opts.yes || false,
+      noColor: opts.color === false,
+      quiet: opts.quiet || false,
+    });
   });
 
 // ─── Commands ────────────────────────────────────────────────────────────────
@@ -41,8 +68,7 @@ program
     try {
       await chatCommand();
     } catch (err: any) {
-      console.error(colors.error(`Error: ${err.message}`));
-      process.exit(1);
+      handleCommandError(err, 'chat', 'Run `orion config` to set up API keys.');
     }
   });
 
@@ -53,8 +79,7 @@ program
     try {
       await askCommand(question);
     } catch (err: any) {
-      console.error(colors.error(`Error: ${err.message}`));
-      process.exit(1);
+      handleCommandError(err, 'ask', 'Ensure your AI provider is configured. Run `orion config`.');
     }
   });
 
@@ -65,8 +90,7 @@ program
     try {
       await editCommand(file);
     } catch (err: any) {
-      console.error(colors.error(`Error: ${err.message}`));
-      process.exit(1);
+      handleCommandError(err, 'edit', 'Check that the file exists and your AI provider is configured.');
     }
   });
 
@@ -77,8 +101,7 @@ program
     try {
       await reviewCommand(file);
     } catch (err: any) {
-      console.error(colors.error(`Error: ${err.message}`));
-      process.exit(1);
+      handleCommandError(err, 'review', 'Ensure the file exists or run from a project directory.');
     }
   });
 
@@ -89,8 +112,7 @@ program
     try {
       await commitCommand();
     } catch (err: any) {
-      console.error(colors.error(`Error: ${err.message}`));
-      process.exit(1);
+      handleCommandError(err, 'commit', 'Stage changes with `git add` first, then run `orion commit`.');
     }
   });
 
@@ -101,8 +123,7 @@ program
     try {
       await explainCommand(file);
     } catch (err: any) {
-      console.error(colors.error(`Error: ${err.message}`));
-      process.exit(1);
+      handleCommandError(err, 'explain', 'Check that the file exists and your AI provider is configured.');
     }
   });
 
@@ -113,8 +134,7 @@ program
     try {
       await fixCommand(file);
     } catch (err: any) {
-      console.error(colors.error(`Error: ${err.message}`));
-      process.exit(1);
+      handleCommandError(err, 'fix', 'Check that the file exists and your AI provider is configured.');
     }
   });
 
@@ -125,8 +145,7 @@ program
     try {
       await initCommand();
     } catch (err: any) {
-      console.error(colors.error(`Error: ${err.message}`));
-      process.exit(1);
+      handleCommandError(err, 'init', 'Make sure you have write permissions in the current directory.');
     }
   });
 
@@ -147,9 +166,11 @@ program
           : process.cwd(),
       });
     } catch {
-      console.log(colors.warning('  Could not launch Electron app.'));
-      console.log(colors.dim('  Make sure you are in the Orion project directory.'));
-      console.log(colors.dim('  Run: npm run electron:dev'));
+      console.log();
+      printError('Could not launch Electron app.');
+      printInfo('Make sure you are in the Orion project directory.');
+      printInfo(`Run ${colors.command('npm run electron:dev')} manually.`);
+      console.log();
     }
   });
 
@@ -160,8 +181,7 @@ program
     try {
       await configCommand();
     } catch (err: any) {
-      console.error(colors.error(`Error: ${err.message}`));
-      process.exit(1);
+      handleCommandError(err, 'config', 'Check file permissions for ~/.orion/config.json.');
     }
   });
 

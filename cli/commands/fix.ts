@@ -1,10 +1,8 @@
 /**
  * Orion CLI - Auto-Fix Command
- * AI-powered code fixing with diff preview and confirmation
+ * AI-powered code fixing with diff preview, severity display, and confirmation
  */
 
-import * as path from 'path';
-import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { askAI } from '../ai-client.js';
 import {
@@ -13,15 +11,19 @@ import {
   printDivider,
   printInfo,
   printSuccess,
-  printError,
-  printWarning,
   startSpinner,
-  stopSpinner,
-  readFileContent,
   writeFileContent,
   formatDiff,
-  fileExists,
+  loadProjectContext,
 } from '../utils.js';
+import { renderMarkdown } from '../markdown.js';
+import {
+  createSilentStreamHandler,
+  readAndValidateFile,
+  printFileInfo,
+  printCommandError,
+} from '../shared.js';
+import { getPipelineOptions, jsonOutput } from '../pipeline.js';
 
 const FIX_ANALYSIS_PROMPT = `You are Orion, an expert code fixer. Analyze the provided code for issues.
 
@@ -47,45 +49,36 @@ Focus on:
 export async function fixCommand(filePath: string): Promise<void> {
   printHeader('Orion Auto-Fix');
 
-  const resolvedPath = path.resolve(filePath);
-
-  if (!fileExists(filePath)) {
-    printError(`File not found: ${resolvedPath}`);
+  const file = readAndValidateFile(filePath);
+  if (!file) {
     process.exit(1);
   }
 
-  const { content: originalContent, language } = readFileContent(filePath);
-  const lineCount = originalContent.split('\n').length;
-
-  printInfo(`File: ${colors.file(resolvedPath)}`);
-  printInfo(`Language: ${language} | Lines: ${lineCount}`);
+  printFileInfo(file);
   console.log();
 
   const spinner = startSpinner('Scanning for issues...');
 
   try {
-    const userMessage = `Fix issues in this ${language} file (${path.basename(filePath)}):\n\n\`\`\`${language}\n${originalContent}\n\`\`\``;
+    const userMessage = `Fix issues in this ${file.language} file (${file.fileName}):\n\n\`\`\`${file.language}\n${file.content}\n\`\`\``;
 
-    let fullResponse = '';
+    const projectContext = loadProjectContext();
+    const fullSystemPrompt = projectContext
+      ? FIX_ANALYSIS_PROMPT + '\n\nProject context:\n' + projectContext
+      : FIX_ANALYSIS_PROMPT;
 
-    await askAI(FIX_ANALYSIS_PROMPT, userMessage, {
-      onToken(token: string) {
-        fullResponse += token;
-      },
-      onComplete() {
-        stopSpinner(spinner, 'Analysis complete');
-      },
-      onError(error: Error) {
-        stopSpinner(spinner, error.message, false);
-      },
-    });
+    const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Analysis complete');
+
+    await askAI(fullSystemPrompt, userMessage, callbacks);
+
+    const fullResponse = getResponse();
 
     // Parse the response
     const parts = fullResponse.split('---FIX---');
     const analysis = parts[0]?.trim() || '';
     let fixedContent = parts[1]?.trim() || '';
 
-    // Show analysis
+    // Show analysis with severity coloring
     console.log();
     printDivider();
     console.log(colors.label('  Issues Found:'));
@@ -95,6 +88,7 @@ export async function fixCommand(filePath: string): Promise<void> {
     let errorCount = 0;
     let warningCount = 0;
     let infoCount = 0;
+    const otherLines: string[] = [];
 
     for (const line of analysisLines) {
       const trimmed = line.trim();
@@ -108,7 +102,15 @@ export async function fixCommand(filePath: string): Promise<void> {
         infoCount++;
         console.log(`  ${colors.severityInfo(' INFO  ')} ${colors.info(trimmed.replace('[INFO] ', ''))}`);
       } else if (trimmed) {
-        console.log(`  ${colors.ai(trimmed)}`);
+        otherLines.push(line);
+      }
+    }
+
+    // Render any non-severity text as markdown
+    if (otherLines.length > 0) {
+      const mdText = otherLines.join('\n').trim();
+      if (mdText) {
+        console.log(renderMarkdown(mdText));
       }
     }
 
@@ -120,6 +122,7 @@ export async function fixCommand(filePath: string): Promise<void> {
     );
 
     if (!fixedContent) {
+      console.log();
       printInfo('No fixable issues found, or AI did not provide fixes.');
       return;
     }
@@ -135,36 +138,55 @@ export async function fixCommand(filePath: string): Promise<void> {
     }
 
     // Show diff
-    console.log();
-    printDivider();
-    console.log(colors.label('  Proposed Fixes:'));
-    console.log();
-    console.log(formatDiff(originalContent, fixedContent));
-    console.log();
-    printDivider();
+    const pipelineOpts = getPipelineOptions();
 
-    // Ask for confirmation
-    const { action } = await inquirer.prompt([
-      {
-        type: 'list',
-        name: 'action',
-        message: 'Apply these fixes?',
-        choices: [
-          { name: 'Apply all fixes', value: 'apply' },
-          { name: 'Cancel', value: 'cancel' },
-        ],
-      },
-    ]);
+    if (pipelineOpts.json) {
+      jsonOutput('fix_analysis', {
+        file: file.resolvedPath,
+        errors: errorCount,
+        warnings: warningCount,
+        suggestions: infoCount,
+      });
+    }
+
+    if (!pipelineOpts.quiet) {
+      console.log();
+      printDivider();
+      console.log(colors.label('  Proposed Fixes:'));
+      console.log();
+      console.log(formatDiff(file.content, fixedContent));
+      console.log();
+      printDivider();
+    }
+
+    // Auto-confirm when --yes is set (non-interactive / pipeline mode)
+    let action: string;
+    if (pipelineOpts.yes) {
+      action = 'apply';
+    } else {
+      const answer = await inquirer.prompt([
+        {
+          type: 'list',
+          name: 'action',
+          message: 'Apply these fixes?',
+          choices: [
+            { name: 'Apply all fixes', value: 'apply' },
+            { name: 'Cancel', value: 'cancel' },
+          ],
+        },
+      ]);
+      action = answer.action;
+    }
 
     if (action === 'apply') {
       writeFileContent(filePath, fixedContent);
-      printSuccess(`Fixed file saved: ${resolvedPath}`);
+      printSuccess(`Fixed file saved: ${file.resolvedPath}`);
+      jsonOutput('fix_result', { success: true, file: file.resolvedPath });
     } else {
       printInfo('Fixes discarded. File unchanged.');
     }
   } catch (err: any) {
-    stopSpinner(spinner, err.message, false);
-    console.error(colors.error(`  Error: ${err.message}`));
+    printCommandError(err, 'fix', 'Run `orion config` to check your AI provider settings.');
     process.exit(1);
   }
 }

@@ -3,7 +3,6 @@
  * Generates conventional commit messages from staged changes
  */
 
-import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { askAI } from '../ai-client.js';
 import {
@@ -20,7 +19,10 @@ import {
   getStagedDiff,
   getStagedFiles,
   commitWithMessage,
+  loadProjectContext,
 } from '../utils.js';
+import { createSilentStreamHandler, printCommandError } from '../shared.js';
+import { getPipelineOptions, jsonOutput } from '../pipeline.js';
 
 const COMMIT_SYSTEM_PROMPT = `You are a git commit message generator. Analyze the provided diff and generate a conventional commit message.
 
@@ -43,17 +45,23 @@ export async function commitCommand(): Promise<void> {
 
   // Check if we're in a git repo
   if (!isGitRepo()) {
-    printError('Not a git repository. Run this command inside a git project.');
+    console.log();
+    printError('Not a git repository.');
+    printInfo('Run this command inside a git project directory.');
+    printInfo(`Run ${colors.command('git init')} to initialize a repository.`);
+    console.log();
     process.exit(1);
   }
 
   // Get staged changes
   const stagedFiles = getStagedFiles();
   if (stagedFiles.length === 0) {
+    console.log();
     printWarning('No staged changes found.');
     printInfo('Stage your changes first:');
-    console.log(colors.command('    git add <files>'));
-    console.log(colors.command('    git add -p'));
+    console.log(`    ${colors.command('git add <files>')}   Stage specific files`);
+    console.log(`    ${colors.command('git add -p')}        Stage interactively`);
+    console.log();
     process.exit(1);
   }
 
@@ -68,6 +76,7 @@ export async function commitCommand(): Promise<void> {
   const diff = getStagedDiff();
   if (!diff) {
     printWarning('Staged diff is empty.');
+    printInfo('Your staged files may contain only whitespace changes.');
     process.exit(1);
   }
 
@@ -83,53 +92,66 @@ export async function commitCommand(): Promise<void> {
   try {
     const userMessage = `Generate a commit message for these changes:\n\nStaged files:\n${stagedFiles.join('\n')}\n\nDiff:\n${truncatedDiff}`;
 
-    let commitMessage = '';
+    const projectContext = loadProjectContext();
+    const fullSystemPrompt = projectContext
+      ? COMMIT_SYSTEM_PROMPT + '\n\nProject context:\n' + projectContext
+      : COMMIT_SYSTEM_PROMPT;
 
-    await askAI(COMMIT_SYSTEM_PROMPT, userMessage, {
-      onToken(token: string) {
-        commitMessage += token;
-      },
-      onComplete() {
-        stopSpinner(spinner, 'Commit message generated');
-      },
-      onError(error: Error) {
-        stopSpinner(spinner, error.message, false);
-      },
-    });
+    const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Commit message generated');
 
-    // Clean up the message
-    commitMessage = commitMessage.trim();
+    await askAI(fullSystemPrompt, userMessage, callbacks);
+
+    const commitMessage = getResponse().trim();
 
     // Display the suggested message
-    console.log();
-    printDivider();
-    console.log(colors.ai(commitMessage));
-    printDivider();
-    console.log();
+    const pipelineOpts = getPipelineOptions();
 
-    // Ask for confirmation
-    const { action } = await inquirer.prompt([
-      {
-        type: 'list',
-        name: 'action',
-        message: 'What would you like to do?',
-        choices: [
-          { name: 'Commit with this message', value: 'commit' },
-          { name: 'Edit the message', value: 'edit' },
-          { name: 'Regenerate', value: 'regenerate' },
-          { name: 'Cancel', value: 'cancel' },
-        ],
-      },
-    ]);
+    if (pipelineOpts.json) {
+      jsonOutput('commit_message', { message: commitMessage, files: stagedFiles });
+    }
+
+    if (!pipelineOpts.quiet) {
+      console.log();
+      printDivider();
+      console.log(`  ${colors.ai(commitMessage)}`);
+      printDivider();
+      console.log();
+    }
+
+    // Auto-confirm when --yes is set (non-interactive / pipeline mode)
+    let action: string;
+    if (pipelineOpts.yes) {
+      action = 'commit';
+    } else {
+      const answer = await inquirer.prompt([
+        {
+          type: 'list',
+          name: 'action',
+          message: 'What would you like to do?',
+          choices: [
+            { name: 'Commit with this message', value: 'commit' },
+            { name: 'Edit the message', value: 'edit' },
+            { name: 'Regenerate', value: 'regenerate' },
+            { name: 'Cancel', value: 'cancel' },
+          ],
+        },
+      ]);
+      action = answer.action;
+    }
 
     if (action === 'commit') {
       const commitSpinner = startSpinner('Committing...');
       try {
         const result = commitWithMessage(commitMessage);
         stopSpinner(commitSpinner, 'Committed successfully!');
-        console.log(colors.dim(`  ${result}`));
+        if (!pipelineOpts.quiet) {
+          console.log(colors.dim(`  ${result}`));
+        }
+        jsonOutput('commit_result', { success: true, result });
       } catch (err: any) {
         stopSpinner(commitSpinner, `Commit failed: ${err.message}`, false);
+        printInfo('Check that your staged files are valid and try again.');
+        jsonOutput('commit_result', { success: false, error: err.message });
         process.exit(1);
       }
     } else if (action === 'edit') {
@@ -156,14 +178,12 @@ export async function commitCommand(): Promise<void> {
         printWarning('Empty message. Commit cancelled.');
       }
     } else if (action === 'regenerate') {
-      // Recursive call to regenerate
       await commitCommand();
     } else {
       printInfo('Commit cancelled.');
     }
   } catch (err: any) {
-    stopSpinner(spinner, err.message, false);
-    console.error(colors.error(`  Error: ${err.message}`));
+    printCommandError(err, 'commit', 'Run `orion config` to check your AI provider settings.');
     process.exit(1);
   }
 }

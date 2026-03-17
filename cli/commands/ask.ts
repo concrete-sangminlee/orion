@@ -1,17 +1,17 @@
 /**
  * Orion CLI - Quick Ask Command
- * One-shot AI question with streaming response
+ * One-shot AI question with streaming response and markdown rendering
  */
 
-import chalk from 'chalk';
-import { askAI, createTerminalStreamCallbacks } from '../ai-client.js';
+import { askAI } from '../ai-client.js';
 import {
   colors,
   printDivider,
   startSpinner,
-  stopSpinner,
   getCurrentDirectoryContext,
+  loadProjectContext,
 } from '../utils.js';
+import { createStreamHandler, printCommandError } from '../shared.js';
 
 const SYSTEM_PROMPT = `You are Orion, an expert AI coding assistant.
 Answer the user's question concisely and accurately.
@@ -23,8 +23,10 @@ Workspace context:
 
 export async function askCommand(question: string): Promise<void> {
   if (!question.trim()) {
-    console.error(colors.error('  Please provide a question.'));
-    console.log(colors.dim('  Usage: orion ask "How do I sort an array in TypeScript?"'));
+    console.log();
+    console.log(`  ${colors.error('Please provide a question.')}`);
+    console.log(`  ${colors.dim('Usage: orion ask "How do I sort an array in TypeScript?"')}`);
+    console.log();
     process.exit(1);
   }
 
@@ -33,32 +35,23 @@ export async function askCommand(question: string): Promise<void> {
   printDivider();
 
   const spinner = startSpinner('Thinking...');
-  let firstToken = true;
-
   const context = getCurrentDirectoryContext();
+  const projectContext = loadProjectContext();
+
+  const { callbacks } = createStreamHandler(spinner, {
+    label: 'Orion:',
+    markdown: true,
+  });
+
+  const fullSystemPrompt = projectContext
+    ? SYSTEM_PROMPT + context + '\n\nProject context:\n' + projectContext
+    : SYSTEM_PROMPT + context;
 
   try {
-    process.stdout.write(`\n  ${colors.label('Orion:')} `);
-
-    await askAI(SYSTEM_PROMPT + context, question, {
-      onToken(token: string) {
-        if (firstToken) {
-          stopSpinner(spinner);
-          firstToken = false;
-        }
-        process.stdout.write(colors.ai(token));
-      },
-      onComplete() {
-        if (firstToken) stopSpinner(spinner);
-        console.log('\n');
-      },
-      onError(error: Error) {
-        stopSpinner(spinner, error.message, false);
-      },
-    });
+    await askAI(fullSystemPrompt, question, callbacks);
+    console.log();
   } catch (err: any) {
-    if (firstToken) stopSpinner(spinner, err.message, false);
-    console.error(colors.error(`\n  Error: ${err.message}`));
+    printCommandError(err, 'ask', 'Run `orion config` to check your AI provider settings.');
     process.exit(1);
   }
 }

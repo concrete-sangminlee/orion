@@ -1,22 +1,27 @@
 /**
  * Orion CLI - Code Review Command
- * AI-powered code review with severity levels
+ * AI-powered code review with severity levels and markdown rendering
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import chalk from 'chalk';
 import { askAI } from '../ai-client.js';
 import {
   colors,
   printHeader,
   printDivider,
   printInfo,
+  printWarning,
   startSpinner,
   stopSpinner,
-  readFileContent,
-  detectLanguage,
+  loadProjectContext,
 } from '../utils.js';
+import { renderMarkdown } from '../markdown.js';
+import {
+  readAndValidateFile,
+  printFileInfo,
+  printCommandError,
+} from '../shared.js';
 
 const REVIEW_SYSTEM_PROMPT = `You are Orion, an expert code reviewer. Analyze the provided code and give a thorough review.
 
@@ -51,45 +56,66 @@ function colorizeSeverity(line: string): string {
   return line;
 }
 
+function renderReviewOutput(text: string): void {
+  const lines = text.split('\n');
+  const nonSeverityLines: string[] = [];
+  let hasSeverityLines = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[ERROR]') || trimmed.startsWith('[WARNING]') || trimmed.startsWith('[INFO]')) {
+      // Flush any accumulated non-severity text as markdown
+      if (nonSeverityLines.length > 0) {
+        const mdBlock = nonSeverityLines.join('\n');
+        if (mdBlock.trim()) {
+          console.log(renderMarkdown(mdBlock));
+        }
+        nonSeverityLines.length = 0;
+      }
+      console.log(`  ${colorizeSeverity(trimmed)}`);
+      hasSeverityLines = true;
+    } else {
+      nonSeverityLines.push(line);
+    }
+  }
+
+  // Flush remaining non-severity text
+  if (nonSeverityLines.length > 0) {
+    const mdBlock = nonSeverityLines.join('\n');
+    if (mdBlock.trim()) {
+      console.log(renderMarkdown(mdBlock));
+    }
+  }
+}
+
 async function reviewSingleFile(filePath: string): Promise<void> {
-  const resolvedPath = path.resolve(filePath);
-  console.log(`  ${colors.file(resolvedPath)}`);
+  const file = readAndValidateFile(filePath);
+  if (!file) return;
+
+  printFileInfo(file);
   printDivider();
+  console.log();
 
   const spinner = startSpinner('Analyzing code...');
 
   try {
-    const { content, language } = readFileContent(filePath);
-    const lineCount = content.split('\n').length;
+    const userMessage = `Review this ${file.language} file (${file.fileName}):\n\n\`\`\`${file.language}\n${file.content}\n\`\`\``;
 
-    printInfo(`Language: ${language} | Lines: ${lineCount}`);
-    console.log();
-
-    const userMessage = `Review this ${language} file (${path.basename(filePath)}):\n\n\`\`\`${language}\n${content}\n\`\`\``;
+    const projectContext = loadProjectContext();
+    const fullSystemPrompt = projectContext
+      ? REVIEW_SYSTEM_PROMPT + '\n\nProject context:\n' + projectContext
+      : REVIEW_SYSTEM_PROMPT;
 
     let fullResponse = '';
 
-    const response = await askAI(REVIEW_SYSTEM_PROMPT, userMessage, {
+    await askAI(fullSystemPrompt, userMessage, {
       onToken(token: string) {
         stopSpinner(spinner);
         fullResponse += token;
       },
       onComplete(text: string) {
-        // Format the complete response with colorized severity
-        const lines = text.split('\n');
         console.log();
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('[ERROR]') || trimmed.startsWith('[WARNING]') || trimmed.startsWith('[INFO]')) {
-            console.log(`  ${colorizeSeverity(trimmed)}`);
-          } else if (trimmed.startsWith('```')) {
-            console.log(colors.dim(`  ${trimmed}`));
-          } else if (trimmed) {
-            console.log(`  ${colors.ai(trimmed)}`);
-          } else {
-            console.log();
-          }
-        }
+        renderReviewOutput(text);
         console.log();
       },
       onError(error: Error) {
@@ -98,7 +124,7 @@ async function reviewSingleFile(filePath: string): Promise<void> {
     });
   } catch (err: any) {
     stopSpinner(spinner, err.message, false);
-    console.error(colors.error(`  Error: ${err.message}`));
+    printCommandError(err, 'review', 'Run `orion config` to check your AI provider settings.');
   }
 }
 
@@ -110,13 +136,13 @@ async function reviewDirectory(): Promise<void> {
   const files: string[] = [];
 
   function scanDir(dir: string, depth: number = 0): void {
-    if (depth > 3) return; // Max depth
-    if (files.length >= 10) return; // Max files
+    if (depth > 3) return;
+    if (files.length >= 10) return;
 
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
-        if (ignorePatterns.some(p => entry.name.includes(p))) continue;
+        if (ignorePatterns.some(p => entry.name === p)) continue;
 
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
@@ -131,7 +157,10 @@ async function reviewDirectory(): Promise<void> {
   scanDir(cwd);
 
   if (files.length === 0) {
-    console.log(colors.warning('  No reviewable files found in current directory.'));
+    console.log();
+    printWarning('No reviewable files found in current directory.');
+    printInfo('Navigate to a project directory with source files and try again.');
+    console.log();
     return;
   }
 

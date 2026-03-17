@@ -288,7 +288,7 @@ async function streamOllama(
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split('\n').filter(Boolean)) {
+      for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
         try {
           const data = JSON.parse(line);
           if (data.message?.content) {

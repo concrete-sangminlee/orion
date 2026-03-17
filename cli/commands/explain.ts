@@ -1,21 +1,21 @@
 /**
  * Orion CLI - File Explanation Command
- * AI-powered code explanation with streaming output
+ * AI-powered code explanation with markdown-rendered output
  */
 
-import * as path from 'path';
-import chalk from 'chalk';
 import { askAI } from '../ai-client.js';
 import {
-  colors,
   printHeader,
   printDivider,
-  printInfo,
   startSpinner,
-  stopSpinner,
-  readFileContent,
-  fileExists,
+  loadProjectContext,
 } from '../utils.js';
+import {
+  createStreamHandler,
+  readAndValidateFile,
+  printFileInfo,
+  printCommandError,
+} from '../shared.js';
 
 const EXPLAIN_SYSTEM_PROMPT = `You are Orion, an expert code explainer. Explain what the provided file does clearly and concisely.
 
@@ -32,47 +32,33 @@ Format using markdown for readability.`;
 export async function explainCommand(filePath: string): Promise<void> {
   printHeader('Orion Code Explainer');
 
-  const resolvedPath = path.resolve(filePath);
-
-  if (!fileExists(filePath)) {
-    console.error(colors.error(`  File not found: ${resolvedPath}`));
+  const file = readAndValidateFile(filePath);
+  if (!file) {
     process.exit(1);
   }
 
-  const { content, language } = readFileContent(filePath);
-  const lineCount = content.split('\n').length;
-
-  printInfo(`File: ${colors.file(resolvedPath)}`);
-  printInfo(`Language: ${language} | Lines: ${lineCount}`);
+  printFileInfo(file);
   printDivider();
   console.log();
 
   const spinner = startSpinner('Analyzing code...');
-  let firstToken = true;
+
+  const { callbacks } = createStreamHandler(spinner, {
+    markdown: true,
+  });
 
   try {
-    const userMessage = `Explain this ${language} file (${path.basename(filePath)}):\n\n\`\`\`${language}\n${content}\n\`\`\``;
+    const userMessage = `Explain this ${file.language} file (${file.fileName}):\n\n\`\`\`${file.language}\n${file.content}\n\`\`\``;
 
-    await askAI(EXPLAIN_SYSTEM_PROMPT, userMessage, {
-      onToken(token: string) {
-        if (firstToken) {
-          stopSpinner(spinner);
-          firstToken = false;
-          process.stdout.write('  ');
-        }
-        process.stdout.write(colors.ai(token));
-      },
-      onComplete() {
-        if (firstToken) stopSpinner(spinner);
-        console.log('\n');
-      },
-      onError(error: Error) {
-        stopSpinner(spinner, error.message, false);
-      },
-    });
+    const projectContext = loadProjectContext();
+    const fullSystemPrompt = projectContext
+      ? EXPLAIN_SYSTEM_PROMPT + '\n\nProject context:\n' + projectContext
+      : EXPLAIN_SYSTEM_PROMPT;
+
+    await askAI(fullSystemPrompt, userMessage, callbacks);
+    console.log();
   } catch (err: any) {
-    if (firstToken) stopSpinner(spinner, err.message, false);
-    console.error(colors.error(`  Error: ${err.message}`));
+    printCommandError(err, 'explain', 'Run `orion config` to check your AI provider settings.');
     process.exit(1);
   }
 }
