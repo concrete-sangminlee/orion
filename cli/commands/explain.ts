@@ -5,8 +5,10 @@
 
 import { askAI } from '../ai-client.js';
 import {
+  colors,
   printHeader,
   printDivider,
+  printInfo,
   startSpinner,
   loadProjectContext,
 } from '../utils.js';
@@ -16,6 +18,7 @@ import {
   printFileInfo,
   printCommandError,
 } from '../shared.js';
+import { readStdin } from '../stdin.js';
 
 const EXPLAIN_SYSTEM_PROMPT = `You are Orion, an expert code explainer. Explain what the provided file does clearly and concisely.
 
@@ -29,17 +32,40 @@ Structure your explanation as:
 Use simple language. Be thorough but not verbose.
 Format using markdown for readability.`;
 
-export async function explainCommand(filePath: string): Promise<void> {
+export async function explainCommand(filePath?: string): Promise<void> {
   printHeader('Orion Code Explainer');
 
-  const file = readAndValidateFile(filePath);
-  if (!file) {
+  // Check for piped stdin data
+  const stdinData = await readStdin();
+
+  let userMessage: string;
+
+  if (filePath) {
+    const file = readAndValidateFile(filePath);
+    if (!file) {
+      process.exit(1);
+    }
+
+    printFileInfo(file);
+    printDivider();
+    console.log();
+
+    userMessage = `Explain this ${file.language} file (${file.fileName}):\n\n\`\`\`${file.language}\n${file.content}\n\`\`\``;
+  } else if (stdinData) {
+    const lineCount = stdinData.split('\n').length;
+    printInfo(`Explaining piped input... (${lineCount} lines)`);
+    printDivider();
+    console.log();
+
+    userMessage = `Explain this code:\n\n\`\`\`\n${stdinData}\n\`\`\``;
+  } else {
+    console.log();
+    console.log(`  ${colors.error('Please provide a file path or pipe content via stdin.')}`);
+    console.log(`  ${colors.dim('Usage: orion explain <file>')}`);
+    console.log(`  ${colors.dim('       cat app.ts | orion explain')}`);
+    console.log();
     process.exit(1);
   }
-
-  printFileInfo(file);
-  printDivider();
-  console.log();
 
   const spinner = startSpinner('Analyzing code...');
 
@@ -48,8 +74,6 @@ export async function explainCommand(filePath: string): Promise<void> {
   });
 
   try {
-    const userMessage = `Explain this ${file.language} file (${file.fileName}):\n\n\`\`\`${file.language}\n${file.content}\n\`\`\``;
-
     const projectContext = loadProjectContext();
     const fullSystemPrompt = projectContext
       ? EXPLAIN_SYSTEM_PROMPT + '\n\nProject context:\n' + projectContext

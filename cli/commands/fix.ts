@@ -24,6 +24,7 @@ import {
   printCommandError,
 } from '../shared.js';
 import { getPipelineOptions, jsonOutput } from '../pipeline.js';
+import { readStdin } from '../stdin.js';
 
 const FIX_ANALYSIS_PROMPT = `You are Orion, an expert code fixer. Analyze the provided code for issues.
 
@@ -46,22 +47,49 @@ Focus on:
 - Performance problems
 - Best practice violations`;
 
-export async function fixCommand(filePath: string): Promise<void> {
+export async function fixCommand(filePath?: string): Promise<void> {
+  // Check for piped stdin data
+  const stdinData = await readStdin();
+  const isStdinMode = !filePath && !!stdinData;
+
   printHeader('Orion Auto-Fix');
 
-  const file = readAndValidateFile(filePath);
-  if (!file) {
+  let originalContent: string;
+  let userMessage: string;
+  let fileLabel: string;
+
+  if (filePath) {
+    const file = readAndValidateFile(filePath);
+    if (!file) {
+      process.exit(1);
+    }
+
+    printFileInfo(file);
+    console.log();
+
+    originalContent = file.content;
+    userMessage = `Fix issues in this ${file.language} file (${file.fileName}):\n\n\`\`\`${file.language}\n${file.content}\n\`\`\``;
+    fileLabel = file.resolvedPath;
+  } else if (stdinData) {
+    const lineCount = stdinData.split('\n').length;
+    printInfo(`Fixing piped input... (${lineCount} lines)`);
+    console.log();
+
+    originalContent = stdinData;
+    userMessage = `Fix issues in this code:\n\n\`\`\`\n${stdinData}\n\`\`\``;
+    fileLabel = '(stdin)';
+  } else {
+    console.log();
+    console.log(`  ${colors.error('Please provide a file path or pipe content via stdin.')}`);
+    console.log(`  ${colors.dim('Usage: orion fix <file>')}`);
+    console.log(`  ${colors.dim('       cat app.ts | orion fix')}`);
+    console.log();
     process.exit(1);
   }
-
-  printFileInfo(file);
-  console.log();
 
   const spinner = startSpinner('Scanning for issues...');
 
   try {
-    const userMessage = `Fix issues in this ${file.language} file (${file.fileName}):\n\n\`\`\`${file.language}\n${file.content}\n\`\`\``;
-
     const projectContext = loadProjectContext();
     const fullSystemPrompt = projectContext
       ? FIX_ANALYSIS_PROMPT + '\n\nProject context:\n' + projectContext
@@ -78,11 +106,14 @@ export async function fixCommand(filePath: string): Promise<void> {
     const analysis = parts[0]?.trim() || '';
     let fixedContent = parts[1]?.trim() || '';
 
-    // Show analysis with severity coloring
-    console.log();
-    printDivider();
-    console.log(colors.label('  Issues Found:'));
-    console.log();
+    // Show analysis with severity coloring (to stderr so stdout stays clean for piping)
+    const output = isStdinMode ? process.stderr : process.stdout;
+    const log = (...args: any[]) => output.write(args.join(' ') + '\n');
+
+    log();
+    log(colors.dim('─'.repeat(60)));
+    log(colors.label('  Issues Found:'));
+    log();
 
     const analysisLines = analysis.split('\n');
     let errorCount = 0;
@@ -94,13 +125,13 @@ export async function fixCommand(filePath: string): Promise<void> {
       const trimmed = line.trim();
       if (trimmed.startsWith('[ERROR]')) {
         errorCount++;
-        console.log(`  ${colors.severityError(' ERROR ')} ${colors.error(trimmed.replace('[ERROR] ', ''))}`);
+        log(`  ${colors.severityError(' ERROR ')} ${colors.error(trimmed.replace('[ERROR] ', ''))}`);
       } else if (trimmed.startsWith('[WARNING]')) {
         warningCount++;
-        console.log(`  ${colors.severityWarning(' WARN  ')} ${colors.warning(trimmed.replace('[WARNING] ', ''))}`);
+        log(`  ${colors.severityWarning(' WARN  ')} ${colors.warning(trimmed.replace('[WARNING] ', ''))}`);
       } else if (trimmed.startsWith('[INFO]')) {
         infoCount++;
-        console.log(`  ${colors.severityInfo(' INFO  ')} ${colors.info(trimmed.replace('[INFO] ', ''))}`);
+        log(`  ${colors.severityInfo(' INFO  ')} ${colors.info(trimmed.replace('[INFO] ', ''))}`);
       } else if (trimmed) {
         otherLines.push(line);
       }
@@ -110,20 +141,20 @@ export async function fixCommand(filePath: string): Promise<void> {
     if (otherLines.length > 0) {
       const mdText = otherLines.join('\n').trim();
       if (mdText) {
-        console.log(renderMarkdown(mdText));
+        log(renderMarkdown(mdText));
       }
     }
 
-    console.log();
-    console.log(
+    log();
+    log(
       `  Summary: ${colors.error(`${errorCount} errors`)} | ` +
       `${colors.warning(`${warningCount} warnings`)} | ` +
       `${colors.info(`${infoCount} suggestions`)}`
     );
 
     if (!fixedContent) {
-      console.log();
-      printInfo('No fixable issues found, or AI did not provide fixes.');
+      log();
+      process.stderr.write(`  ${colors.info('i')} No fixable issues found, or AI did not provide fixes.\n`);
       return;
     }
 
@@ -137,12 +168,26 @@ export async function fixCommand(filePath: string): Promise<void> {
       fixedContent = lines.join('\n');
     }
 
-    // Show diff
     const pipelineOpts = getPipelineOptions();
 
+    // In stdin mode, output fixed content to stdout for piping (e.g., cat app.ts | orion fix > fixed.ts)
+    if (isStdinMode) {
+      if (pipelineOpts.json) {
+        jsonOutput('fix_analysis', {
+          file: fileLabel,
+          errors: errorCount,
+          warnings: warningCount,
+          suggestions: infoCount,
+        });
+      }
+      process.stdout.write(fixedContent);
+      return;
+    }
+
+    // File mode: show diff and prompt for confirmation
     if (pipelineOpts.json) {
       jsonOutput('fix_analysis', {
-        file: file.resolvedPath,
+        file: fileLabel,
         errors: errorCount,
         warnings: warningCount,
         suggestions: infoCount,
@@ -154,7 +199,7 @@ export async function fixCommand(filePath: string): Promise<void> {
       printDivider();
       console.log(colors.label('  Proposed Fixes:'));
       console.log();
-      console.log(formatDiff(file.content, fixedContent));
+      console.log(formatDiff(originalContent, fixedContent));
       console.log();
       printDivider();
     }
@@ -179,9 +224,9 @@ export async function fixCommand(filePath: string): Promise<void> {
     }
 
     if (action === 'apply') {
-      writeFileContent(filePath, fixedContent);
-      printSuccess(`Fixed file saved: ${file.resolvedPath}`);
-      jsonOutput('fix_result', { success: true, file: file.resolvedPath });
+      writeFileContent(filePath!, fixedContent);
+      printSuccess(`Fixed file saved: ${fileLabel}`);
+      jsonOutput('fix_result', { success: true, file: fileLabel });
     } else {
       printInfo('Fixes discarded. File unchanged.');
     }

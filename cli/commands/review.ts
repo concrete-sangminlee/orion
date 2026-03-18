@@ -22,6 +22,7 @@ import {
   printFileInfo,
   printCommandError,
 } from '../shared.js';
+import { readStdin } from '../stdin.js';
 
 const REVIEW_SYSTEM_PROMPT = `You are Orion, an expert code reviewer. Analyze the provided code and give a thorough review.
 
@@ -173,11 +174,54 @@ async function reviewDirectory(): Promise<void> {
   }
 }
 
+async function reviewStdinContent(content: string): Promise<void> {
+  const lineCount = content.split('\n').length;
+  printInfo(`Reviewing piped input... (${lineCount} lines)`);
+  printDivider();
+  console.log();
+
+  const spinner = startSpinner('Analyzing code...');
+
+  try {
+    const userMessage = `Review this code:\n\n\`\`\`\n${content}\n\`\`\``;
+
+    const projectContext = loadProjectContext();
+    const fullSystemPrompt = projectContext
+      ? REVIEW_SYSTEM_PROMPT + '\n\nProject context:\n' + projectContext
+      : REVIEW_SYSTEM_PROMPT;
+
+    let fullResponse = '';
+
+    await askAI(fullSystemPrompt, userMessage, {
+      onToken(token: string) {
+        stopSpinner(spinner);
+        fullResponse += token;
+      },
+      onComplete(text: string) {
+        console.log();
+        renderReviewOutput(text);
+        console.log();
+      },
+      onError(error: Error) {
+        stopSpinner(spinner, error.message, false);
+      },
+    });
+  } catch (err: any) {
+    stopSpinner(spinner, err.message, false);
+    printCommandError(err, 'review', 'Run `orion config` to check your AI provider settings.');
+  }
+}
+
 export async function reviewCommand(filePath?: string): Promise<void> {
   printHeader('Orion Code Review');
 
+  // Check for piped stdin data
+  const stdinData = await readStdin();
+
   if (filePath) {
     await reviewSingleFile(filePath);
+  } else if (stdinData) {
+    await reviewStdinContent(stdinData);
   } else {
     printInfo('Scanning current directory for files to review...');
     await reviewDirectory();

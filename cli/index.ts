@@ -18,6 +18,9 @@ import { editCommand } from './commands/edit.js';
 import { explainCommand } from './commands/explain.js';
 import { fixCommand } from './commands/fix.js';
 import { configCommand, initCommand } from './commands/config.js';
+import { agentCommand } from './commands/agent.js';
+import { sessionCommand } from './commands/session.js';
+import { watchCommand } from './commands/watch.js';
 import { setPipelineOptions } from './pipeline.js';
 
 // ─── Error Handler Factory ──────────────────────────────────────────────────
@@ -117,9 +120,9 @@ program
   });
 
 program
-  .command('explain <file>')
-  .description('AI-powered code explanation')
-  .action(async (file: string) => {
+  .command('explain [file]')
+  .description('AI-powered code explanation (accepts piped input)')
+  .action(async (file?: string) => {
     try {
       await explainCommand(file);
     } catch (err: any) {
@@ -128,9 +131,9 @@ program
   });
 
 program
-  .command('fix <file>')
-  .description('Find and fix issues in a file')
-  .action(async (file: string) => {
+  .command('fix [file]')
+  .description('Find and fix issues in a file (accepts piped input)')
+  .action(async (file?: string) => {
     try {
       await fixCommand(file);
     } catch (err: any) {
@@ -185,23 +188,91 @@ program
     }
   });
 
+// ─── Multi-Agent & Competitive Features ──────────────────────────────────────
+
+program
+  .command('agent')
+  .description('Run multiple AI tasks in parallel (multi-agent)')
+  .argument('<tasks...>', 'Task descriptions to run in parallel')
+  .option('--parallel <n>', 'Max concurrent tasks (default: 3)', '3')
+  .option('--provider <name>', 'Force a specific AI provider for all tasks')
+  .option('--no-save', 'Do not save results to .orion/agents/')
+  .action(async (tasks: string[], options: { parallel?: string; provider?: string; save?: boolean }) => {
+    try {
+      await agentCommand(tasks, {
+        parallel: parseInt(options.parallel || '3', 10),
+        provider: options.provider,
+        save: options.save,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'agent', 'Ensure your AI provider is configured. Run `orion config`.');
+    }
+  });
+
+program
+  .command('session')
+  .description('Manage named AI sessions')
+  .argument('<action>', 'Action: new, list, resume, export, delete')
+  .argument('[name]', 'Session name (required for new, resume, export, delete)')
+  .action(async (action: string, name?: string) => {
+    try {
+      await sessionCommand(action, name);
+    } catch (err: any) {
+      handleCommandError(err, 'session', 'Check file permissions for ~/.orion/sessions/.');
+    }
+  });
+
+program
+  .command('watch')
+  .description('Watch files and auto-run AI actions on change')
+  .argument('<pattern>', 'Glob pattern for files to watch (e.g., "*.ts", "src/**")')
+  .option('--on-change <action>', 'Action to run: review, fix, explain, ask (default: review)', 'review')
+  .option('--debounce <ms>', 'Debounce delay in ms (default: 300)', '300')
+  .option('--ignore <patterns>', 'Comma-separated ignore patterns', 'node_modules,dist,build,.git,.orion')
+  .action(async (pattern: string, options: { onChange?: string; debounce?: string; ignore?: string }) => {
+    try {
+      await watchCommand(pattern, {
+        onChange: options.onChange,
+        debounce: parseInt(options.debounce || '300', 10),
+        ignore: options.ignore,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'watch', 'Ensure chokidar is installed and your AI provider is configured.');
+    }
+  });
+
 // ─── Default Action (no command) ─────────────────────────────────────────────
 
 program.action(() => {
   printBanner();
 
-  console.log(chalk.bold('  Commands:'));
+  console.log(chalk.bold('  Core Commands:'));
   console.log();
   console.log(`    ${colors.command('orion chat')}              Interactive AI chat session`);
   console.log(`    ${colors.command('orion ask')} ${colors.dim('"question"')}    Quick one-shot AI question`);
   console.log(`    ${colors.command('orion edit')} ${colors.dim('<file>')}       AI-assisted file editing`);
   console.log(`    ${colors.command('orion review')} ${colors.dim('[file]')}     AI code review`);
   console.log(`    ${colors.command('orion commit')}             Generate AI commit message`);
-  console.log(`    ${colors.command('orion explain')} ${colors.dim('<file>')}    Explain what a file does`);
-  console.log(`    ${colors.command('orion fix')} ${colors.dim('<file>')}        Find and fix issues`);
+  console.log(`    ${colors.command('orion explain')} ${colors.dim('[file]')}    Explain what a file does`);
+  console.log(`    ${colors.command('orion fix')} ${colors.dim('[file]')}        Find and fix issues`);
+  console.log();
+  console.log(chalk.bold('  Multi-Agent & Automation:'));
+  console.log();
+  console.log(`    ${colors.command('orion agent')} ${colors.dim('<tasks...>')}  Run multiple AI tasks in parallel`);
+  console.log(`    ${colors.command('orion session')} ${colors.dim('<action>')}  Manage named AI sessions`);
+  console.log(`    ${colors.command('orion watch')} ${colors.dim('<pattern>')}   Watch files & auto-run AI actions`);
+  console.log();
+  console.log(chalk.bold('  Setup:'));
+  console.log();
   console.log(`    ${colors.command('orion init')}               Initialize Orion config`);
   console.log(`    ${colors.command('orion gui')}                Launch desktop app`);
   console.log(`    ${colors.command('orion config')}             Configure API keys`);
+  console.log();
+  console.log(chalk.bold('  Pipe Support:'));
+  console.log();
+  console.log(`    ${colors.dim('cat file.ts | orion ask "What\'s wrong?"')}`);
+  console.log(`    ${colors.dim('git diff | orion review')}`);
+  console.log(`    ${colors.dim('cat app.ts | orion explain')}`);
   console.log();
   console.log(colors.dim('  Run orion <command> --help for more info on a command.'));
   console.log();

@@ -12,6 +12,7 @@ import {
   loadProjectContext,
 } from '../utils.js';
 import { createStreamHandler, printCommandError } from '../shared.js';
+import { readStdin } from '../stdin.js';
 
 const SYSTEM_PROMPT = `You are Orion, an expert AI coding assistant.
 Answer the user's question concisely and accurately.
@@ -30,8 +31,20 @@ export async function askCommand(question: string): Promise<void> {
     process.exit(1);
   }
 
+  // Read piped stdin data if available
+  const stdinData = await readStdin();
+
+  // Build the user message, prepending stdin context if present
+  let userMessage = question;
+  if (stdinData) {
+    userMessage = `Context from stdin:\n---\n${stdinData}\n---\n\nQuestion: ${question}`;
+  }
+
   console.log();
   console.log(`  ${colors.user('Q:')} ${question}`);
+  if (stdinData) {
+    console.log(`  ${colors.dim(`(with ${stdinData.split('\n').length} lines of piped input)`)}`);
+  }
   printDivider();
 
   const spinner = startSpinner('Thinking...');
@@ -48,7 +61,7 @@ export async function askCommand(question: string): Promise<void> {
     : SYSTEM_PROMPT + context;
 
   try {
-    await askAI(fullSystemPrompt, question, callbacks);
+    await askAI(fullSystemPrompt, userMessage, callbacks);
     console.log();
   } catch (err: any) {
     printCommandError(err, 'ask', 'Run `orion config` to check your AI provider settings.');
