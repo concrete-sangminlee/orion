@@ -13,6 +13,7 @@ import {
 } from '../utils.js';
 import { createStreamHandler, printCommandError } from '../shared.js';
 import { readStdin } from '../stdin.js';
+import { commandHeader, box, palette } from '../ui.js';
 
 const SYSTEM_PROMPT = `You are Orion, an expert AI coding assistant.
 Answer the user's question concisely and accurately.
@@ -40,12 +41,12 @@ export async function askCommand(question: string): Promise<void> {
     userMessage = `Context from stdin:\n---\n${stdinData}\n---\n\nQuestion: ${question}`;
   }
 
-  console.log();
-  console.log(`  ${colors.user('Q:')} ${question}`);
+  console.log(commandHeader('Orion Quick Ask'));
+  console.log(box(question, { title: 'Question', color: '#38BDF8', padding: 0 }));
   if (stdinData) {
-    console.log(`  ${colors.dim(`(with ${stdinData.split('\n').length} lines of piped input)`)}`);
+    console.log(`  ${palette.dim(`(with ${stdinData.split('\n').length} lines of piped input)`)}`);
   }
-  printDivider();
+  console.log();
 
   const spinner = startSpinner('Thinking...');
   const context = getCurrentDirectoryContext();

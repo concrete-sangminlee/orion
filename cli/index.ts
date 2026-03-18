@@ -22,16 +22,19 @@ import { agentCommand } from './commands/agent.js';
 import { sessionCommand } from './commands/session.js';
 import { watchCommand } from './commands/watch.js';
 import { setPipelineOptions } from './pipeline.js';
+import { errorDisplay, palette } from './ui.js';
 
 // ─── Error Handler Factory ──────────────────────────────────────────────────
 
 function handleCommandError(err: any, command: string, suggestion?: string): void {
-  console.log();
-  printError(err.message || 'An unexpected error occurred.');
-  if (suggestion) {
-    printInfo(suggestion);
-  }
-  printInfo(`Run ${colors.command(`orion ${command} --help`)} for usage.`);
+  const fixes = [];
+  if (suggestion) fixes.push(suggestion);
+  fixes.push(`Run ${colors.command(`orion ${command} --help`)} for usage.`);
+
+  console.log(errorDisplay(
+    err.message || 'An unexpected error occurred.',
+    fixes
+  ));
   console.log();
   process.exit(1);
 }
@@ -246,35 +249,42 @@ program
 program.action(() => {
   printBanner();
 
-  console.log(chalk.bold('  Core Commands:'));
+  const cmd = (name: string, args: string, desc: string) => {
+    const cmdStr = colors.command(name);
+    const argStr = args ? ' ' + palette.dim(args) : '';
+    const padLen = 28 - name.length - (args ? args.length + 1 : 0);
+    return `    ${cmdStr}${argStr}${' '.repeat(Math.max(padLen, 2))}${palette.dim(desc)}`;
+  };
+
+  console.log(palette.violet.bold('  Core Commands'));
   console.log();
-  console.log(`    ${colors.command('orion chat')}              Interactive AI chat session`);
-  console.log(`    ${colors.command('orion ask')} ${colors.dim('"question"')}    Quick one-shot AI question`);
-  console.log(`    ${colors.command('orion edit')} ${colors.dim('<file>')}       AI-assisted file editing`);
-  console.log(`    ${colors.command('orion review')} ${colors.dim('[file]')}     AI code review`);
-  console.log(`    ${colors.command('orion commit')}             Generate AI commit message`);
-  console.log(`    ${colors.command('orion explain')} ${colors.dim('[file]')}    Explain what a file does`);
-  console.log(`    ${colors.command('orion fix')} ${colors.dim('[file]')}        Find and fix issues`);
+  console.log(cmd('orion chat', '', 'Interactive AI chat session'));
+  console.log(cmd('orion ask', '"question"', 'Quick one-shot AI question'));
+  console.log(cmd('orion edit', '<file>', 'AI-assisted file editing'));
+  console.log(cmd('orion review', '[file]', 'AI code review'));
+  console.log(cmd('orion commit', '', 'Generate AI commit message'));
+  console.log(cmd('orion explain', '[file]', 'Explain what a file does'));
+  console.log(cmd('orion fix', '[file]', 'Find and fix issues'));
   console.log();
-  console.log(chalk.bold('  Multi-Agent & Automation:'));
+  console.log(palette.violet.bold('  Multi-Agent & Automation'));
   console.log();
-  console.log(`    ${colors.command('orion agent')} ${colors.dim('<tasks...>')}  Run multiple AI tasks in parallel`);
-  console.log(`    ${colors.command('orion session')} ${colors.dim('<action>')}  Manage named AI sessions`);
-  console.log(`    ${colors.command('orion watch')} ${colors.dim('<pattern>')}   Watch files & auto-run AI actions`);
+  console.log(cmd('orion agent', '<tasks...>', 'Run AI tasks in parallel'));
+  console.log(cmd('orion session', '<action>', 'Manage named AI sessions'));
+  console.log(cmd('orion watch', '<pattern>', 'Watch files & auto-run AI'));
   console.log();
-  console.log(chalk.bold('  Setup:'));
+  console.log(palette.violet.bold('  Setup'));
   console.log();
-  console.log(`    ${colors.command('orion init')}               Initialize Orion config`);
-  console.log(`    ${colors.command('orion gui')}                Launch desktop app`);
-  console.log(`    ${colors.command('orion config')}             Configure API keys`);
+  console.log(cmd('orion init', '', 'Initialize Orion config'));
+  console.log(cmd('orion gui', '', 'Launch desktop app'));
+  console.log(cmd('orion config', '', 'Configure API keys'));
   console.log();
-  console.log(chalk.bold('  Pipe Support:'));
+  console.log(palette.violet.bold('  Pipe Support'));
   console.log();
-  console.log(`    ${colors.dim('cat file.ts | orion ask "What\'s wrong?"')}`);
-  console.log(`    ${colors.dim('git diff | orion review')}`);
-  console.log(`    ${colors.dim('cat app.ts | orion explain')}`);
+  console.log(`    ${palette.dim('cat file.ts | orion ask "What\'s wrong?"')}`);
+  console.log(`    ${palette.dim('git diff | orion review')}`);
+  console.log(`    ${palette.dim('cat app.ts | orion explain')}`);
   console.log();
-  console.log(colors.dim('  Run orion <command> --help for more info on a command.'));
+  console.log(palette.dim('  Run orion <command> --help for more info on a command.'));
   console.log();
 });
 

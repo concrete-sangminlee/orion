@@ -23,6 +23,7 @@ import {
   printCommandError,
 } from '../shared.js';
 import { readStdin } from '../stdin.js';
+import { commandHeader, statusLine, severityBadge, divider, table as uiTable, palette } from '../ui.js';
 
 const REVIEW_SYSTEM_PROMPT = `You are Orion, an expert code reviewer. Analyze the provided code and give a thorough review.
 
@@ -46,13 +47,13 @@ Be specific: reference line numbers and variable names when possible.`;
 
 function colorizeSeverity(line: string): string {
   if (line.startsWith('[ERROR]')) {
-    return colors.severityError(' ERROR ') + ' ' + colors.error(line.replace('[ERROR] ', ''));
+    return severityBadge('error') + ' ' + palette.red(line.replace('[ERROR] ', ''));
   }
   if (line.startsWith('[WARNING]')) {
-    return colors.severityWarning(' WARN  ') + ' ' + colors.warning(line.replace('[WARNING] ', ''));
+    return severityBadge('warning') + ' ' + palette.yellow(line.replace('[WARNING] ', ''));
   }
   if (line.startsWith('[INFO]')) {
-    return colors.severityInfo(' INFO  ') + ' ' + colors.info(line.replace('[INFO] ', ''));
+    return severityBadge('info') + ' ' + palette.blue(line.replace('[INFO] ', ''));
   }
   return line;
 }
@@ -213,16 +214,25 @@ async function reviewStdinContent(content: string): Promise<void> {
 }
 
 export async function reviewCommand(filePath?: string): Promise<void> {
-  printHeader('Orion Code Review');
-
   // Check for piped stdin data
   const stdinData = await readStdin();
 
   if (filePath) {
+    const file = readAndValidateFile(filePath);
+    if (!file) return;
+    console.log(commandHeader('Orion Code Review', [
+      ['File', colors.file(file.resolvedPath)],
+      ['Language', `${file.language} \u00B7 ${file.lineCount} lines`],
+    ]));
     await reviewSingleFile(filePath);
   } else if (stdinData) {
+    console.log(commandHeader('Orion Code Review', [
+      ['Source', 'piped input'],
+      ['Lines', String(stdinData.split('\n').length)],
+    ]));
     await reviewStdinContent(stdinData);
   } else {
+    console.log(commandHeader('Orion Code Review'));
     printInfo('Scanning current directory for files to review...');
     await reviewDirectory();
   }

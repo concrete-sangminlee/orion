@@ -21,6 +21,7 @@ import {
   loadProjectContext,
 } from '../utils.js';
 import { renderMarkdown } from '../markdown.js';
+import { commandHeader, table as uiTable, statusLine, divider, palette } from '../ui.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -46,44 +47,42 @@ interface AgentOptions {
 // ─── Status Icons ────────────────────────────────────────────────────────────
 
 const STATUS_ICONS: Record<AgentStatus, string> = {
-  queued: chalk.gray('○'),
-  running: chalk.cyan('●'),
-  complete: chalk.green('✔'),
-  error: chalk.red('✘'),
+  queued: palette.dim('\u25CB'),
+  running: palette.blue('\u25CF'),
+  complete: palette.green('\u2713'),
+  error: palette.red('\u2717'),
 };
 
 const STATUS_LABELS: Record<AgentStatus, (s: string) => string> = {
-  queued: (s: string) => chalk.gray(`Queued: ${s}`),
-  running: (s: string) => chalk.cyan(`${s}...`),
-  complete: (s: string) => chalk.green(`Done: ${s}`),
-  error: (s: string) => chalk.red(`Failed: ${s}`),
+  queued: (s: string) => palette.dim(`Queued: ${s}`),
+  running: (s: string) => palette.blue(`${s}...`),
+  complete: (s: string) => palette.green(`Done: ${s}`),
+  error: (s: string) => palette.red(`Failed: ${s}`),
 };
 
 // ─── Dashboard Renderer ──────────────────────────────────────────────────────
 
 function renderDashboard(tasks: AgentTask[], final: boolean = false): string {
-  const width = 52;
-  const border = chalk.dim;
+  const width = 56;
+  const dm = palette.dim;
   const lines: string[] = [];
 
-  lines.push(border('  ┌─') + chalk.bold.cyan(' Agent Dashboard ') + border('─'.repeat(width - 19)) + border('┐'));
+  lines.push('  ' + dm('\u256D\u2500') + palette.violet.bold(' Agent Dashboard ') + dm('\u2500'.repeat(width - 21)) + dm('\u256E'));
 
   for (const task of tasks) {
     const icon = STATUS_ICONS[task.status];
-    const label = STATUS_LABELS[task.status](task.description);
-    const idTag = chalk.dim(`[${task.id}]`);
-    // Truncate label to fit in the box
-    const maxLabelLen = width - 8;
+    const idTag = dm(`[${task.id}]`);
+    const maxLabelLen = width - 10;
     const plainLabel = task.description;
     const displayLabel = plainLabel.length > maxLabelLen
-      ? plainLabel.substring(0, maxLabelLen - 3) + '...'
+      ? plainLabel.substring(0, maxLabelLen - 1) + '\u2026'
       : plainLabel;
 
     const statusText = STATUS_LABELS[task.status](displayLabel);
-    lines.push(border('  │ ') + `${idTag} ${icon} ${statusText}` + border(' │'));
+    lines.push('  ' + dm('\u2502') + ` ${idTag} ${icon} ${statusText}`.padEnd(width) + dm('\u2502'));
   }
 
-  lines.push(border('  └') + border('─'.repeat(width)) + border('┘'));
+  lines.push('  ' + dm('\u2570' + '\u2500'.repeat(width) + '\u256F'));
 
   return lines.join('\n');
 }
@@ -267,13 +266,13 @@ export async function agentCommand(taskDescriptions: string[], options: AgentOpt
   const maxParallel = options.parallel || 3;
   const shouldSave = options.save !== false; // default true
 
-  printHeader('Orion Multi-Agent');
+  console.log(commandHeader('Orion Multi-Agent'));
 
   if (taskDescriptions.length === 0) {
     console.log();
     printError('No tasks provided.');
-    console.log(`  ${colors.dim('Usage: orion agent "task 1" "task 2" "task 3"')}`);
-    console.log(`  ${colors.dim('       orion agent "refactor auth" "add tests" --parallel 2')}`);
+    console.log(`  ${palette.dim('Usage: orion agent "task 1" "task 2" "task 3"')}`);
+    console.log(`  ${palette.dim('       orion agent "refactor auth" "add tests" --parallel 2')}`);
     console.log();
     process.exit(1);
   }
@@ -326,30 +325,45 @@ export async function agentCommand(taskDescriptions: string[], options: AgentOpt
   const completed = tasks.filter(t => t.status === 'complete').length;
   const failed = tasks.filter(t => t.status === 'error').length;
 
-  printDivider();
-  console.log(
-    `  ${colors.label('Results:')} ` +
-    `${colors.success(`${completed} completed`)} | ` +
-    `${colors.error(`${failed} failed`)} | ` +
-    `${chalk.dim(`${tasks.length} total`)}`
-  );
+  console.log(divider('Results'));
+  console.log();
+  console.log(uiTable(
+    ['Task', 'Description', 'Status', 'Time'],
+    tasks.map(t => {
+      const duration = t.startTime && t.endTime
+        ? `${((t.endTime - t.startTime) / 1000).toFixed(1)}s`
+        : '-';
+      const statusStr = t.status === 'complete'
+        ? palette.green('\u2713 Done')
+        : palette.red('\u2717 Failed');
+      return [
+        palette.dim(String(t.id)),
+        t.description.length > 25 ? t.description.substring(0, 24) + '\u2026' : t.description,
+        statusStr,
+        palette.dim(duration),
+      ];
+    })
+  ));
+  console.log();
+
+  console.log(`  ${palette.green(`${completed} completed`)} | ${palette.red(`${failed} failed`)} | ${palette.dim(`${tasks.length} total`)}`);
   console.log();
 
   // Show individual results
   for (const task of tasks) {
     const duration = task.startTime && task.endTime
-      ? chalk.dim(` (${((task.endTime - task.startTime) / 1000).toFixed(1)}s)`)
+      ? palette.dim(` (${((task.endTime - task.startTime) / 1000).toFixed(1)}s)`)
       : '';
 
     if (task.status === 'complete') {
-      console.log(`  ${chalk.green('✔')} ${colors.label(`Task ${task.id}:`)} ${task.description}${duration}`);
-      printDivider();
+      console.log(`  ${palette.green('\u2713')} ${palette.violet.bold(`Task ${task.id}:`)} ${task.description}${duration}`);
+      console.log(divider());
       if (task.result) {
         console.log(renderMarkdown(task.result));
       }
       console.log();
     } else if (task.status === 'error') {
-      console.log(`  ${chalk.red('✘')} ${colors.label(`Task ${task.id}:`)} ${task.description}${duration}`);
+      console.log(`  ${palette.red('\u2717')} ${palette.violet.bold(`Task ${task.id}:`)} ${task.description}${duration}`);
       printError(task.error || 'Unknown error');
       console.log();
     }

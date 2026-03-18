@@ -24,6 +24,7 @@ import {
   loadProjectContext,
 } from '../utils.js';
 import { renderMarkdown } from '../markdown.js';
+import { commandHeader, table as uiTable, divider, palette, aiResponseHeader } from '../ui.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -107,7 +108,7 @@ function listAllSessions(): SessionData[] {
 // ─── Session Actions ─────────────────────────────────────────────────────────
 
 async function newSession(name: string): Promise<void> {
-  printHeader('Orion Session: New');
+  console.log(commandHeader('Orion Session: New'));
 
   const sanitized = sanitizeName(name);
   if (!sanitized) {
@@ -153,7 +154,7 @@ async function newSession(name: string): Promise<void> {
 }
 
 async function listSessions(): Promise<void> {
-  printHeader('Orion Sessions');
+  console.log(commandHeader('Orion Sessions'));
 
   const sessions = listAllSessions();
 
@@ -166,18 +167,15 @@ async function listSessions(): Promise<void> {
   }
 
   console.log();
-  console.log(`  ${colors.label('Name')}                 ${colors.label('Messages')}  ${colors.label('Provider')}     ${colors.label('Updated')}`);
-  printDivider();
-
-  for (const session of sessions) {
-    const name = session.name.padEnd(20);
-    const msgCount = String(session.messages.filter(m => m.role !== 'system').length).padEnd(10);
-    const provider = `${session.provider}`.padEnd(13);
-    const updated = new Date(session.updatedAt).toLocaleDateString();
-
-    console.log(`  ${colors.primary(name)} ${chalk.dim(msgCount)} ${chalk.dim(provider)} ${chalk.dim(updated)}`);
-  }
-
+  console.log(uiTable(
+    ['Name', 'Messages', 'Provider', 'Updated'],
+    sessions.map(s => [
+      palette.violet(s.name),
+      palette.dim(String(s.messages.filter(m => m.role !== 'system').length)),
+      palette.dim(s.provider),
+      palette.dim(new Date(s.updatedAt).toLocaleDateString()),
+    ])
+  ));
   console.log();
   printInfo(`${sessions.length} session(s) total`);
   printInfo(`Resume with: ${colors.command('orion session resume <name>')}`);
@@ -198,24 +196,24 @@ async function resumeSession(name: string): Promise<void> {
     process.exit(1);
   }
 
-  printHeader(`Session: ${session.name}`);
-  const userMsgCount = session.messages.filter(m => m.role !== 'system').length;
-  printInfo(`Resuming session with ${userMsgCount} previous message(s)`);
-  printInfo(`Provider: ${session.provider} (${session.model})`);
+  console.log(commandHeader(`Session: ${session.name}`, [
+    ['Messages', `${session.messages.filter(m => m.role !== 'system').length} previous`],
+    ['Provider', `${session.provider} (${session.model})`],
+  ]));
   console.log();
 
   // Show last few messages for context
   const recentMessages = session.messages.filter(m => m.role !== 'system').slice(-4);
   if (recentMessages.length > 0) {
-    console.log(chalk.dim('  --- Recent History ---'));
+    console.log(divider('Recent History'));
     for (const msg of recentMessages) {
       if (msg.role === 'user') {
-        console.log(`  ${colors.user('You:')} ${chalk.dim(msg.content.substring(0, 80))}${msg.content.length > 80 ? '...' : ''}`);
+        console.log(`  ${palette.blue.bold('You:')} ${palette.dim(msg.content.substring(0, 80))}${msg.content.length > 80 ? '\u2026' : ''}`);
       } else {
-        console.log(`  ${colors.ai('Orion:')} ${chalk.dim(msg.content.substring(0, 80))}${msg.content.length > 80 ? '...' : ''}`);
+        console.log(`  ${palette.violet.bold('Orion:')} ${palette.dim(msg.content.substring(0, 80))}${msg.content.length > 80 ? '\u2026' : ''}`);
       }
     }
-    console.log(chalk.dim('  ─────────────────────'));
+    console.log(divider());
     console.log();
   }
 
@@ -277,18 +275,24 @@ async function resumeSession(name: string): Promise<void> {
       let fullResponse = '';
       let firstToken = true;
 
+      const responseStart = new Date();
       await streamChat(session.messages, {
         onToken(token: string) {
           if (firstToken) {
             stopSpinner(spinner);
             firstToken = false;
-            process.stdout.write(`\n  ${colors.label('Orion:')} `);
+            console.log();
+            console.log(aiResponseHeader(session.provider, session.model, responseStart));
           }
           fullResponse += token;
           process.stdout.write(chalk.dim(token));
         },
         onComplete(text: string) {
-          if (firstToken) stopSpinner(spinner);
+          if (firstToken) {
+            stopSpinner(spinner);
+            console.log();
+            console.log(aiResponseHeader(session.provider, session.model, responseStart));
+          }
           fullResponse = text;
           // Re-render as markdown
           process.stdout.write('\r\x1b[K');
@@ -374,7 +378,7 @@ async function exportSession(name: string): Promise<void> {
     process.exit(1);
   }
 
-  printHeader('Orion Session: Export');
+  console.log(commandHeader('Orion Session: Export'));
 
   const exportPath = exportSessionToMarkdown(session);
 
@@ -387,7 +391,7 @@ async function exportSession(name: string): Promise<void> {
 async function deleteSession(name: string): Promise<void> {
   const sanitized = sanitizeName(name);
 
-  printHeader('Orion Session: Delete');
+  console.log(commandHeader('Orion Session: Delete'));
 
   if (!loadSession(sanitized)) {
     printError(`Session "${name}" not found.`);

@@ -180,12 +180,8 @@ export async function resolveProviderConfig(overrideProvider?: AIProvider, overr
   }
 
   throw new Error(
-    `No AI provider available.\n\n` +
-    `  ${chalk.bold('Options:')}\n` +
-    `  1. Set ANTHROPIC_API_KEY    ${chalk.dim('(export ANTHROPIC_API_KEY=sk-ant-..)')}\n` +
-    `  2. Set OPENAI_API_KEY       ${chalk.dim('(export OPENAI_API_KEY=sk-..)')}\n` +
-    `  3. Start Ollama locally     ${chalk.dim('(ollama serve)')}\n` +
-    `  4. Run: orion config        ${chalk.dim('(interactive setup)')}\n`
+    `No AI provider available. ` +
+    `Set ANTHROPIC_API_KEY, OPENAI_API_KEY, start Ollama, or run orion config.`
   );
 }
 

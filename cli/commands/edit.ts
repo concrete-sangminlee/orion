@@ -23,6 +23,7 @@ import {
   printCommandError,
 } from '../shared.js';
 import { getPipelineOptions, jsonOutput } from '../pipeline.js';
+import { commandHeader, diffBlock, palette } from '../ui.js';
 
 const EDIT_SYSTEM_PROMPT = `You are Orion, an expert code editor. The user will provide a file and editing instructions.
 
@@ -36,25 +37,25 @@ Rules:
 7. Output the raw file content, ready to be written to disk`;
 
 export async function editCommand(filePath: string): Promise<void> {
-  printHeader('Orion AI Edit');
-
   const file = readAndValidateFile(filePath);
   if (!file) {
     process.exit(1);
   }
 
-  printFileInfo(file);
-  console.log();
+  console.log(commandHeader('Orion AI Edit', [
+    ['File', colors.file(file.resolvedPath)],
+    ['Language', `${file.language} \u00B7 ${file.lineCount} lines`],
+  ]));
 
   // Show a preview of the file
   const previewLines = file.content.split('\n').slice(0, 20);
-  console.log(colors.dim('  File preview (first 20 lines):'));
+  console.log(palette.dim('  File preview (first 20 lines):'));
   previewLines.forEach((line, i) => {
-    const lineNum = colors.dim(String(i + 1).padStart(4, ' ') + ' |');
-    console.log(`  ${lineNum} ${colors.code(line)}`);
+    const lineNum = palette.dim(String(i + 1).padStart(4, ' ') + ' \u2502');
+    console.log(`  ${lineNum} ${palette.white(line)}`);
   });
   if (file.lineCount > 20) {
-    console.log(colors.dim(`  ... and ${file.lineCount - 20} more lines`));
+    console.log(palette.dim(`  \u2026 and ${file.lineCount - 20} more lines`));
   }
   console.log();
 
@@ -104,12 +105,8 @@ export async function editCommand(filePath: string): Promise<void> {
 
     if (!pipelineOpts.quiet) {
       console.log();
-      printDivider();
-      console.log(colors.label('  Changes Preview:'));
+      console.log(diffBlock(file.content, modifiedContent, file.fileName));
       console.log();
-      console.log(formatDiff(file.content, modifiedContent));
-      console.log();
-      printDivider();
     }
 
     // Auto-confirm when --yes is set (non-interactive / pipeline mode)

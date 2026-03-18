@@ -18,6 +18,7 @@ import {
   printError,
   printInfo,
 } from './utils.js';
+import { errorDisplay, palette } from './ui.js';
 
 // ─── Stream Handler Factory ─────────────────────────────────────────────────
 
@@ -224,7 +225,7 @@ export function readAndValidateFile(filePath: string): ValidatedFile | null {
  */
 export function printFileInfo(file: ValidatedFile): void {
   printInfo(`File: ${colors.file(file.resolvedPath)}`);
-  printInfo(`Language: ${file.language} | Lines: ${file.lineCount}`);
+  printInfo(`Language: ${file.language} \u00B7 ${file.lineCount} lines`);
 }
 
 // ─── Error Display ───────────────────────────────────────────────────────────
@@ -237,11 +238,9 @@ export function printCommandError(
   command: string,
   suggestion?: string
 ): void {
-  console.log();
-  printError(err.message);
-  if (suggestion) {
-    printInfo(suggestion);
-  }
-  printInfo(`Run ${colors.command(`orion ${command} --help`)} for usage.`);
+  const fixes: string[] = [];
+  if (suggestion) fixes.push(suggestion);
+  fixes.push(`Run ${colors.command(`orion ${command} --help`)} for usage.`);
+  console.log(errorDisplay(err.message, fixes));
   console.log();
 }

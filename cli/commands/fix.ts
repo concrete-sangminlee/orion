@@ -25,6 +25,7 @@ import {
 } from '../shared.js';
 import { getPipelineOptions, jsonOutput } from '../pipeline.js';
 import { readStdin } from '../stdin.js';
+import { commandHeader, severityBadge, diffBlock, divider, palette } from '../ui.js';
 
 const FIX_ANALYSIS_PROMPT = `You are Orion, an expert code fixer. Analyze the provided code for issues.
 
@@ -52,8 +53,6 @@ export async function fixCommand(filePath?: string): Promise<void> {
   const stdinData = await readStdin();
   const isStdinMode = !filePath && !!stdinData;
 
-  printHeader('Orion Auto-Fix');
-
   let originalContent: string;
   let userMessage: string;
   let fileLabel: string;
@@ -64,25 +63,30 @@ export async function fixCommand(filePath?: string): Promise<void> {
       process.exit(1);
     }
 
-    printFileInfo(file);
-    console.log();
+    console.log(commandHeader('Orion Auto-Fix', [
+      ['File', colors.file(file.resolvedPath)],
+      ['Language', `${file.language} \u00B7 ${file.lineCount} lines`],
+    ]));
 
     originalContent = file.content;
     userMessage = `Fix issues in this ${file.language} file (${file.fileName}):\n\n\`\`\`${file.language}\n${file.content}\n\`\`\``;
     fileLabel = file.resolvedPath;
   } else if (stdinData) {
     const lineCount = stdinData.split('\n').length;
-    printInfo(`Fixing piped input... (${lineCount} lines)`);
-    console.log();
+    console.log(commandHeader('Orion Auto-Fix', [
+      ['Source', 'piped input'],
+      ['Lines', String(lineCount)],
+    ]));
 
     originalContent = stdinData;
     userMessage = `Fix issues in this code:\n\n\`\`\`\n${stdinData}\n\`\`\``;
     fileLabel = '(stdin)';
   } else {
+    console.log(commandHeader('Orion Auto-Fix'));
     console.log();
     console.log(`  ${colors.error('Please provide a file path or pipe content via stdin.')}`);
-    console.log(`  ${colors.dim('Usage: orion fix <file>')}`);
-    console.log(`  ${colors.dim('       cat app.ts | orion fix')}`);
+    console.log(`  ${palette.dim('Usage: orion fix <file>')}`);
+    console.log(`  ${palette.dim('       cat app.ts | orion fix')}`);
     console.log();
     process.exit(1);
   }
@@ -111,8 +115,7 @@ export async function fixCommand(filePath?: string): Promise<void> {
     const log = (...args: any[]) => output.write(args.join(' ') + '\n');
 
     log();
-    log(colors.dim('─'.repeat(60)));
-    log(colors.label('  Issues Found:'));
+    log(divider('Issues Found'));
     log();
 
     const analysisLines = analysis.split('\n');
@@ -125,13 +128,13 @@ export async function fixCommand(filePath?: string): Promise<void> {
       const trimmed = line.trim();
       if (trimmed.startsWith('[ERROR]')) {
         errorCount++;
-        log(`  ${colors.severityError(' ERROR ')} ${colors.error(trimmed.replace('[ERROR] ', ''))}`);
+        log(`  ${severityBadge('error')} ${palette.red(trimmed.replace('[ERROR] ', ''))}`);
       } else if (trimmed.startsWith('[WARNING]')) {
         warningCount++;
-        log(`  ${colors.severityWarning(' WARN  ')} ${colors.warning(trimmed.replace('[WARNING] ', ''))}`);
+        log(`  ${severityBadge('warning')} ${palette.yellow(trimmed.replace('[WARNING] ', ''))}`);
       } else if (trimmed.startsWith('[INFO]')) {
         infoCount++;
-        log(`  ${colors.severityInfo(' INFO  ')} ${colors.info(trimmed.replace('[INFO] ', ''))}`);
+        log(`  ${severityBadge('info')} ${palette.blue(trimmed.replace('[INFO] ', ''))}`);
       } else if (trimmed) {
         otherLines.push(line);
       }
@@ -147,9 +150,9 @@ export async function fixCommand(filePath?: string): Promise<void> {
 
     log();
     log(
-      `  Summary: ${colors.error(`${errorCount} errors`)} | ` +
-      `${colors.warning(`${warningCount} warnings`)} | ` +
-      `${colors.info(`${infoCount} suggestions`)}`
+      `  Summary: ${palette.red(`${errorCount} errors`)} | ` +
+      `${palette.yellow(`${warningCount} warnings`)} | ` +
+      `${palette.blue(`${infoCount} suggestions`)}`
     );
 
     if (!fixedContent) {
@@ -196,12 +199,8 @@ export async function fixCommand(filePath?: string): Promise<void> {
 
     if (!pipelineOpts.quiet) {
       console.log();
-      printDivider();
-      console.log(colors.label('  Proposed Fixes:'));
+      console.log(diffBlock(originalContent, fixedContent, filePath || '(stdin)'));
       console.log();
-      console.log(formatDiff(originalContent, fixedContent));
-      console.log();
-      printDivider();
     }
 
     // Auto-confirm when --yes is set (non-interactive / pipeline mode)

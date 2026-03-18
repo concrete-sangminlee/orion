@@ -23,6 +23,7 @@ import {
 } from '../utils.js';
 import { createSilentStreamHandler, printCommandError } from '../shared.js';
 import { getPipelineOptions, jsonOutput } from '../pipeline.js';
+import { commandHeader, box, errorDisplay, palette } from '../ui.js';
 
 const COMMIT_SYSTEM_PROMPT = `You are a git commit message generator. Analyze the provided diff and generate a conventional commit message.
 
@@ -41,14 +42,14 @@ Examples:
 - refactor(utils): extract date formatting to shared helper`;
 
 export async function commitCommand(): Promise<void> {
-  printHeader('Orion AI Commit');
+  console.log(commandHeader('Orion AI Commit'));
 
   // Check if we're in a git repo
   if (!isGitRepo()) {
-    console.log();
-    printError('Not a git repository.');
-    printInfo('Run this command inside a git project directory.');
-    printInfo(`Run ${colors.command('git init')} to initialize a repository.`);
+    console.log(errorDisplay('Not a git repository', [
+      'Run this command inside a git project directory.',
+      `Run ${colors.command('git init')} to initialize a repository.`,
+    ]));
     console.log();
     process.exit(1);
   }
@@ -56,11 +57,10 @@ export async function commitCommand(): Promise<void> {
   // Get staged changes
   const stagedFiles = getStagedFiles();
   if (stagedFiles.length === 0) {
-    console.log();
-    printWarning('No staged changes found.');
-    printInfo('Stage your changes first:');
-    console.log(`    ${colors.command('git add <files>')}   Stage specific files`);
-    console.log(`    ${colors.command('git add -p')}        Stage interactively`);
+    console.log(errorDisplay('No staged changes found', [
+      `${colors.command('git add <files>')}   Stage specific files`,
+      `${colors.command('git add -p')}        Stage interactively`,
+    ]));
     console.log();
     process.exit(1);
   }
@@ -68,7 +68,7 @@ export async function commitCommand(): Promise<void> {
   // Show staged files
   printInfo(`Staged files (${stagedFiles.length}):`);
   for (const file of stagedFiles) {
-    console.log(`    ${colors.file(file)}`);
+    console.log(`    ${palette.blue(file)}`);
   }
   console.log();
 
@@ -112,9 +112,7 @@ export async function commitCommand(): Promise<void> {
 
     if (!pipelineOpts.quiet) {
       console.log();
-      printDivider();
-      console.log(`  ${colors.ai(commitMessage)}`);
-      printDivider();
+      console.log(box(commitMessage, { title: 'Generated Commit Message', color: '#22C55E', padding: 1 }));
       console.log();
     }
 

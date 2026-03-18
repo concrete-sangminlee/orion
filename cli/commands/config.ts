@@ -20,29 +20,29 @@ import {
   validateModelName,
 } from '../utils.js';
 import { initProjectContext } from './context.js';
+import { commandHeader, keyValue, divider, palette } from '../ui.js';
 
 function showCurrentConfig(): void {
   const config = readConfig();
 
   console.log();
-  printDivider();
-  console.log(colors.label('  Current Configuration'));
-  printDivider();
+  console.log(divider('Current Configuration'));
   console.log();
-  printKeyValue('Config file', colors.file(getConfigPath()));
-  console.log();
-  printKeyValue('Provider', config.provider || 'auto');
-  printKeyValue('Model', config.model || 'default');
-  printKeyValue('Anthropic API Key', config.anthropicApiKey ? colors.success(maskApiKey(config.anthropicApiKey)) : colors.dim('not set'));
-  printKeyValue('OpenAI API Key', config.openaiApiKey ? colors.success(maskApiKey(config.openaiApiKey)) : colors.dim('not set'));
-  printKeyValue('Ollama Host', config.ollamaHost || 'http://localhost:11434');
-  printKeyValue('Max Tokens', String(config.maxTokens || 4096));
-  printKeyValue('Temperature', String(config.temperature || 0.7));
+  console.log(keyValue([
+    ['Config file', colors.file(getConfigPath())],
+    ['Provider', config.provider || 'auto'],
+    ['Model', config.model || 'default'],
+    ['Anthropic Key', config.anthropicApiKey ? palette.green(maskApiKey(config.anthropicApiKey)) : palette.dim('not set')],
+    ['OpenAI Key', config.openaiApiKey ? palette.green(maskApiKey(config.openaiApiKey)) : palette.dim('not set')],
+    ['Ollama Host', config.ollamaHost || 'http://localhost:11434'],
+    ['Max Tokens', String(config.maxTokens || 4096)],
+    ['Temperature', String(config.temperature || 0.7)],
+  ]));
   console.log();
 }
 
 export async function configCommand(): Promise<void> {
-  printHeader('Orion Configuration');
+  console.log(commandHeader('Orion Configuration'));
 
   // Show current config clearly before any changes
   showCurrentConfig();
@@ -256,7 +256,7 @@ export async function configCommand(): Promise<void> {
 }
 
 export async function initCommand(): Promise<void> {
-  printHeader('Orion Project Init');
+  console.log(commandHeader('Orion Project Init'));
 
   printInfo('Initializing Orion in current project...');
   console.log();

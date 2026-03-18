@@ -73,8 +73,9 @@ export function startSpinner(text: string): Ora {
   }
   activeSpinner = ora({
     text: chalk.dim(text),
-    spinner: 'dots12',
-    color: 'cyan',
+    spinner: 'dots',
+    color: 'magenta',
+    prefixText: '  ',
   }).start();
   return activeSpinner;
 }
@@ -83,7 +84,9 @@ export function stopSpinner(spinner?: Ora, text?: string, success = true): void 
   const s = spinner || activeSpinner;
   if (s) {
     if (text) {
-      success ? s.succeed(chalk.green(text)) : s.fail(chalk.red(text));
+      success
+        ? s.succeed(chalk.hex('#22C55E')(text))
+        : s.fail(chalk.hex('#EF4444')(text));
     } else {
       s.stop();
     }
@@ -119,14 +122,13 @@ export const colors = {
 };
 
 export function printHeader(text: string): void {
-  const line = colors.primary('─'.repeat(60));
-  console.log(line);
-  console.log(colors.primary.bold(`  ${text}`));
-  console.log(line);
+  console.log();
+  console.log(`  ${chalk.hex('#9B59B6')('\u2726')} ${colors.primary.bold(text)}`);
+  console.log(`  ${colors.dim('\u2500'.repeat(Math.min((process.stdout.columns || 80) - 4, 60)))}`);
 }
 
 export function printDivider(): void {
-  console.log(colors.dim('─'.repeat(60)));
+  console.log(`  ${colors.dim('\u2500'.repeat(Math.min((process.stdout.columns || 80) - 4, 60)))}`);
 }
 
 export function printKeyValue(key: string, value: string): void {
@@ -134,53 +136,38 @@ export function printKeyValue(key: string, value: string): void {
 }
 
 export function printSuccess(text: string): void {
-  console.log(`  ${chalk.green('+')} ${text}`);
+  console.log(`  ${chalk.hex('#22C55E')('\u2713')} ${text}`);
 }
 
 export function printError(text: string): void {
-  console.log(`  ${chalk.red('x')} ${text}`);
+  console.log(`  ${chalk.hex('#EF4444')('\u2717')} ${text}`);
 }
 
 export function printWarning(text: string): void {
-  console.log(`  ${chalk.yellow('!')} ${text}`);
+  console.log(`  ${chalk.hex('#F59E0B')('!')} ${text}`);
 }
 
 export function printInfo(text: string): void {
-  console.log(`  ${chalk.blue('i')} ${text}`);
+  console.log(`  ${chalk.hex('#38BDF8')('i')} ${text}`);
 }
 
 // ─── Premium Banner ──────────────────────────────────────────────────────────
 
 export function printBanner(): void {
-  const g1 = chalk.hex('#9B59B6');
-  const g2 = chalk.hex('#8E6BBF');
-  const g3 = chalk.hex('#7C5CFC');
-  const g4 = chalk.hex('#6A7FDB');
-  const g5 = chalk.hex('#5B9BD5');
-  const g6 = chalk.hex('#38BDF8');
+  const star = chalk.hex('#9B59B6');
+  const violet = chalk.hex('#7C5CFC');
+  const lavender = chalk.hex('#8B5CF6');
   const dm = chalk.dim;
 
-  const w = 44;
-  const pad = (n: number) => ' '.repeat(Math.max(n, 0));
-
-  const top     = '  ' + dm('\u250C') + dm('\u2500'.repeat(w)) + dm('\u2510');
-  const bot     = '  ' + dm('\u2514') + dm('\u2500'.repeat(w)) + dm('\u2518');
-  const empty   = '  ' + dm('\u2502') + pad(w) + dm('\u2502');
-
-  const gradientTitle =
-    g1(' O') + g2(' R') + g3(' I') + g4(' O') + g5(' N') + g6('  CLI');
-
-  const row = (left: string, usedLen: number) =>
-    '  ' + dm('\u2502') + left + pad(w - usedLen) + dm('\u2502');
+  const platform = process.platform === 'win32' ? 'Windows'
+    : process.platform === 'darwin' ? 'macOS'
+    : 'Linux';
 
   console.log();
-  console.log(top);
-  console.log(empty);
-  console.log(row('     ' + gradientTitle, 5 + 16));
-  console.log(row('     ' + dm('AI-Powered Coding Assistant'), 5 + 27));
-  console.log(row('     ' + g3('v2.0.0'), 5 + 6));
-  console.log(empty);
-  console.log(bot);
+  console.log(`  ${star('\u2726')}  ${violet.bold('O R I O N')}`);
+  console.log(`  ${dm('\u00B7')}  ${lavender('AI-Powered Coding Assistant')}`);
+  console.log(`  ${dm('\u00B7')}  ${dm('v2.0.0 \u00B7 ' + platform)}`);
+  console.log(`  ${dm('\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578\u2578')}`);
   console.log();
 }
 
@@ -326,10 +313,13 @@ export function fileExists(filePath: string): boolean {
 
 // ─── Diff Formatting ─────────────────────────────────────────────────────────
 
-export function formatDiff(original: string, modified: string): string {
+export function formatDiff(original: string, modified: string, filename?: string): string {
   const origLines = original.split(/\r?\n/);
   const modLines = modified.split(/\r?\n/);
   const output: string[] = [];
+  const green = chalk.hex('#22C55E');
+  const red = chalk.hex('#EF4444');
+  const dm = chalk.dim;
 
   const maxLines = Math.max(origLines.length, modLines.length);
 
@@ -338,14 +328,14 @@ export function formatDiff(original: string, modified: string): string {
     const modLine = modLines[i];
 
     if (origLine === undefined && modLine !== undefined) {
-      output.push(chalk.green(`+ ${modLine}`));
+      output.push('  ' + green('+ ' + modLine));
     } else if (origLine !== undefined && modLine === undefined) {
-      output.push(chalk.red(`- ${origLine}`));
+      output.push('  ' + red('- ' + origLine));
     } else if (origLine !== modLine) {
-      output.push(chalk.red(`- ${origLine}`));
-      output.push(chalk.green(`+ ${modLine}`));
+      output.push('  ' + red('- ' + origLine));
+      output.push('  ' + green('+ ' + modLine));
     } else {
-      output.push(chalk.dim(`  ${origLine}`));
+      output.push('  ' + dm('  ' + origLine));
     }
   }
 

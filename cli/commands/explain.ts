@@ -19,6 +19,7 @@ import {
   printCommandError,
 } from '../shared.js';
 import { readStdin } from '../stdin.js';
+import { commandHeader, divider, palette } from '../ui.js';
 
 const EXPLAIN_SYSTEM_PROMPT = `You are Orion, an expert code explainer. Explain what the provided file does clearly and concisely.
 
@@ -33,8 +34,6 @@ Use simple language. Be thorough but not verbose.
 Format using markdown for readability.`;
 
 export async function explainCommand(filePath?: string): Promise<void> {
-  printHeader('Orion Code Explainer');
-
   // Check for piped stdin data
   const stdinData = await readStdin();
 
@@ -46,23 +45,27 @@ export async function explainCommand(filePath?: string): Promise<void> {
       process.exit(1);
     }
 
-    printFileInfo(file);
-    printDivider();
+    console.log(commandHeader('Orion Code Explainer', [
+      ['File', colors.file(file.resolvedPath)],
+      ['Language', `${file.language} \u00B7 ${file.lineCount} lines`],
+    ]));
     console.log();
 
     userMessage = `Explain this ${file.language} file (${file.fileName}):\n\n\`\`\`${file.language}\n${file.content}\n\`\`\``;
   } else if (stdinData) {
     const lineCount = stdinData.split('\n').length;
-    printInfo(`Explaining piped input... (${lineCount} lines)`);
-    printDivider();
+    console.log(commandHeader('Orion Code Explainer', [
+      ['Source', 'piped input'],
+      ['Lines', String(lineCount)],
+    ]));
     console.log();
 
     userMessage = `Explain this code:\n\n\`\`\`\n${stdinData}\n\`\`\``;
   } else {
     console.log();
     console.log(`  ${colors.error('Please provide a file path or pipe content via stdin.')}`);
-    console.log(`  ${colors.dim('Usage: orion explain <file>')}`);
-    console.log(`  ${colors.dim('       cat app.ts | orion explain')}`);
+    console.log(`  ${palette.dim('Usage: orion explain <file>')}`);
+    console.log(`  ${palette.dim('       cat app.ts | orion explain')}`);
     console.log();
     process.exit(1);
   }

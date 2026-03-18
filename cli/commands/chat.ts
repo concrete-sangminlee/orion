@@ -35,6 +35,17 @@ import {
   type ChatSession,
 } from '../utils.js';
 import { renderMarkdown } from '../markdown.js';
+import {
+  providerStatusList,
+  userMessageBox,
+  aiResponseHeader,
+  tokenCountFooter,
+  divider,
+  errorDisplay,
+  table as uiTable,
+  providerBadge,
+  palette,
+} from '../ui.js';
 
 const SYSTEM_PROMPT = `You are Orion, an expert AI coding assistant running in a terminal CLI.
 You help developers with coding questions, debugging, architecture, and best practices.
@@ -64,9 +75,12 @@ export async function chatCommand(): Promise<void> {
   const available = providers.filter(p => p.available);
 
   if (available.length === 0) {
-    console.log();
-    console.log(colors.error('  No AI providers available.'));
-    printInfo('Run `orion config` to set up API keys or start Ollama.');
+    console.log(errorDisplay('No AI provider available', [
+      'Set ANTHROPIC_API_KEY',
+      'Set OPENAI_API_KEY',
+      'Start Ollama (ollama serve)',
+      'Run: orion config',
+    ]));
     console.log();
     process.exit(1);
   }
@@ -85,17 +99,19 @@ export async function chatCommand(): Promise<void> {
     }
   }
 
-  // Show available providers
+  // Show available providers with premium status display
   console.log();
-  printInfo('Available providers:');
-  for (const p of providers) {
+  console.log(providerStatusList(providers.map(p => {
     const display = getProviderDisplay(p.provider);
-    const status = p.available
-      ? chalk.green('\u25CF') + ' ' + display.color(display.name) + chalk.dim(` (${p.model})`)
-      : chalk.red('\u25CB') + ' ' + chalk.dim(display.name + (p.reason ? ` - ${p.reason}` : ''));
-    const active = p.provider === activeProvider ? chalk.yellow(' <- active') : '';
-    console.log(`    ${status}${active}`);
-  }
+    return {
+      name: display.name,
+      provider: p.provider,
+      model: p.model,
+      available: p.available,
+      active: p.provider === activeProvider,
+      reason: p.reason,
+    };
+  })));
   console.log();
 
   // Show controls
@@ -132,12 +148,11 @@ export async function chatCommand(): Promise<void> {
   const stats: Record<string, { messages: number; tokens: number }> = {};
 
   function getProviderBadge(): string {
-    const display = getProviderDisplay(activeProvider);
-    return display.badge + chalk.dim(` ${activeModel}`);
+    return providerBadge(activeProvider, activeModel);
   }
 
   function prompt(): void {
-    process.stdout.write(`\n  ${getProviderBadge()}\n${colors.user('  You:')} `);
+    process.stdout.write(`\n  ${getProviderBadge()}\n${palette.blue.bold('  You:')} `);
   }
 
   function switchToNextProvider(): void {
@@ -197,17 +212,20 @@ export async function chatCommand(): Promise<void> {
       printInfo('Use /save to save the current session.');
       return;
     }
-    console.log(`\n${colors.label('  Saved Sessions:')}`);
     console.log();
-    for (const session of sessions) {
-      const date = new Date(session.timestamp).toLocaleString();
-      const provDisplay = getProviderDisplay(session.provider as AIProvider);
-      console.log(
-        `  ${colors.command(session.id)}  ${chalk.dim(date)}  ` +
-        `${provDisplay.color(provDisplay.name)} ${chalk.dim(`(${session.messageCount} msgs)`)}`
-      );
-      console.log(`    ${chalk.dim(session.preview)}`);
-    }
+    console.log(uiTable(
+      ['Session ID', 'Date', 'Provider', 'Messages'],
+      sessions.map(s => {
+        const date = new Date(s.timestamp).toLocaleDateString();
+        const provDisplay = getProviderDisplay(s.provider as AIProvider);
+        return [
+          colors.command(s.id),
+          palette.dim(date),
+          provDisplay.color(provDisplay.name),
+          palette.dim(String(s.messageCount)),
+        ];
+      })
+    ));
     console.log();
     printInfo('Use /load <id> to load a session.');
   }
@@ -468,6 +486,10 @@ ${colors.label('Model Shortcuts:')}
 
     if (handleSlashCommand(trimmed)) return;
 
+    // Display user message in a box
+    console.log();
+    console.log(userMessageBox(trimmed));
+
     history.push({ role: 'user', content: trimmed });
 
     const spinner = startSpinner('Thinking...');
@@ -475,36 +497,46 @@ ${colors.label('Model Shortcuts:')}
     let responseBuffer = '';
 
     const display = getProviderDisplay(activeProvider);
+    const responseStart = new Date();
 
     try {
       const messages: AIMessage[] = [systemMessage, ...history];
-
-      process.stdout.write(`\n  ${display.color(display.name + ':')} `);
 
       await streamChat(messages, {
         onToken(token: string) {
           if (firstToken) {
             stopSpinner(spinner);
             firstToken = false;
+            // Show AI response header
+            console.log();
+            console.log(aiResponseHeader(activeProvider, activeModel, responseStart));
           }
           responseBuffer += token;
           // Stream raw tokens for real-time feedback
           process.stdout.write(chalk.dim(token));
         },
         onComplete(fullText: string) {
-          if (firstToken) stopSpinner(spinner);
+          if (firstToken) {
+            stopSpinner(spinner);
+            console.log();
+            console.log(aiResponseHeader(activeProvider, activeModel, responseStart));
+          }
 
           // Clear streaming output and render as markdown
           process.stdout.write('\r\x1b[K');
           console.log();
           console.log(renderMarkdown(fullText));
 
+          // Show token count
+          const tokens = Math.ceil(fullText.length / 4);
+          console.log(tokenCountFooter(tokens));
+
           history.push({ role: 'assistant', content: fullText });
 
           // Update stats
           if (!stats[activeProvider]) stats[activeProvider] = { messages: 0, tokens: 0 };
           stats[activeProvider].messages++;
-          stats[activeProvider].tokens += Math.ceil(fullText.length / 4);
+          stats[activeProvider].tokens += tokens;
         },
         onError(error: Error) {
           stopSpinner(spinner, error.message, false);
@@ -512,8 +544,9 @@ ${colors.label('Model Shortcuts:')}
       }, activeProvider, activeModel);
     } catch (err: any) {
       if (firstToken) stopSpinner(spinner, err.message, false);
-      console.error(colors.error(`\n  Error: ${err.message}`));
-      printInfo('Check your provider configuration with `orion config`.');
+      console.log(errorDisplay(err.message, [
+        'Check your provider configuration with `orion config`.',
+      ]));
       // Remove the failed user message from history
       if (history.length > 0 && history[history.length - 1].role === 'user') {
         history.pop();

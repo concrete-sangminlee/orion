@@ -2,44 +2,54 @@
  * Orion CLI - Markdown Rendering for Terminal
  * Parses AI markdown responses and renders them with rich formatting.
  * Uses marked + marked-terminal + chalk for premium terminal output.
+ *
+ * Design: Purple gradient headings, boxed code blocks, triangle bullets,
+ * left-bordered blockquotes. Inspired by Warp and Claude Code aesthetics.
  */
 
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import chalk from 'chalk';
 
+// ─── Color Palette ──────────────────────────────────────────────────────────
+
+const purple = chalk.hex('#9B59B6');
+const violet = chalk.hex('#7C5CFC');
+const blue = chalk.hex('#38BDF8');
+const dm = chalk.dim;
+
 // ─── Configure marked with terminal renderer ────────────────────────────────
 
 marked.use(
   markedTerminal({
-    // Code blocks: yellow text
-    code: chalk.yellow,
+    // Code blocks: use a clean dim style
+    code: chalk.hex('#E2E8F0'),
 
-    // Inline code
-    codespan: chalk.bgGray.white,
+    // Inline code: dark bg + white text
+    codespan: chalk.bgHex('#2D2D2D').hex('#E2E8F0'),
 
     // Bold
     strong: chalk.bold.white,
 
     // Italic
-    em: chalk.italic.cyan,
+    em: chalk.italic.hex('#38BDF8'),
 
-    // Headings
-    firstHeading: chalk.hex('#B39DDB').underline.bold,
-    heading: chalk.hex('#90CAF9').bold,
+    // Headings: purple gradient
+    firstHeading: chalk.hex('#9B59B6').bold.underline,
+    heading: chalk.hex('#7C5CFC').bold,
 
-    // Blockquotes
-    blockquote: chalk.gray.italic,
+    // Blockquotes: dim italic (left border handled by marked-terminal)
+    blockquote: chalk.hex('#9B59B6').dim.italic,
 
-    // Lists
+    // Lists: triangle bullet
     listitem: chalk.reset,
 
     // Links
-    link: chalk.cyan.underline,
-    href: chalk.dim,
+    link: blue.underline,
+    href: dm,
 
     // Horizontal rules
-    hr: chalk.dim,
+    hr: dm,
 
     // Paragraphs
     paragraph: chalk.reset,
@@ -57,7 +67,7 @@ marked.use(
     unescape: true,
     emoji: false,
     width: 76,
-    showSectionPrefix: true,
+    showSectionPrefix: false,
     reflowText: false,
     tab: 2,
   })

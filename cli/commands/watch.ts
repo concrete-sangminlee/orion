@@ -24,6 +24,7 @@ import {
   loadProjectContext,
 } from '../utils.js';
 import { renderMarkdown } from '../markdown.js';
+import { commandHeader, divider, statusLine, palette } from '../ui.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -66,10 +67,10 @@ function formatTime(date: Date): string {
 
 function printWatchStatus(pattern: string, action: string, lastChange?: string, actionCount?: number): void {
   const now = formatTime(new Date());
-  const countStr = actionCount ? chalk.dim(` | Actions: ${actionCount}`) : '';
-  const lastStr = lastChange ? chalk.dim(` | Last: ${lastChange}`) : chalk.dim(' | Waiting...');
+  const countStr = actionCount ? palette.dim(` \u00B7 ${actionCount} actions`) : '';
+  const lastStr = lastChange ? palette.dim(` \u00B7 ${lastChange}`) : palette.dim(' \u00B7 waiting\u2026');
 
-  process.stdout.write(`\r\x1b[K  ${chalk.cyan('eye')} ${colors.dim(now)} Watching ${colors.primary(pattern)} -> ${colors.command(action)}${lastStr}${countStr}`);
+  process.stdout.write(`\r\x1b[K  ${palette.blue('\u25CF')} ${palette.dim(now)} ${palette.violet(pattern)} \u2192 ${colors.command(action)}${lastStr}${countStr}`);
 }
 
 // ─── File Change Handler ─────────────────────────────────────────────────────
@@ -103,9 +104,9 @@ async function handleFileChange(
 
   console.log();
   console.log();
-  printDivider();
-  console.log(`  ${chalk.cyan('>>>')} ${colors.file(fileName)} changed at ${formatTime(new Date())}`);
-  printDivider();
+  console.log(divider());
+  console.log(`  ${palette.blue('\u25B8')} ${colors.file(fileName)} changed at ${formatTime(new Date())}`);
+  console.log(divider());
 
   const systemPrompt = (ACTION_PROMPTS[action] || ACTION_PROMPTS.review)
     + '\n\nWorkspace context:\n' + context
@@ -150,7 +151,7 @@ async function handleFileChange(
 // ─── Main Command ────────────────────────────────────────────────────────────
 
 export async function watchCommand(pattern: string, options: WatchOptions = {}): Promise<void> {
-  printHeader('Orion Watch Mode');
+  console.log(commandHeader('Orion Watch Mode'));
 
   if (!pattern) {
     printError('File pattern required.');
