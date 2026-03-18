@@ -504,27 +504,16 @@ ${colors.label('Model Shortcuts:')}
 
       await streamChat(messages, {
         onToken(token: string) {
-          if (firstToken) {
-            stopSpinner(spinner);
-            firstToken = false;
-            // Show AI response header
-            console.log();
-            console.log(aiResponseHeader(activeProvider, activeModel, responseStart));
-          }
           responseBuffer += token;
-          // Stream raw tokens for real-time feedback
-          process.stdout.write(chalk.dim(token));
         },
         onComplete(fullText: string) {
-          if (firstToken) {
-            stopSpinner(spinner);
-            console.log();
-            console.log(aiResponseHeader(activeProvider, activeModel, responseStart));
-          }
+          stopSpinner(spinner);
 
-          // Clear streaming output and render as markdown
-          process.stdout.write('\r\x1b[K');
+          // Show AI response header
           console.log();
+          console.log(aiResponseHeader(activeProvider, activeModel, responseStart));
+
+          // Render as markdown (single output, no duplication)
           console.log(renderMarkdown(fullText));
 
           // Show token count

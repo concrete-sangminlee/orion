@@ -58,42 +58,26 @@ export function createStreamHandler(
     onResponse,
   } = options;
 
-  let firstToken = true;
   let fullText = '';
 
   const callbacks: AIStreamCallbacks = {
     onToken(token: string) {
-      if (firstToken) {
-        stopSpinner(spinner);
-        firstToken = false;
-        if (label) {
-          process.stdout.write(`\n  ${colors.label(label)} `);
-        }
-      }
       fullText += token;
-      if (showStreaming) {
-        process.stdout.write(chalk.dim(token));
-      }
+      // Don't print raw tokens - wait for onComplete to render once with markdown
     },
 
     onComplete(text: string) {
-      if (firstToken) stopSpinner(spinner);
+      stopSpinner(spinner);
       fullText = text;
 
-      if (showStreaming && markdown) {
-        // Clear the raw streamed text and re-render as markdown
-        // Move to a new line after streaming output
-        process.stdout.write('\r\x1b[K'); // clear current line
+      if (label) {
+        console.log(`\n  ${colors.label(label)}`);
       }
 
       if (markdown) {
-        // Print the full rendered markdown
-        console.log();
         console.log(renderMarkdown(text));
-      } else if (!showStreaming) {
-        console.log();
       } else {
-        console.log();
+        console.log('\n' + text);
       }
 
       onResponse?.(text);
