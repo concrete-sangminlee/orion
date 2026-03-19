@@ -630,3 +630,118 @@ export function validateModelName(model: string, provider?: string): { valid: bo
 
   return { valid: true };
 }
+
+// ─── Usage Metrics Tracking ──────────────────────────────────────────────────
+
+const METRICS_FILE = path.join(CONFIG_DIR, 'metrics.json');
+
+interface MetricsData {
+  firstUseDate: string;
+  lastUseDate: string;
+  sessionsCount: number;
+  commandsRun: Record<string, number>;
+  tokensUsed: Record<string, number>;
+  filesEdited: number;
+  filesReviewed: number;
+  filesFixed: number;
+}
+
+function loadMetricsInternal(): MetricsData {
+  const now = new Date().toISOString();
+  const empty: MetricsData = {
+    firstUseDate: now,
+    lastUseDate: now,
+    sessionsCount: 0,
+    commandsRun: {},
+    tokensUsed: {},
+    filesEdited: 0,
+    filesReviewed: 0,
+    filesFixed: 0,
+  };
+
+  if (!fs.existsSync(METRICS_FILE)) return empty;
+
+  try {
+    const raw = fs.readFileSync(METRICS_FILE, 'utf-8');
+    const data = JSON.parse(raw) as MetricsData;
+    return {
+      firstUseDate: data.firstUseDate || now,
+      lastUseDate: data.lastUseDate || now,
+      sessionsCount: data.sessionsCount || 0,
+      commandsRun: data.commandsRun || {},
+      tokensUsed: data.tokensUsed || {},
+      filesEdited: data.filesEdited || 0,
+      filesReviewed: data.filesReviewed || 0,
+      filesFixed: data.filesFixed || 0,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function saveMetricsInternal(metrics: MetricsData): void {
+  ensureConfigDir();
+  fs.writeFileSync(METRICS_FILE, JSON.stringify(metrics, null, 2), 'utf-8');
+}
+
+/**
+ * Track usage metrics for a command invocation.
+ * Updates command counts, token usage, and timestamps.
+ *
+ * @param command - The command name (e.g., 'chat', 'review', 'fix')
+ * @param tokens  - Optional token count consumed (attributed to the active provider)
+ * @param fileOp  - Optional file operation type to increment ('edited' | 'reviewed' | 'fixed')
+ *
+ * Usage:
+ *   trackUsage('chat');
+ *   trackUsage('review', 1200);
+ *   trackUsage('fix', 800, 'fixed');
+ *   trackUsage('edit', 500, 'edited');
+ */
+export function trackUsage(
+  command: string,
+  tokens?: number,
+  fileOp?: 'edited' | 'reviewed' | 'fixed'
+): void {
+  try {
+    const metrics = loadMetricsInternal();
+    const now = new Date().toISOString();
+
+    // Update timestamps
+    metrics.lastUseDate = now;
+
+    // Increment command count
+    metrics.commandsRun[command] = (metrics.commandsRun[command] || 0) + 1;
+
+    // Track tokens if provided
+    if (tokens && tokens > 0) {
+      const config = readConfig();
+      const provider = config.provider || 'ollama';
+      metrics.tokensUsed[provider] = (metrics.tokensUsed[provider] || 0) + tokens;
+    }
+
+    // Track file operations
+    if (fileOp === 'edited') metrics.filesEdited++;
+    if (fileOp === 'reviewed') metrics.filesReviewed++;
+    if (fileOp === 'fixed') metrics.filesFixed++;
+
+    saveMetricsInternal(metrics);
+  } catch {
+    // Silently ignore metrics errors - never break the actual command
+  }
+}
+
+/**
+ * Increment the session count in metrics.
+ * Call this when a new interactive session (chat, session resume) starts.
+ */
+export function trackSession(): void {
+  try {
+    const metrics = loadMetricsInternal();
+    metrics.sessionsCount++;
+    metrics.lastUseDate = new Date().toISOString();
+    saveMetricsInternal(metrics);
+  } catch {
+    // Silently ignore metrics errors
+  }
+}

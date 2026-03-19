@@ -142,7 +142,8 @@ program
     });
   });
 
-// ─── Commands (lazy-loaded for fast startup) ─────────────────────────────────
+// ─── Core Commands ───────────────────────────────────────────────────────────
+// chat · ask · explain · review · fix · edit · commit
 
 program
   .command('chat')
@@ -170,17 +171,14 @@ program
   });
 
 program
-  .command('edit <file>')
-  .description('AI-assisted file editing')
-  .option('--no-commit', 'Skip the auto-commit prompt after applying edits')
-  .action(async (file: string, opts?: { commit?: boolean }) => {
+  .command('explain [file]')
+  .description('AI-powered code explanation (accepts piped input)')
+  .action(async (file?: string) => {
     try {
-      const { editCommand } = await import('./commands/edit.js');
-      await editCommand(file, {
-        noCommit: opts?.commit === false,
-      });
+      const { explainCommand } = await import('./commands/explain.js');
+      await explainCommand(file);
     } catch (err: any) {
-      handleCommandError(err, 'edit', 'Check that the file exists and your AI provider is configured.');
+      handleCommandError(err, 'explain', 'Check that the file exists and your AI provider is configured.');
     }
   });
 
@@ -193,30 +191,6 @@ program
       await reviewCommand(file);
     } catch (err: any) {
       handleCommandError(err, 'review', 'Ensure the file exists or run from a project directory.');
-    }
-  });
-
-program
-  .command('commit')
-  .description('Generate AI commit message from staged changes')
-  .action(async () => {
-    try {
-      const { commitCommand } = await import('./commands/commit.js');
-      await commitCommand();
-    } catch (err: any) {
-      handleCommandError(err, 'commit', 'Stage changes with `git add` first, then run `orion commit`.');
-    }
-  });
-
-program
-  .command('explain [file]')
-  .description('AI-powered code explanation (accepts piped input)')
-  .action(async (file?: string) => {
-    try {
-      const { explainCommand } = await import('./commands/explain.js');
-      await explainCommand(file);
-    } catch (err: any) {
-      handleCommandError(err, 'explain', 'Check that the file exists and your AI provider is configured.');
     }
   });
 
@@ -240,165 +214,34 @@ program
   });
 
 program
-  .command('run <command>')
-  .description('Run a command with AI error analysis')
-  .option('--fix', 'Auto-apply AI-suggested fixes on failure')
-  .action(async (command: string, options: { fix?: boolean }) => {
+  .command('edit <file>')
+  .description('AI-assisted file editing')
+  .option('--no-commit', 'Skip the auto-commit prompt after applying edits')
+  .action(async (file: string, opts?: { commit?: boolean }) => {
     try {
-      const { runCommand } = await import('./commands/run.js');
-      await runCommand(command, { fix: options.fix });
-    } catch (err: any) {
-      handleCommandError(err, 'run', 'Ensure your AI provider is configured. Run `orion config`.');
-    }
-  });
-
-program
-  .command('test')
-  .description('Run tests with AI failure analysis or generate tests')
-  .option('--generate <file>', 'Generate tests for a source file')
-  .action(async (options: { generate?: string }) => {
-    try {
-      const { testCommand } = await import('./commands/test.js');
-      await testCommand({ generate: options.generate });
-    } catch (err: any) {
-      handleCommandError(err, 'test', 'Ensure your AI provider is configured. Run `orion config`.');
-    }
-  });
-
-program
-  .command('undo')
-  .description('Undo last file change (restore from backup or checkpoint)')
-  .option('--list', 'List available backups')
-  .option('--file <file>', 'Undo a specific file')
-  .option('--clean', 'Remove old backups (older than 7 days)')
-  .option('--checkpoint', 'List and restore workspace checkpoints (multi-file undo)')
-  .action(async (options: { list?: boolean; file?: string; clean?: boolean; checkpoint?: boolean }) => {
-    try {
-      const { undoCommand } = await import('./commands/undo.js');
-      await undoCommand(options);
-    } catch (err: any) {
-      handleCommandError(err, 'undo', 'Check that backups exist in .orion/backups/.');
-    }
-  });
-
-program
-  .command('status')
-  .description('Show Orion environment status')
-  .action(async () => {
-    try {
-      const { statusCommand } = await import('./commands/status.js');
-      await statusCommand();
-    } catch (err: any) {
-      handleCommandError(err, 'status');
-    }
-  });
-
-program
-  .command('init')
-  .description('Initialize Orion config in current project')
-  .action(async () => {
-    try {
-      const { initCommand } = await import('./commands/config.js');
-      await initCommand();
-    } catch (err: any) {
-      handleCommandError(err, 'init', 'Make sure you have write permissions in the current directory.');
-    }
-  });
-
-program
-  .command('gui')
-  .description('Launch the Orion desktop app (Electron)')
-  .action(() => {
-    console.log();
-    console.log(colors.primary.bold('  Launching Orion IDE...'));
-    console.log();
-
-    try {
-      const { execSync } = require('child_process');
-      execSync('npm run electron:dev', {
-        stdio: 'inherit',
-        cwd: __dirname.includes('dist-cli')
-          ? require('path').resolve(__dirname, '..')
-          : process.cwd(),
-      });
-    } catch {
-      console.log();
-      printError('Could not launch Electron app.');
-      printInfo('Make sure you are in the Orion project directory.');
-      printInfo(`Run ${colors.command('npm run electron:dev')} manually.`);
-      console.log();
-    }
-  });
-
-program
-  .command('config')
-  .description('Configure API keys and preferences')
-  .action(async () => {
-    try {
-      const { configCommand } = await import('./commands/config.js');
-      await configCommand();
-    } catch (err: any) {
-      handleCommandError(err, 'config', 'Check file permissions for ~/.orion/config.json.');
-    }
-  });
-
-// ─── Multi-Agent & Competitive Features ──────────────────────────────────────
-
-program
-  .command('agent')
-  .description('Run multiple AI tasks in parallel (multi-agent)')
-  .argument('<tasks...>', 'Task descriptions to run in parallel')
-  .option('--parallel <n>', 'Max concurrent tasks (default: 3)', '3')
-  .option('--provider <name>', 'Force a specific AI provider for all tasks')
-  .option('--no-save', 'Do not save results to .orion/agents/')
-  .action(async (tasks: string[], options: { parallel?: string; provider?: string; save?: boolean }) => {
-    try {
-      const { agentCommand } = await import('./commands/agent.js');
-      await agentCommand(tasks, {
-        parallel: parseInt(options.parallel || '3', 10),
-        provider: options.provider,
-        save: options.save,
+      const { editCommand } = await import('./commands/edit.js');
+      await editCommand(file, {
+        noCommit: opts?.commit === false,
       });
     } catch (err: any) {
-      handleCommandError(err, 'agent', 'Ensure your AI provider is configured. Run `orion config`.');
+      handleCommandError(err, 'edit', 'Check that the file exists and your AI provider is configured.');
     }
   });
 
 program
-  .command('session')
-  .description('Manage named AI sessions')
-  .argument('<action>', 'Action: new, list, resume, export, delete')
-  .argument('[name]', 'Session name (required for new, resume, export, delete)')
-  .action(async (action: string, name?: string) => {
+  .command('commit')
+  .description('Generate AI commit message from staged changes')
+  .action(async () => {
     try {
-      const { sessionCommand } = await import('./commands/session.js');
-      await sessionCommand(action, name);
+      const { commitCommand } = await import('./commands/commit.js');
+      await commitCommand();
     } catch (err: any) {
-      handleCommandError(err, 'session', 'Check file permissions for ~/.orion/sessions/.');
+      handleCommandError(err, 'commit', 'Stage changes with `git add` first, then run `orion commit`.');
     }
   });
 
-program
-  .command('watch')
-  .description('Watch files and auto-run AI actions on change')
-  .argument('<pattern>', 'Glob pattern for files to watch (e.g., "*.ts", "src/**")')
-  .option('--on-change <action>', 'Action to run: review, fix, explain, ask (default: review)', 'review')
-  .option('--debounce <ms>', 'Debounce delay in ms (default: 300)', '300')
-  .option('--ignore <patterns>', 'Comma-separated ignore patterns', 'node_modules,dist,build,.git,.orion')
-  .action(async (pattern: string, options: { onChange?: string; debounce?: string; ignore?: string }) => {
-    try {
-      const { watchCommand } = await import('./commands/watch.js');
-      await watchCommand(pattern, {
-        onChange: options.onChange,
-        debounce: parseInt(options.debounce || '300', 10),
-        ignore: options.ignore,
-      });
-    } catch (err: any) {
-      handleCommandError(err, 'watch', 'Ensure chokidar is installed and your AI provider is configured.');
-    }
-  });
-
-// ─── Codebase-wide AI Operations ─────────────────────────────────────────────
+// ─── Code Commands ───────────────────────────────────────────────────────────
+// search · diff · pr · run · test · agent · refactor · compare
 
 program
   .command('search <pattern>')
@@ -450,53 +293,50 @@ program
   });
 
 program
-  .command('compare [files...]')
-  .description('Compare two files or technology approaches with AI analysis')
-  .option('--approach <question>', 'Compare technology approaches instead of files')
-  .action(async (files: string[], options: { approach?: string }) => {
+  .command('run <command>')
+  .description('Run a command with AI error analysis')
+  .option('--fix', 'Auto-apply AI-suggested fixes on failure')
+  .action(async (command: string, options: { fix?: boolean }) => {
     try {
-      const { compareCommand } = await import('./commands/compare.js');
-      await compareCommand(files, {
-        approach: options.approach,
-      });
+      const { runCommand } = await import('./commands/run.js');
+      await runCommand(command, { fix: options.fix });
     } catch (err: any) {
-      handleCommandError(err, 'compare', 'Ensure your AI provider is configured. Run `orion config`.');
-    }
-  });
-
-// ─── Security & Type Analysis ─────────────────────────────────────────────
-
-program
-  .command('security [target]')
-  .description('Scan for security vulnerabilities (SQL injection, XSS, secrets, etc.)')
-  .option('--owasp', 'Check against OWASP Top 10 categories')
-  .action(async (target: string | undefined, options: { owasp?: boolean }) => {
-    try {
-      const { securityCommand } = await import('./commands/security.js');
-      await securityCommand(target, { owasp: options.owasp });
-    } catch (err: any) {
-      handleCommandError(err, 'security', 'Ensure your AI provider is configured. Run `orion config`.');
+      handleCommandError(err, 'run', 'Ensure your AI provider is configured. Run `orion config`.');
     }
   });
 
 program
-  .command('typecheck <target>')
-  .description('AI-powered type analysis and improvement suggestions')
-  .option('--strict', 'Strict mode: flag all type safety issues')
-  .option('--convert', 'Suggest full JS-to-TypeScript conversion')
-  .action(async (target: string, options: { strict?: boolean; convert?: boolean }) => {
+  .command('test')
+  .description('Run tests with AI failure analysis or generate tests')
+  .option('--generate <file>', 'Generate tests for a source file')
+  .action(async (options: { generate?: string }) => {
     try {
-      const { typecheckCommand } = await import('./commands/typecheck.js');
-      await typecheckCommand(target, {
-        strict: options.strict,
-        convert: options.convert,
-      });
+      const { testCommand } = await import('./commands/test.js');
+      await testCommand({ generate: options.generate });
     } catch (err: any) {
-      handleCommandError(err, 'typecheck', 'Ensure the file exists and your AI provider is configured.');
+      handleCommandError(err, 'test', 'Ensure your AI provider is configured. Run `orion config`.');
     }
   });
 
-// ─── Refactoring & Diagnostics ────────────────────────────────────────────
+program
+  .command('agent')
+  .description('Run multiple AI tasks in parallel (multi-agent)')
+  .argument('<tasks...>', 'Task descriptions to run in parallel')
+  .option('--parallel <n>', 'Max concurrent tasks (default: 3)', '3')
+  .option('--provider <name>', 'Force a specific AI provider for all tasks')
+  .option('--no-save', 'Do not save results to .orion/agents/')
+  .action(async (tasks: string[], options: { parallel?: string; provider?: string; save?: boolean }) => {
+    try {
+      const { agentCommand } = await import('./commands/agent.js');
+      await agentCommand(tasks, {
+        parallel: parseInt(options.parallel || '3', 10),
+        provider: options.provider,
+        save: options.save,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'agent', 'Ensure your AI provider is configured. Run `orion config`.');
+    }
+  });
 
 program
   .command('refactor <target>')
@@ -520,18 +360,22 @@ program
   });
 
 program
-  .command('doctor')
-  .description('Run a full health check of the Orion environment')
-  .action(async () => {
+  .command('compare [files...]')
+  .description('Compare two files or technology approaches with AI analysis')
+  .option('--approach <question>', 'Compare technology approaches instead of files')
+  .action(async (files: string[], options: { approach?: string }) => {
     try {
-      const { doctorCommand } = await import('./commands/doctor.js');
-      await doctorCommand();
+      const { compareCommand } = await import('./commands/compare.js');
+      await compareCommand(files, {
+        approach: options.approach,
+      });
     } catch (err: any) {
-      handleCommandError(err, 'doctor');
+      handleCommandError(err, 'compare', 'Ensure your AI provider is configured. Run `orion config`.');
     }
   });
 
-// ─── Planning & Code Generation ──────────────────────────────────────────────
+// ─── Generate Commands ───────────────────────────────────────────────────────
+// plan · generate · docs · snippet
 
 program
   .command('plan <task>')
@@ -559,7 +403,44 @@ program
     }
   });
 
-// ─── Interactive & Analysis Tools ─────────────────────────────────────────────
+program
+  .command('docs [target]')
+  .description('AI-powered documentation generator (JSDoc, README, API docs)')
+  .option('--readme', 'Generate a README.md for the directory')
+  .option('--api', 'Generate API documentation')
+  .action(async (target?: string, options?: { readme?: boolean; api?: boolean }) => {
+    try {
+      const { docsCommand } = await import('./commands/docs.js');
+      await docsCommand(target, {
+        readme: options?.readme,
+        api: options?.api,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'docs', 'Ensure your AI provider is configured. Run `orion config`.');
+    }
+  });
+
+program
+  .command('snippet <action> [name]')
+  .description('Manage code snippets (save, list, search, use, generate)')
+  .option('--file <file>', 'Source file to extract snippet from')
+  .option('--lines <range>', 'Line range to extract (e.g., 10-25)')
+  .option('--tag <tags>', 'Comma-separated tags for the snippet')
+  .action(async (action: string, name: string | undefined, options: { file?: string; lines?: string; tag?: string }) => {
+    try {
+      const { snippetCommand } = await import('./commands/snippet.js');
+      await snippetCommand(action, name, {
+        file: options.file,
+        lines: options.lines,
+        tag: options.tag,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'snippet', 'Run `orion snippet --help` for usage.');
+    }
+  });
+
+// ─── Tools Commands ──────────────────────────────────────────────────────────
+// shell · todo · fetch · changelog · migrate · deps
 
 program
   .command('shell')
@@ -590,29 +471,6 @@ program
     }
   });
 
-// ─── Snippet Manager ─────────────────────────────────────────────────────────
-
-program
-  .command('snippet <action> [name]')
-  .description('Manage code snippets (save, list, search, use, generate)')
-  .option('--file <file>', 'Source file to extract snippet from')
-  .option('--lines <range>', 'Line range to extract (e.g., 10-25)')
-  .option('--tag <tags>', 'Comma-separated tags for the snippet')
-  .action(async (action: string, name: string | undefined, options: { file?: string; lines?: string; tag?: string }) => {
-    try {
-      const { snippetCommand } = await import('./commands/snippet.js');
-      await snippetCommand(action, name, {
-        file: options.file,
-        lines: options.lines,
-        tag: options.tag,
-      });
-    } catch (err: any) {
-      handleCommandError(err, 'snippet', 'Run `orion snippet --help` for usage.');
-    }
-  });
-
-// ─── Web Fetch ───────────────────────────────────────────────────────────────
-
 program
   .command('fetch <url>')
   .description('Fetch a URL and display text content (pipe to orion ask for AI analysis)')
@@ -625,8 +483,6 @@ program
       handleCommandError(err, 'fetch', 'Check the URL and your network connection.');
     }
   });
-
-// ─── Changelog, Migration & Dependency Analysis ──────────────────────────────
 
 program
   .command('changelog')
@@ -679,7 +535,8 @@ program
     }
   });
 
-// ─── Debug, Benchmark & Docs ─────────────────────────────────────────────────
+// ─── Analysis Commands ───────────────────────────────────────────────────────
+// debug · benchmark · security · typecheck
 
 program
   .command('debug [file]')
@@ -716,23 +573,160 @@ program
   });
 
 program
-  .command('docs [target]')
-  .description('AI-powered documentation generator (JSDoc, README, API docs)')
-  .option('--readme', 'Generate a README.md for the directory')
-  .option('--api', 'Generate API documentation')
-  .action(async (target?: string, options?: { readme?: boolean; api?: boolean }) => {
+  .command('security [target]')
+  .description('Scan for security vulnerabilities (SQL injection, XSS, secrets, etc.)')
+  .option('--owasp', 'Check against OWASP Top 10 categories')
+  .action(async (target: string | undefined, options: { owasp?: boolean }) => {
     try {
-      const { docsCommand } = await import('./commands/docs.js');
-      await docsCommand(target, {
-        readme: options?.readme,
-        api: options?.api,
-      });
+      const { securityCommand } = await import('./commands/security.js');
+      await securityCommand(target, { owasp: options.owasp });
     } catch (err: any) {
-      handleCommandError(err, 'docs', 'Ensure your AI provider is configured. Run `orion config`.');
+      handleCommandError(err, 'security', 'Ensure your AI provider is configured. Run `orion config`.');
     }
   });
 
-// ─── Shell Completions ───────────────────────────────────────────────────────
+program
+  .command('typecheck <target>')
+  .description('AI-powered type analysis and improvement suggestions')
+  .option('--strict', 'Strict mode: flag all type safety issues')
+  .option('--convert', 'Suggest full JS-to-TypeScript conversion')
+  .action(async (target: string, options: { strict?: boolean; convert?: boolean }) => {
+    try {
+      const { typecheckCommand } = await import('./commands/typecheck.js');
+      await typecheckCommand(target, {
+        strict: options.strict,
+        convert: options.convert,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'typecheck', 'Ensure the file exists and your AI provider is configured.');
+    }
+  });
+
+// ─── Safety Commands ─────────────────────────────────────────────────────────
+// undo · status · doctor
+
+program
+  .command('undo')
+  .description('Undo last file change (restore from backup or checkpoint)')
+  .option('--list', 'List available backups')
+  .option('--file <file>', 'Undo a specific file')
+  .option('--clean', 'Remove old backups (older than 7 days)')
+  .option('--checkpoint', 'List and restore workspace checkpoints (multi-file undo)')
+  .action(async (options: { list?: boolean; file?: string; clean?: boolean; checkpoint?: boolean }) => {
+    try {
+      const { undoCommand } = await import('./commands/undo.js');
+      await undoCommand(options);
+    } catch (err: any) {
+      handleCommandError(err, 'undo', 'Check that backups exist in .orion/backups/.');
+    }
+  });
+
+program
+  .command('status')
+  .description('Show Orion environment status')
+  .action(async () => {
+    try {
+      const { statusCommand } = await import('./commands/status.js');
+      await statusCommand();
+    } catch (err: any) {
+      handleCommandError(err, 'status');
+    }
+  });
+
+program
+  .command('doctor')
+  .description('Run a full health check of the Orion environment')
+  .action(async () => {
+    try {
+      const { doctorCommand } = await import('./commands/doctor.js');
+      await doctorCommand();
+    } catch (err: any) {
+      handleCommandError(err, 'doctor');
+    }
+  });
+
+// ─── Session Commands ────────────────────────────────────────────────────────
+// session · watch · config · init · gui · completions
+
+program
+  .command('session')
+  .description('Manage named AI sessions')
+  .argument('<action>', 'Action: new, list, resume, export, delete')
+  .argument('[name]', 'Session name (required for new, resume, export, delete)')
+  .action(async (action: string, name?: string) => {
+    try {
+      const { sessionCommand } = await import('./commands/session.js');
+      await sessionCommand(action, name);
+    } catch (err: any) {
+      handleCommandError(err, 'session', 'Check file permissions for ~/.orion/sessions/.');
+    }
+  });
+
+program
+  .command('watch')
+  .description('Watch files and auto-run AI actions on change')
+  .argument('<pattern>', 'Glob pattern for files to watch (e.g., "*.ts", "src/**")')
+  .option('--on-change <action>', 'Action to run: review, fix, explain, ask (default: review)', 'review')
+  .option('--debounce <ms>', 'Debounce delay in ms (default: 300)', '300')
+  .option('--ignore <patterns>', 'Comma-separated ignore patterns', 'node_modules,dist,build,.git,.orion')
+  .action(async (pattern: string, options: { onChange?: string; debounce?: string; ignore?: string }) => {
+    try {
+      const { watchCommand } = await import('./commands/watch.js');
+      await watchCommand(pattern, {
+        onChange: options.onChange,
+        debounce: parseInt(options.debounce || '300', 10),
+        ignore: options.ignore,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'watch', 'Ensure chokidar is installed and your AI provider is configured.');
+    }
+  });
+
+program
+  .command('config')
+  .description('Configure API keys and preferences')
+  .action(async () => {
+    try {
+      const { configCommand } = await import('./commands/config.js');
+      await configCommand();
+    } catch (err: any) {
+      handleCommandError(err, 'config', 'Check file permissions for ~/.orion/config.json.');
+    }
+  });
+
+program
+  .command('init')
+  .description('Initialize Orion config in current project')
+  .action(async () => {
+    try {
+      const { initCommand } = await import('./commands/config.js');
+      await initCommand();
+    } catch (err: any) {
+      handleCommandError(err, 'init', 'Make sure you have write permissions in the current directory.');
+    }
+  });
+
+program
+  .command('gui')
+  .description('Launch the Orion desktop app (Electron)')
+  .action(async () => {
+    console.log();
+    console.log(colors.primary.bold('  Launching Orion IDE...'));
+    console.log();
+
+    try {
+      const { execSync } = await import('child_process');
+      const path = await import('path');
+      execSync('npm run electron:dev', {
+        stdio: 'inherit',
+        cwd: __dirname.includes('dist-cli')
+          ? path.resolve(__dirname, '..')
+          : process.cwd(),
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'gui', 'Make sure you are in the Orion project directory. Run `npm run electron:dev` manually.');
+    }
+  });
 
 program
   .command('completions <shell>')
@@ -746,7 +740,8 @@ program
     }
   });
 
-// ─── Git Hooks & Aliases ─────────────────────────────────────────────────────
+// ─── Git Commands ────────────────────────────────────────────────────────────
+// hooks · alias
 
 program
   .command('hooks <action>')
@@ -777,7 +772,8 @@ program
     }
   });
 
-// ─── Tutorial & Examples ─────────────────────────────────────────────────────
+// ─── Help Commands ───────────────────────────────────────────────────────────
+// tutorial · examples · update
 
 program
   .command('tutorial')
@@ -804,6 +800,39 @@ program
     }
   });
 
+program
+  .command('update')
+  .description('Check for updates and show upgrade instructions')
+  .action(async () => {
+    try {
+      console.log();
+      console.log(colors.primary.bold(`  Orion CLI v${CURRENT_VERSION}`));
+      console.log();
+      const { execSync } = await import('child_process');
+      let latestVersion: string | null = null;
+      try {
+        latestVersion = execSync(`npm view ${PACKAGE_NAME} version`, {
+          timeout: 10000,
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+      } catch {
+        latestVersion = null;
+      }
+      if (latestVersion && latestVersion !== CURRENT_VERSION) {
+        console.log(chalk.yellow(`  Update available: ${CURRENT_VERSION} \u2192 ${latestVersion}`));
+        console.log(chalk.dim(`  Run: npm i -g ${PACKAGE_NAME}`));
+      } else if (latestVersion) {
+        console.log(chalk.green('  You are on the latest version.'));
+      } else {
+        console.log(chalk.dim('  Could not check for updates (network error or npm unavailable).'));
+      }
+      console.log();
+    } catch (err: any) {
+      handleCommandError(err, 'update', 'Check your network connection.');
+    }
+  });
+
 // ─── Default Action (no command) ─────────────────────────────────────────────
 
 program.action(() => {
@@ -811,7 +840,7 @@ program.action(() => {
 
   // ─── Categorized Quick Reference ────────────────────────────────────────
   const category = (label: string, cmds: string) => {
-    const padded = (label + ':').padEnd(10);
+    const padded = (label + ':').padEnd(12);
     return `    ${palette.violet.bold(padded)}${cmds}`;
   };
 
@@ -821,14 +850,14 @@ program.action(() => {
   console.log(palette.violet.bold('  Commands'));
   console.log();
   console.log(category('Core', [cn('chat'), cn('ask'), cn('explain'), cn('review'), cn('fix'), cn('edit'), cn('commit')].join(sep)));
-  console.log(category('Code', [cn('search'), cn('diff'), cn('pr'), cn('run'), cn('test'), cn('agent'), cn('refactor')].join(sep)));
-  console.log(category('Generate', [cn('plan'), cn('generate'), cn('docs')].join(sep)));
-  console.log(category('Tools', [cn('shell'), cn('todo'), cn('fetch'), cn('changelog'), cn('migrate'), cn('deps'), cn('snippet'), cn('compare')].join(sep)));
+  console.log(category('Code', [cn('search'), cn('diff'), cn('pr'), cn('run'), cn('test'), cn('agent'), cn('refactor'), cn('compare')].join(sep)));
+  console.log(category('Generate', [cn('plan'), cn('generate'), cn('docs'), cn('snippet')].join(sep)));
+  console.log(category('Tools', [cn('shell'), cn('todo'), cn('fetch'), cn('changelog'), cn('migrate'), cn('deps')].join(sep)));
   console.log(category('Analysis', [cn('debug'), cn('benchmark'), cn('security'), cn('typecheck')].join(sep)));
   console.log(category('Safety', [cn('undo'), cn('status'), cn('doctor')].join(sep)));
+  console.log(category('Session', [cn('session'), cn('watch'), cn('config'), cn('init'), cn('gui'), cn('completions')].join(sep)));
   console.log(category('Git', [cn('hooks'), cn('alias')].join(sep)));
-  console.log(category('Session', [cn('session'), cn('watch'), cn('config'), cn('init'), cn('completions')].join(sep)));
-  console.log(category('Help', [cn('tutorial'), cn('examples')].join(sep)));
+  console.log(category('Help', [cn('tutorial'), cn('examples'), cn('update')].join(sep)));
   console.log();
 
   // ─── Detailed Command List ──────────────────────────────────────────────
@@ -848,6 +877,7 @@ program.action(() => {
   console.log(cmd('orion fix', '[file]', 'Find and fix issues'));
   console.log(cmd('orion fix', '--auto [file]', 'Fix, test, iterate until passing'));
   console.log(cmd('orion edit', '<file>', 'AI-assisted file editing'));
+  console.log(cmd('orion commit', '', 'AI commit message from staged changes'));
   console.log();
   console.log(palette.violet.bold('  Code'));
   console.log();
@@ -865,6 +895,8 @@ program.action(() => {
   console.log(cmd('orion refactor', '<file> --extract', 'Extract code into a function'));
   console.log(cmd('orion refactor', '<file> --simplify', 'Simplify complex code'));
   console.log(cmd('orion refactor', '<dir> --unused', 'Find unused exports/imports'));
+  console.log(cmd('orion compare', '<f1> <f2>', 'Compare two files with AI'));
+  console.log(cmd('orion compare', '--approach "Q"', 'Compare tech approaches'));
   console.log();
   console.log(palette.violet.bold('  Generate'));
   console.log();
@@ -879,6 +911,11 @@ program.action(() => {
   console.log(cmd('orion docs', '<file>', 'Generate JSDoc/docstrings'));
   console.log(cmd('orion docs', '<dir> --readme', 'Generate README for directory'));
   console.log(cmd('orion docs', '<file> --api', 'Generate API documentation'));
+  console.log(cmd('orion snippet', 'save "name" --file f', 'Save code snippet from file'));
+  console.log(cmd('orion snippet', 'list', 'List all saved snippets'));
+  console.log(cmd('orion snippet', 'search "query"', 'Search snippets by keyword'));
+  console.log(cmd('orion snippet', 'use "name"', 'Output snippet to stdout'));
+  console.log(cmd('orion snippet', 'generate "desc"', 'AI-generate a new snippet'));
   console.log();
   console.log(palette.violet.bold('  Tools'));
   console.log();
@@ -898,13 +935,6 @@ program.action(() => {
   console.log(cmd('orion deps', '--security', 'Security vulnerability audit'));
   console.log(cmd('orion deps', '--outdated', 'Find outdated packages'));
   console.log(cmd('orion deps', '--unused', 'Find unused dependencies'));
-  console.log(cmd('orion snippet', 'save "name" --file f', 'Save code snippet from file'));
-  console.log(cmd('orion snippet', 'list', 'List all saved snippets'));
-  console.log(cmd('orion snippet', 'search "query"', 'Search snippets by keyword'));
-  console.log(cmd('orion snippet', 'use "name"', 'Output snippet to stdout'));
-  console.log(cmd('orion snippet', 'generate "desc"', 'AI-generate a new snippet'));
-  console.log(cmd('orion compare', '<f1> <f2>', 'Compare two files with AI'));
-  console.log(cmd('orion compare', '--approach "Q"', 'Compare tech approaches'));
   console.log();
   console.log(palette.violet.bold('  Analysis'));
   console.log();
@@ -927,6 +957,15 @@ program.action(() => {
   console.log(cmd('orion status', '', 'Show environment status'));
   console.log(cmd('orion doctor', '', 'Full health check'));
   console.log();
+  console.log(palette.violet.bold('  Session'));
+  console.log();
+  console.log(cmd('orion session', '<action>', 'Manage named AI sessions'));
+  console.log(cmd('orion watch', '<pattern>', 'Watch files & auto-run AI'));
+  console.log(cmd('orion config', '', 'Configure API keys'));
+  console.log(cmd('orion init', '', 'Initialize Orion config'));
+  console.log(cmd('orion gui', '', 'Launch Orion desktop app'));
+  console.log(cmd('orion completions', '<shell>', 'Generate shell completions'));
+  console.log();
   console.log(palette.violet.bold('  Git'));
   console.log();
   console.log(cmd('orion hooks', 'install', 'Install Orion git hooks'));
@@ -937,20 +976,13 @@ program.action(() => {
   console.log(cmd('orion alias', 'list', 'List all aliases'));
   console.log(cmd('orion alias', 'remove r', 'Remove an alias'));
   console.log();
-  console.log(palette.violet.bold('  Session'));
-  console.log();
-  console.log(cmd('orion session', '<action>', 'Manage named AI sessions'));
-  console.log(cmd('orion watch', '<pattern>', 'Watch files & auto-run AI'));
-  console.log(cmd('orion config', '', 'Configure API keys'));
-  console.log(cmd('orion init', '', 'Initialize Orion config'));
-  console.log(cmd('orion completions', '<shell>', 'Generate shell completions'));
-  console.log();
   console.log(palette.violet.bold('  Help'));
   console.log();
   console.log(cmd('orion tutorial', '', 'Interactive getting-started tutorial'));
   console.log(cmd('orion tutorial', '--skip', 'Quick summary (non-interactive)'));
   console.log(cmd('orion examples', '', 'Show all usage examples'));
   console.log(cmd('orion examples', '<command>', 'Examples for a specific command'));
+  console.log(cmd('orion update', '', 'Check for latest version'));
   console.log();
   console.log(palette.violet.bold('  Pipe Support'));
   console.log();
