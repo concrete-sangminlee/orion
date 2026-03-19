@@ -375,7 +375,7 @@ program
   });
 
 // ─── Generate Commands ───────────────────────────────────────────────────────
-// plan · generate · docs · snippet
+// plan · generate · docs · snippet · scaffold
 
 program
   .command('plan <task>')
@@ -439,8 +439,25 @@ program
     }
   });
 
+program
+  .command('scaffold [template] [project-name]')
+  .description('Scaffold a new project from a template (react, next, express, etc.)')
+  .option('--list', 'List all available templates')
+  .option('--description <desc>', 'Project description for AI customization')
+  .action(async (template?: string, projectName?: string, options?: { list?: boolean; description?: string }) => {
+    try {
+      const { scaffoldCommand } = await import('./commands/scaffold.js');
+      await scaffoldCommand(template, projectName, {
+        list: options?.list,
+        description: options?.description,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'scaffold', 'Run `orion scaffold --list` to see available templates.');
+    }
+  });
+
 // ─── Tools Commands ──────────────────────────────────────────────────────────
-// shell · todo · fetch · changelog · migrate · deps
+// shell · todo · fetch · changelog · migrate · deps · format
 
 program
   .command('shell')
@@ -532,6 +549,23 @@ program
       });
     } catch (err: any) {
       handleCommandError(err, 'deps', 'Ensure a dependency manifest (package.json, etc.) exists and your AI provider is configured.');
+    }
+  });
+
+program
+  .command('format <target>')
+  .description('Format code using native formatter or AI (supports --check and --style)')
+  .option('--check', 'Check formatting without applying changes')
+  .option('--style <guide>', 'Enforce a specific style guide (airbnb, google, standard)')
+  .action(async (target: string, options: { check?: boolean; style?: string }) => {
+    try {
+      const { formatCommand } = await import('./commands/format.js');
+      await formatCommand(target, {
+        check: options.check,
+        style: options.style,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'format', 'Ensure the file/directory exists and your AI provider is configured.');
     }
   });
 
@@ -851,8 +885,8 @@ program.action(() => {
   console.log();
   console.log(category('Core', [cn('chat'), cn('ask'), cn('explain'), cn('review'), cn('fix'), cn('edit'), cn('commit')].join(sep)));
   console.log(category('Code', [cn('search'), cn('diff'), cn('pr'), cn('run'), cn('test'), cn('agent'), cn('refactor'), cn('compare')].join(sep)));
-  console.log(category('Generate', [cn('plan'), cn('generate'), cn('docs'), cn('snippet')].join(sep)));
-  console.log(category('Tools', [cn('shell'), cn('todo'), cn('fetch'), cn('changelog'), cn('migrate'), cn('deps')].join(sep)));
+  console.log(category('Generate', [cn('plan'), cn('generate'), cn('docs'), cn('snippet'), cn('scaffold')].join(sep)));
+  console.log(category('Tools', [cn('shell'), cn('todo'), cn('fetch'), cn('changelog'), cn('migrate'), cn('deps'), cn('format')].join(sep)));
   console.log(category('Analysis', [cn('debug'), cn('benchmark'), cn('security'), cn('typecheck')].join(sep)));
   console.log(category('Safety', [cn('undo'), cn('status'), cn('doctor')].join(sep)));
   console.log(category('Session', [cn('session'), cn('watch'), cn('config'), cn('init'), cn('gui'), cn('completions')].join(sep)));
@@ -916,6 +950,11 @@ program.action(() => {
   console.log(cmd('orion snippet', 'search "query"', 'Search snippets by keyword'));
   console.log(cmd('orion snippet', 'use "name"', 'Output snippet to stdout'));
   console.log(cmd('orion snippet', 'generate "desc"', 'AI-generate a new snippet'));
+  console.log(cmd('orion scaffold', '', 'Interactive project creation wizard'));
+  console.log(cmd('orion scaffold', 'react my-app', 'Create React project'));
+  console.log(cmd('orion scaffold', 'next my-app', 'Create Next.js project'));
+  console.log(cmd('orion scaffold', 'express my-api', 'Create Express API'));
+  console.log(cmd('orion scaffold', '--list', 'List available templates'));
   console.log();
   console.log(palette.violet.bold('  Tools'));
   console.log();
@@ -935,6 +974,9 @@ program.action(() => {
   console.log(cmd('orion deps', '--security', 'Security vulnerability audit'));
   console.log(cmd('orion deps', '--outdated', 'Find outdated packages'));
   console.log(cmd('orion deps', '--unused', 'Find unused dependencies'));
+  console.log(cmd('orion format', '<file>', 'Auto-format a file'));
+  console.log(cmd('orion format', '<dir> --check', 'Check formatting without changes'));
+  console.log(cmd('orion format', '<dir> --style airbnb', 'Format with specific style guide'));
   console.log();
   console.log(palette.violet.bold('  Analysis'));
   console.log();

@@ -5,7 +5,12 @@ import electronRenderer from 'vite-plugin-electron-renderer'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
+const isTest = process.env.VITEST === 'true'
+
 export default defineConfig({
+  test: {
+    // No extra test config needed now that electron plugins are excluded during tests
+  },
   base: './',
   build: {
     // Production source maps for debugging
@@ -95,26 +100,30 @@ export default defineConfig({
         return html.replace(/ crossorigin/g, '')
       },
     },
-    electron([
-      {
-        entry: 'electron/main.ts',
-        vite: {
-          build: {
-            outDir: 'dist-electron',
-            rollupOptions: {
-              external: ['node-pty', 'electron-store', 'chokidar', '@anthropic-ai/sdk', 'openai'],
+    // Exclude electron plugins during vitest runs - their Node built-in shims
+    // use require() which is not available in vitest's ESM environment
+    ...(!isTest ? [
+      electron([
+        {
+          entry: 'electron/main.ts',
+          vite: {
+            build: {
+              outDir: 'dist-electron',
+              rollupOptions: {
+                external: ['node-pty', 'electron-store', 'chokidar', '@anthropic-ai/sdk', 'openai'],
+              },
             },
           },
         },
-      },
-      {
-        entry: 'electron/preload.ts',
-        onstart(args) {
-          args.reload()
+        {
+          entry: 'electron/preload.ts',
+          onstart(args: { reload: () => void }) {
+            args.reload()
+          },
         },
-      },
-    ]),
-    electronRenderer(),
+      ]),
+      electronRenderer(),
+    ] : []),
   ],
   resolve: {
     alias: {
