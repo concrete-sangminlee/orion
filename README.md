@@ -1,314 +1,262 @@
-# Orion IDE
+<p align="center">
+  <strong>✦ O R I O N</strong><br>
+  <em>AI-Powered Coding Assistant & IDE</em><br><br>
+  <a href="#orion-cli">CLI</a> · <a href="#orion-ide">Desktop IDE</a> · <a href="#quick-start">Quick Start</a> · <a href="#commands">Commands</a>
+</p>
 
-**The AI-Powered Code Editor for the Modern Developer**
-
-<!-- Banner: The Orion IDE logo features the constellation Orion rendered inside a stylized "O" ring, with a gradient from purple to blue to green, set against a dark space-themed background. -->
-
-Orion IDE is a professional desktop code editor built on Electron, combining the power of Monaco Editor with multi-model AI integration, multi-agent orchestration, and a polished developer experience. Think VS Code meets Cursor -- fully open-source and extensible.
-
----
-
-## Screenshots
-
-<!-- TODO: Add screenshots -->
-<!--
-![Editor View](docs/screenshots/editor.png)
-![AI Chat](docs/screenshots/ai-chat.png)
-![Terminal](docs/screenshots/terminal.png)
-![Git Integration](docs/screenshots/git.png)
--->
-
-*Screenshots coming soon. Run `npm run dev` to see Orion IDE in action.*
+<p align="center">
+  <img src="https://img.shields.io/badge/version-2.0.0-7C5CFC?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-38BDF8?style=flat-square" alt="platform">
+  <img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="license">
+  <img src="https://img.shields.io/badge/AI-Claude%20%7C%20GPT%20%7C%20Ollama-9B59B6?style=flat-square" alt="ai">
+</p>
 
 ---
 
-## Feature Highlights
+## What is Orion?
 
-### Editor
+Orion is a **dual-mode AI coding tool** — a powerful **CLI** for the terminal and a full-featured **desktop IDE** built on Electron.
 
-- **Monaco Editor** -- syntax highlighting, minimap, bracket colorization, sticky scroll, code folding
-- **Multi-tab editing** with language auto-detection, pin/unpin, and split view
-- **Breadcrumb navigation** with symbol dropdown picker
-- **Inline AI editing** (Ctrl+K) with diff preview
-- **Ghost text completions** powered by AI
-- **Snippet engine** with tabstops, variables, and transforms
-- **Hex editor**, **image editor**, **Markdown preview**, **JSON tree viewer**, **CSV table viewer**
-
-### AI Integration
-
-- **Six AI providers**: Claude (Anthropic), GPT-4o (OpenAI), Kimi (Moonshot), Gemini (Google), NVIDIA NIM, Ollama (local)
-- **NVIDIA NIM models**: Llama 3.3, Nemotron, DeepSeek R1, Qwen 2.5
-- **Ollama local models** -- no API key required
-- **Agent/Chat dual mode** with streaming responses
-- **Multi-agent orchestration** panel (Sisyphus, Hephaestus, Prometheus, Oracle)
-- **AI Composer** for multi-file code generation
-- **Customizable prompts** -- edit system and user prompt templates
-- **Token counting** and cost estimation per conversation
-
-### File Management
-
-- **File Explorer** with context menu (new file, new folder, rename, delete)
-- **Quick Open** (Ctrl+P) with fuzzy matching
-- **Global search** with case-sensitive, whole-word, and regex support
-- **File watcher** for external change detection
-- **Recent files and projects** tracking
-- **Drag-and-drop** file support
-
-### Git Integration
-
-- **Source Control panel** with staging, unstaging, and commit
-- **Git blame** with per-line annotation
-- **Git graph** visualization
-- **Git stash** management
-- **Git timeline** for file history
-- **Merge conflict resolver** with 3-way merge view
-- **Branch info** in status bar with changed file count and sync status
-
-### Integrated Terminal
-
-- **xterm.js + node-pty** powered terminal
-- **Multiple sessions** with tab management
-- **Terminal profiles** for custom shell configurations
-- **Link detection** and click handling
-
-### Developer Tools
-
-- **Debug panel** with breakpoints, step controls, and debug console
-- **Testing panel** with test explorer and code coverage visualization
-- **Profiler panel** for performance analysis
-- **Problems panel** with diagnostics aggregation
-- **Output panel** with multiple channels
-- **Database**, **API client**, **Docker**, and **CI/CD** panels
-- **Notebook panel** for interactive computing
-
-### Customization
-
-- **Command Palette** (Ctrl+Shift+P) with fuzzy search
-- **Theme editor** with live preview
-- **Keybinding editor** with conflict detection
-- **Extension system** with host API and built-in extensions
-- **Settings sync** across devices
-- **Layout persistence** across sessions
+- **Orion CLI** — AI coding assistant in your terminal. Chat, review, fix, edit code with Claude, GPT, or local Ollama models. Hot-switch between providers mid-conversation.
+- **Orion IDE** — Professional desktop editor with Monaco, 18 themes, multi-agent orchestration, integrated terminal, and Git workflow.
 
 ---
 
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|---|---|
-| `Ctrl+P` | Quick Open (file search) |
-| `Ctrl+Shift+P` | Command Palette |
-| `Ctrl+B` | Toggle Sidebar |
-| `` Ctrl+` `` | Toggle Terminal |
-| `Ctrl+J` | Toggle Bottom Panel |
-| `Ctrl+L` | Focus Chat |
-| `Ctrl+,` | Open Settings |
-| `Ctrl+S` | Save File |
-| `Ctrl+Shift+E` | Explorer |
-| `Ctrl+Shift+F` | Search |
-| `Ctrl+Shift+G` | Source Control |
-| `Ctrl+K` | Inline AI Edit |
-
----
-
-## Installation
-
-### Download
-
-Pre-built binaries for Windows, macOS, and Linux are available on the [Releases](https://github.com/concrete-sangminlee/orion/releases) page.
-
-| Platform | Format |
-|---|---|
-| Windows | NSIS installer (.exe), Portable (.exe) |
-| macOS | DMG (.dmg), ZIP (.zip) |
-| Linux | AppImage, Debian (.deb), Snap (.snap) |
-
-### Build from Source
+## Quick Start
 
 ```bash
+# Clone & install
 git clone https://github.com/concrete-sangminlee/orion.git
 cd orion
 npm install
-npm run package
-```
 
-Platform-specific builds:
+# Use the CLI
+npm run cli:build
+npm install -g .
+orion chat
 
-```bash
-npm run package:win      # Windows
-npm run package:mac      # macOS
-npm run package:linux    # Linux
-npm run package:all      # All platforms
-```
-
----
-
-## Development Setup
-
-### Prerequisites
-
-- **Node.js** 18 or later (recommended: 22.x)
-- **npm** 9 or later
-- **C++ Build Tools** (required for `node-pty` native module):
-  - **Windows**: `npm install -g windows-build-tools` (PowerShell 관리자 권한) 또는 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) 설치
-  - **macOS**: `xcode-select --install`
-  - **Linux**: `sudo apt install build-essential python3`
-- (Optional) [Ollama](https://ollama.com) for local AI models
-
-### Getting Started
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/concrete-sangminlee/orion.git
-cd orion
-
-# 2. Install dependencies
-npm install
-
-# 3. Start (Electron + Vite dev server with hot reload)
+# Or launch the Desktop IDE
 npm run dev
 ```
 
-That's it! The app will open automatically.
+### Prerequisites
 
-### Available Scripts
+- **Node.js** 18+ (recommended: 22.x)
+- **C++ Build Tools** (for `node-pty`):
+  - Windows: `npm install -g windows-build-tools` 또는 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+  - macOS: `xcode-select --install`
+  - Linux: `sudo apt install build-essential python3`
+- (Optional) [Ollama](https://ollama.com) for free local AI: `ollama pull llama3.2`
 
-| Script | Description |
-|---|---|
-| `npm run dev` | Start Vite dev server with hot reload |
-| `npm run build` | Type-check and build for production |
-| `npm run preview` | Preview production build locally |
-| `npm test` | Run tests with Vitest |
-| `npm run electron:dev` | Build and launch in Electron |
-| `npm run icons` | Generate app icons from source PNG |
-| `npm run package` | Build and package for current platform |
-| `npm run package:all` | Build and package for all platforms |
+---
 
-### Setting Up Ollama (Optional)
+## Orion CLI
 
-```bash
-# Install Ollama
-winget install Ollama.Ollama   # Windows
-brew install ollama             # macOS
-curl -fsSL https://ollama.com/install.sh | sh  # Linux
+AI-powered coding assistant for the terminal. Cross-platform (Windows, macOS, Linux).
 
-# Pull a model
-ollama pull llama3.2
-
-# Ollama runs automatically on localhost:11434
-```
-
-### Generating App Icons
-
-Place a 1024x1024 PNG source image at `public/icon.png`, then:
+### Chat
 
 ```bash
-npm install -D electron-icon-builder
-npm run icons
+orion chat                              # Interactive AI chat
 ```
 
-This generates `build/icon.ico` (Windows), `build/icon.icns` (macOS), and `build/icons/*.png` (Linux). See `build/ICON_README.txt` for manual methods using ImageMagick.
+Chat commands:
+```
+/claude          → Switch to Claude (API key required)
+/gpt             → Switch to GPT (API key required)
+/ollama          → Switch to Ollama (local, free)
+/model <name>    → Change model (deepseek-r1, mistral, etc.)
+/models          → List all available models
+/switch          → Cycle to next provider
+/save            → Save session
+/history         → List saved sessions
+/load <id>       → Resume a session
+/stats           → Usage statistics
+/clear           → Clear history
+/exit            → Quit
+```
+
+### Code Commands
+
+```bash
+orion ask "question"                    # Quick one-shot question
+orion explain file.ts                   # AI code explanation
+orion review file.ts                    # AI code review with severity
+orion fix file.ts                       # Auto-detect and fix bugs
+orion edit file.ts                      # AI-assisted file editing
+orion commit                            # AI-generated commit message
+```
+
+### Multi-Agent
+
+```bash
+orion agent "task1" "task2" "task3"      # Run tasks in parallel
+orion agent "Review auth" "Add tests" --parallel 2
+```
+
+### Sessions
+
+```bash
+orion session new "project-name"        # Create named session
+orion session list                      # List all sessions
+orion session resume "project-name"     # Continue where you left off
+orion session export "project-name"     # Export as markdown
+orion session delete "project-name"     # Delete session
+```
+
+### Watch Mode
+
+```bash
+orion watch "*.ts" --on-change review   # Auto-review on file change
+orion watch "src/**" --on-change fix    # Auto-fix on change
+```
+
+### Unix Pipes
+
+```bash
+cat error.log | orion ask "What's wrong?"
+git diff | orion review
+cat app.ts | orion explain
+cat app.ts | orion fix > fixed.ts
+```
+
+### Pipeline Mode (CI/CD)
+
+```bash
+orion commit -y                         # Auto-confirm
+orion fix file.ts -y --quiet            # Silent auto-fix
+orion ask "question" --json             # Structured JSON output
+```
+
+### Configuration
+
+```bash
+orion config                            # Interactive API key setup
+orion init                              # Create .orion/context.md project memory
+```
+
+### Supported AI Providers
+
+| Provider | Models | Auth |
+|----------|--------|------|
+| **Ollama** (local) | llama3.2, deepseek-r1, mistral, qwen2.5-coder, + any | Free, no key |
+| **Anthropic** | Claude Sonnet 4, Opus 4, Haiku | API key |
+| **OpenAI** | GPT-4o, GPT-4o-mini, o3 | API key |
+
+---
+
+## Orion IDE
+
+Professional desktop code editor built on Electron + React + Monaco Editor.
+
+### Key Features
+
+**Editor** — Monaco with syntax highlighting, minimap, bracket colorization, inline AI editing (Ctrl+K), ghost text completions, snippet engine, hex/image/markdown editors
+
+**AI Integration** — 6 providers (Claude, GPT, Ollama, NVIDIA NIM, Kimi, Gemini), streaming chat, multi-agent orchestration, AI composer, customizable prompts
+
+**Git** — Source control panel, blame, graph, stash, timeline, merge conflict resolver, conventional commits
+
+**Terminal** — xterm.js + node-pty, multiple sessions, profiles, link detection
+
+**Dev Tools** — Debug panel, test explorer, code coverage, profiler, problems panel, database/API/Docker/CI-CD panels
+
+**Customization** — 18 built-in themes (dark + light), VS Code theme import, command palette, keybinding editor, extension system, 4 languages (EN/KO/JA/ZH)
+
+### Launch
+
+```bash
+npm run dev                             # Development with hot reload
+orion gui                               # From CLI
+```
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+P` | Quick Open |
+| `Ctrl+Shift+P` | Command Palette |
+| `Ctrl+B` | Toggle Sidebar |
+| `` Ctrl+` `` | Toggle Terminal |
+| `Ctrl+L` | Focus AI Chat |
+| `Ctrl+,` | Settings |
+| `Ctrl+K` | Inline AI Edit |
+| `Ctrl+Shift+E` | Explorer |
+| `Ctrl+Shift+F` | Search |
+| `Ctrl+Shift+G` | Source Control |
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Desktop framework | Electron 33 |
-| UI framework | React 19 + TypeScript 5.7 |
-| Code editor | Monaco Editor 0.52 |
+| Component | Technology |
+|-----------|-----------|
+| CLI | Node.js + Commander + Chalk + Ora + Marked |
+| Desktop | Electron 33 + React 19 + TypeScript 5.7 |
+| Editor | Monaco Editor 0.52 |
 | Terminal | xterm.js 5 + node-pty |
-| State management | Zustand 5 (20+ stores) |
-| Styling | TailwindCSS v4 |
-| Build tooling | Vite 6 + vite-plugin-electron |
-| AI clients | Anthropic SDK, OpenAI SDK |
-| Agent orchestration | oh-my-openagent (OMO) |
-| Icons | lucide-react |
-| Testing | Vitest + Testing Library |
+| State | Zustand 5 (33 stores) |
+| Styling | TailwindCSS v4 + 2,300-line design system |
+| Build | Vite 6 + esbuild |
+| AI | Anthropic SDK + OpenAI SDK + Ollama API |
 | Packaging | electron-builder 25 |
-
----
-
-## AI Providers
-
-| Provider | Models | API Key Required |
-|---|---|---|
-| Ollama | llama3.2, any local model | No |
-| Anthropic | Claude Sonnet | Yes |
-| OpenAI | GPT-4o | Yes |
-| NVIDIA NIM | Llama 3.3, Nemotron, DeepSeek R1, Qwen 2.5 | Yes (free at [build.nvidia.com](https://build.nvidia.com)) |
-| Moonshot | Kimi | Yes |
-| Google | Gemini | Yes |
-
-Configure API keys in **Settings** (Ctrl+,) under the AI section.
 
 ---
 
 ## Project Structure
 
 ```
-orion-ide/
-├── electron/                # Main process (Electron)
-│   ├── main.ts              # Electron entry point
-│   ├── preload.ts           # Context bridge (IPC)
-│   ├── ipc/                 # IPC handlers (filesystem, terminal, git, settings)
-│   ├── omo-bridge/          # AI client & multi-agent orchestration
-│   ├── filesystem/          # File operations & watcher
-│   └── terminal/            # Terminal session manager
-├── src/                     # Renderer process (React)
-│   ├── components/          # UI components (TitleBar, ActivityBar, TabBar, ...)
-│   ├── panels/              # Main panels (Editor, Chat, FileExplorer, ...)
-│   ├── store/               # Zustand stores (editor, chat, files, agents, ...)
-│   ├── hooks/               # Custom hooks (useIpc, useOmo, useKeyboard, ...)
-│   ├── utils/               # Utilities (search, git, LSP, formatting, ...)
-│   ├── providers/           # Monaco providers (code actions, language, AI)
-│   ├── extensions/          # Extension system & built-in extensions
-│   ├── themes/              # Theme definitions
-│   ├── i18n/                # Internationalization
-│   └── globals.css          # Global theme & styles
-├── shared/                  # Shared types & constants
-├── public/                  # Static assets (icon.svg)
-├── build/                   # Packaging resources (icons, entitlements)
-├── electron-builder.yml     # Electron Builder configuration
-├── vite.config.ts           # Vite configuration
-├── tsconfig.json            # TypeScript configuration
+orion/
+├── cli/                    # CLI tool
+│   ├── index.ts            # Entry point (Commander)
+│   ├── ai-client.ts        # Multi-provider AI client
+│   ├── ui.ts               # Premium UI components
+│   ├── markdown.ts         # Terminal markdown renderer
+│   ├── shared.ts           # Shared patterns
+│   ├── pipeline.ts         # CI/CD pipeline mode
+│   ├── stdin.ts            # Unix pipe support
+│   └── commands/           # 12 commands
+├── electron/               # Desktop main process
+│   ├── main.ts             # Electron entry
+│   ├── preload.ts          # IPC bridge
+│   └── ipc/                # IPC handlers
+├── src/                    # Desktop renderer (React)
+│   ├── components/         # 60+ UI components
+│   ├── panels/             # 30+ workspace panels
+│   ├── store/              # 33 Zustand stores
+│   ├── themes/             # 18 built-in themes
+│   └── i18n/               # 4 languages
+├── shared/                 # Shared types & constants
 └── package.json
 ```
 
 ---
 
+## Scripts
+
+| Script | Description |
+|--------|-------------|
+| `npm run dev` | Launch desktop IDE with hot reload |
+| `npm run cli:build` | Build CLI tool |
+| `npm run cli:dev` | Run CLI in dev mode |
+| `npm run build` | Production build |
+| `npm run package:win` | Package for Windows |
+| `npm run package:mac` | Package for macOS |
+| `npm run package:linux` | Package for Linux |
+| `npm test` | Run tests |
+
+---
+
 ## Contributing
 
-Contributions are welcome! Here is how to get started:
-
-1. **Fork** the repository
-2. **Create a branch** for your feature or fix: `git checkout -b feat/my-feature`
-3. **Make your changes** and ensure tests pass: `npm test`
-4. **Commit** with a descriptive message following [Conventional Commits](https://www.conventionalcommits.org/)
-5. **Push** to your fork and open a **Pull Request**
-
-### Guidelines
-
-- Follow the existing code style (see `.prettierrc` for formatting rules)
-- Write tests for new features where applicable
-- Keep pull requests focused on a single change
-- Update documentation if your change affects user-facing behavior
-
-### Reporting Issues
-
-Use [GitHub Issues](https://github.com/concrete-sangminlee/orion/issues) to report bugs or request features. Please include:
-
-- Steps to reproduce the issue
-- Expected vs actual behavior
-- OS, Node.js version, and Orion IDE version
+1. Fork the repository
+2. Create a branch: `git checkout -b feat/my-feature`
+3. Make changes and test: `npm test`
+4. Commit with [Conventional Commits](https://www.conventionalcommits.org/)
+5. Open a Pull Request
 
 ---
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
-
----
-
-*Built with Orion IDE by the Orion Team*
+[MIT](LICENSE)
