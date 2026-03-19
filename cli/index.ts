@@ -1040,6 +1040,75 @@ program
     }
   });
 
+// ─── Data Commands ───────────────────────────────────────────────────────────
+// csv · http · diff-files · stats
+
+program
+  .command('csv [file]')
+  .description('CSV/JSON data helper (AI analysis, natural language queries, format conversion)')
+  .option('--query <query>', 'Natural language query against the data')
+  .option('--convert <format>', 'Convert between CSV and JSON (target format: csv or json)')
+  .action(async (file?: string, options?: { query?: string; convert?: string }) => {
+    try {
+      const { csvCommand } = await import('./commands/csv.js');
+      await csvCommand(file, {
+        query: options?.query,
+        convert: options?.convert,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'csv', 'Check that the data file exists and is valid CSV/JSON.');
+    }
+  });
+
+program
+  .command('http [method] [url]')
+  .description('HTTP request helper (make requests, pretty-print responses, convert curl to code)')
+  .option('--data <body>', 'Request body (JSON string)')
+  .option('-H, --header <headers...>', 'Request headers (format: "Key: Value")')
+  .option('--curl <command>', 'Convert a curl command to JS/Python/Go code')
+  .action(async (method?: string, url?: string, options?: { data?: string; header?: string[]; curl?: string }) => {
+    try {
+      const { httpCommand } = await import('./commands/http.js');
+      await httpCommand(method, url, {
+        data: options?.data,
+        header: options?.header,
+        curl: options?.curl,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'http', 'Check the URL and your network connection.');
+    }
+  });
+
+program
+  .command('diff-files <fileA> <fileB>')
+  .description('Compare any two files with side-by-side diff and AI explanation')
+  .option('--explain', 'Detailed AI explanation of what changed and why')
+  .action(async (fileA: string, fileB: string, options: { explain?: boolean }) => {
+    try {
+      const { diffFilesCommand } = await import('./commands/diff-files.js');
+      await diffFilesCommand(fileA, fileB, { explain: options.explain });
+    } catch (err: any) {
+      handleCommandError(err, 'diff-files', 'Ensure both files exist and your AI provider is configured.');
+    }
+  });
+
+program
+  .command('stats')
+  .description('Project statistics dashboard (LOC by language, file counts, complexity)')
+  .option('--loc', 'Show lines of code by language only')
+  .option('--complexity', 'AI-powered code complexity analysis')
+  .action(async (options: { loc?: boolean; complexity?: boolean }) => {
+    try {
+      const { statsCommand } = await import('./commands/project-stats.js');
+      await statsCommand({
+        loc: options.loc,
+        complexity: options.complexity,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'stats', 'Make sure you are in a project directory with source files.');
+    }
+  });
+
 // ─── Insights Commands ───────────────────────────────────────────────────────
 // map · cost
 
@@ -1181,6 +1250,7 @@ program.action(() => {
   console.log(category('Git', [cn('hooks'), cn('alias'), cn('blame')].join(sep)));
   console.log(category('AI', [cn('learn'), cn('pair'), cn('context')].join(sep)));
   console.log(category('Extend', [cn('plugin'), cn('api'), cn('regex'), cn('cron')].join(sep)));
+  console.log(category('Data', [cn('csv'), cn('http'), cn('diff-files'), cn('stats')].join(sep)));
   console.log(category('Insights', [cn('map'), cn('cost')].join(sep)));
   console.log(category('Help', [cn('tutorial'), cn('examples'), cn('update'), cn('info')].join(sep)));
   console.log();
@@ -1381,6 +1451,21 @@ program.action(() => {
   console.log(cmd('orion cost', '--detailed', 'Per-command cost breakdown'));
   console.log(cmd('orion cost', '--reset', 'Reset cost tracking data'));
   console.log(cmd('orion cost', '--budget 10.00', 'Set monthly budget alert'));
+  console.log();
+  console.log(palette.violet.bold('  Data'));
+  console.log();
+  console.log(cmd('orion csv', '<file>', 'AI-powered CSV/JSON data analysis'));
+  console.log(cmd('orion csv', '<f> --query "Q"', 'Natural language data query'));
+  console.log(cmd('orion csv', '<f> --convert csv', 'Convert JSON to CSV'));
+  console.log(cmd('orion csv', '<f> --convert json', 'Convert CSV to JSON'));
+  console.log(cmd('orion http', 'GET <url>', 'Make HTTP GET request'));
+  console.log(cmd('orion http', 'POST <url> --data', 'POST with JSON body'));
+  console.log(cmd('orion http', '--curl "curl ..."', 'Convert curl to JS/Python/Go'));
+  console.log(cmd('orion diff-files', '<a> <b>', 'Side-by-side file diff with AI'));
+  console.log(cmd('orion diff-files', '<a> <b> --explain', 'Detailed change explanation'));
+  console.log(cmd('orion stats', '', 'Full project statistics dashboard'));
+  console.log(cmd('orion stats', '--loc', 'Lines of code by language'));
+  console.log(cmd('orion stats', '--complexity', 'AI complexity analysis'));
   console.log();
   console.log(palette.violet.bold('  Pipe Support'));
   console.log();
