@@ -1,114 +1,153 @@
+<h1 align="center">
+  <br>
+  <img src="https://raw.githubusercontent.com/concrete-sangminlee/orion/main/public/icon.svg" width="120" alt="Orion">
+  <br>
+  Orion
+  <br>
+</h1>
+
+<h3 align="center">AI-Powered Coding Assistant & IDE for the Terminal</h3>
+
 <p align="center">
-  <strong>✦ O R I O N</strong><br>
-  <em>AI-Powered Coding Assistant & IDE</em><br><br>
-  <a href="#orion-cli">CLI</a> · <a href="#orion-ide">Desktop IDE</a> · <a href="#quick-start">Quick Start</a> · <a href="#commands">Commands</a>
+  <a href="#-quick-start"><strong>Quick Start</strong></a> ·
+  <a href="#-cli-commands"><strong>CLI Commands</strong></a> ·
+  <a href="#-desktop-ide"><strong>Desktop IDE</strong></a> ·
+  <a href="#-contributing"><strong>Contributing</strong></a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-7C5CFC?style=flat-square" alt="version">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-38BDF8?style=flat-square" alt="platform">
-  <img src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/AI-Claude%20%7C%20GPT%20%7C%20Ollama-9B59B6?style=flat-square" alt="ai">
+  <img src="https://img.shields.io/github/license/concrete-sangminlee/orion?style=flat-square&color=22C55E" alt="License">
+  <img src="https://img.shields.io/badge/version-2.0.0-7C5CFC?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/commands-20-38BDF8?style=flat-square" alt="Commands">
+  <img src="https://img.shields.io/badge/platform-Win%20%7C%20Mac%20%7C%20Linux-F59E0B?style=flat-square" alt="Platform">
+  <img src="https://img.shields.io/badge/AI-Claude%20%7C%20GPT%20%7C%20Ollama-9B59B6?style=flat-square" alt="AI">
+  <img src="https://img.shields.io/github/stars/concrete-sangminlee/orion?style=flat-square" alt="Stars">
 </p>
 
 ---
 
 ## What is Orion?
 
-Orion is a **dual-mode AI coding tool** — a powerful **CLI** for the terminal and a full-featured **desktop IDE** built on Electron.
+Orion is an **open-source AI coding tool** with two modes:
 
-- **Orion CLI** — AI coding assistant in your terminal. Chat, review, fix, edit code with Claude, GPT, or local Ollama models. Hot-switch between providers mid-conversation.
-- **Orion IDE** — Professional desktop editor with Monaco, 18 themes, multi-agent orchestration, integrated terminal, and Git workflow.
+**CLI** — 20 commands for AI-assisted coding directly in your terminal. Chat with AI, review code, fix bugs, generate tests, search codebases — all from the command line. Switch between Claude, GPT, and local Ollama models mid-conversation.
+
+**Desktop IDE** — A full-featured code editor built on Electron with Monaco Editor, 18 themes, integrated terminal, Git workflow, and multi-agent AI orchestration.
+
+```
+                   ┌──────────────────────────────────┐
+                   │  ✦ O R I O N                     │
+                   │  AI-Powered Coding Assistant      │
+                   │  v2.0.0 · Win/Mac/Linux           │
+                   └──────────────────────────────────┘
+
+  $ orion ask "How do I optimize this React component?" @src/App.tsx
+
+  $ orion fix src/auth.ts --auto    # Fix → Test → Iterate until passing
+
+  $ git diff | orion review         # AI code review from pipe
+
+  $ orion chat                      # Interactive chat with /claude /gpt /ollama
+```
+
+---
+
+## Why Orion?
+
+| | Orion | Claude Code | Codex CLI | Aider |
+|---|---|---|---|---|
+| **Cross-platform** | Win/Mac/Linux | Mac/Linux/Win11 | Mac/Linux | Mac/Linux/Win |
+| **Built-in AI** | Yes | Yes | Yes | Yes |
+| **Local models** | Ollama (free) | No | No | Yes |
+| **Provider switching** | Hot-switch mid-chat | No | No | Yes |
+| **Auto fix loop** | fix → test → iterate | Manual | Manual | Yes |
+| **File backup/undo** | Automatic | No | No | No |
+| **Unix pipes** | Full support | Partial | No | No |
+| **Desktop IDE** | Included | No | No | No |
+| **Price** | Free & open source | Subscription | Subscription | Free |
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone & install
 git clone https://github.com/concrete-sangminlee/orion.git
 cd orion
 npm install
-
-# Use the CLI
 npm run cli:build
 npm install -g .
-orion chat
 
-# Or launch the Desktop IDE
-npm run dev
+# Start using
+orion chat                    # AI chat
+orion ask "What does this do?" @file.ts   # Quick question
+orion status                  # Check setup
 ```
 
 ### Prerequisites
 
-- **Node.js** 18+ (recommended: 22.x)
-- **C++ Build Tools** (for `node-pty`):
-  - Windows: `npm install -g windows-build-tools` 또는 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-  - macOS: `xcode-select --install`
-  - Linux: `sudo apt install build-essential python3`
-- (Optional) [Ollama](https://ollama.com) for free local AI: `ollama pull llama3.2`
+| Requirement | How to install |
+|------------|----------------|
+| **Node.js 18+** | [nodejs.org](https://nodejs.org) |
+| **C++ Build Tools** | Windows: `npm i -g windows-build-tools` · macOS: `xcode-select --install` · Linux: `apt install build-essential` |
+| **Ollama** (optional) | [ollama.com](https://ollama.com) — `ollama pull llama3.2` |
 
 ---
 
-## Orion CLI
+## CLI Commands
 
-AI-powered coding assistant for the terminal. Cross-platform (Windows, macOS, Linux).
+### 20 commands organized in 4 categories:
 
-### Chat
+```
+Core:     chat · ask · explain · review · fix · edit · commit
+Code:     search · diff · run · test · agent
+Safety:   undo · status
+Session:  session · watch · config · init · gui
+```
+
+### Core — AI Coding
 
 ```bash
-orion chat                              # Interactive AI chat
+orion chat                          # Interactive AI chat
+orion ask "question" @file1 @file2  # Quick question with file context
+orion explain src/app.ts            # Explain what code does
+orion review src/app.ts             # AI code review with severity levels
+orion fix src/app.ts                # Find and fix bugs
+orion fix src/app.ts --auto         # Fix → test → iterate until passing
+orion edit src/app.ts               # AI-assisted file editing
+orion commit                        # Generate AI commit message
 ```
 
-Chat commands:
-```
-/claude          → Switch to Claude (API key required)
-/gpt             → Switch to GPT (API key required)
-/ollama          → Switch to Ollama (local, free)
-/model <name>    → Change model (deepseek-r1, mistral, etc.)
-/models          → List all available models
-/switch          → Cycle to next provider
-/save            → Save session
-/history         → List saved sessions
-/load <id>       → Resume a session
-/stats           → Usage statistics
-/clear           → Clear history
-/exit            → Quit
-```
-
-### Code Commands
+### Code — Codebase Operations
 
 ```bash
-orion ask "question"                    # Quick one-shot question
-orion explain file.ts                   # AI code explanation
-orion review file.ts                    # AI code review with severity
-orion fix file.ts                       # Auto-detect and fix bugs
-orion edit file.ts                      # AI-assisted file editing
-orion commit                            # AI-generated commit message
+orion search "authentication"       # Search codebase + AI analysis
+orion diff                          # Review uncommitted changes with AI
+orion diff --staged                 # Review staged changes
+orion run "npm test"                # Run command, AI diagnoses errors
+orion run "npm build" --fix         # Run, diagnose, and auto-fix
+orion test                          # Run tests, AI analyzes failures
+orion test --generate src/auth.ts   # Generate tests for a file
+orion agent "task1" "task2" "task3" # Run multiple AI tasks in parallel
 ```
 
-### Multi-Agent
+### Safety — Backup & Recovery
 
 ```bash
-orion agent "task1" "task2" "task3"      # Run tasks in parallel
-orion agent "Review auth" "Add tests" --parallel 2
+orion undo                          # Restore last file from backup
+orion undo --list                   # List all backups
+orion undo --file src/app.ts        # Undo specific file
+orion status                        # Environment dashboard
 ```
 
-### Sessions
+### Session & Automation
 
 ```bash
-orion session new "project-name"        # Create named session
-orion session list                      # List all sessions
-orion session resume "project-name"     # Continue where you left off
-orion session export "project-name"     # Export as markdown
-orion session delete "project-name"     # Delete session
-```
-
-### Watch Mode
-
-```bash
-orion watch "*.ts" --on-change review   # Auto-review on file change
-orion watch "src/**" --on-change fix    # Auto-fix on change
+orion session new "project"         # Create named session
+orion session resume "project"      # Continue where you left off
+orion session export "project"      # Export as markdown
+orion watch "*.ts" --on-change review  # Auto-review on file change
+orion config                        # Set up API keys and models
+orion init                          # Create .orion/context.md project memory
 ```
 
 ### Unix Pipes
@@ -120,55 +159,46 @@ cat app.ts | orion explain
 cat app.ts | orion fix > fixed.ts
 ```
 
-### Pipeline Mode (CI/CD)
+### Global Flags
 
 ```bash
-orion commit -y                         # Auto-confirm
-orion fix file.ts -y --quiet            # Silent auto-fix
-orion ask "question" --json             # Structured JSON output
+--json          # Structured JSON output (CI/CD)
+--yes / -y      # Auto-confirm all prompts
+--dry-run       # Preview changes without writing
+--quiet         # Minimal output
+--no-color      # Disable colors
 ```
 
-### Configuration
+### Chat Provider Switching
 
 ```bash
-orion config                            # Interactive API key setup
-orion init                              # Create .orion/context.md project memory
+orion chat
+# Inside chat:
+/claude              # Switch to Claude
+/gpt                 # Switch to GPT
+/ollama              # Switch to Ollama (local)
+/model deepseek-r1   # Use specific model
+/models              # List installed models
+/switch              # Cycle providers
 ```
-
-### Supported AI Providers
-
-| Provider | Models | Auth |
-|----------|--------|------|
-| **Ollama** (local) | llama3.2, deepseek-r1, mistral, qwen2.5-coder, + any | Free, no key |
-| **Anthropic** | Claude Sonnet 4, Opus 4, Haiku | API key |
-| **OpenAI** | GPT-4o, GPT-4o-mini, o3 | API key |
 
 ---
 
-## Orion IDE
+## Desktop IDE
 
-Professional desktop code editor built on Electron + React + Monaco Editor.
+Launch with `npm run dev` or `orion gui`.
 
-### Key Features
+### Features
 
-**Editor** — Monaco with syntax highlighting, minimap, bracket colorization, inline AI editing (Ctrl+K), ghost text completions, snippet engine, hex/image/markdown editors
-
-**AI Integration** — 6 providers (Claude, GPT, Ollama, NVIDIA NIM, Kimi, Gemini), streaming chat, multi-agent orchestration, AI composer, customizable prompts
-
-**Git** — Source control panel, blame, graph, stash, timeline, merge conflict resolver, conventional commits
-
-**Terminal** — xterm.js + node-pty, multiple sessions, profiles, link detection
-
-**Dev Tools** — Debug panel, test explorer, code coverage, profiler, problems panel, database/API/Docker/CI-CD panels
-
-**Customization** — 18 built-in themes (dark + light), VS Code theme import, command palette, keybinding editor, extension system, 4 languages (EN/KO/JA/ZH)
-
-### Launch
-
-```bash
-npm run dev                             # Development with hot reload
-orion gui                               # From CLI
-```
+- **Monaco Editor** — Syntax highlighting, minimap, bracket colorization, inline AI editing
+- **18 Built-in Themes** — Orion Dark, GitHub Light, Tokyo Night, Catppuccin, Dracula, Nord, and more
+- **AI Chat Panel** — Multi-provider streaming chat with markdown rendering
+- **Integrated Terminal** — xterm.js + node-pty with multiple sessions
+- **Git Integration** — Source control, blame, stash, timeline, merge conflict resolver
+- **30+ Panels** — Debug, test, profiler, problems, database, API client, Docker, CI/CD
+- **Command Palette** — Ctrl+Shift+P with fuzzy search
+- **Extension System** — VS Code-compatible extension API
+- **4 Languages** — English, Korean, Japanese, Chinese
 
 ### Keyboard Shortcuts
 
@@ -176,29 +206,37 @@ orion gui                               # From CLI
 |----------|--------|
 | `Ctrl+P` | Quick Open |
 | `Ctrl+Shift+P` | Command Palette |
+| `Ctrl+K` | Inline AI Edit |
+| `Ctrl+L` | Focus AI Chat |
 | `Ctrl+B` | Toggle Sidebar |
 | `` Ctrl+` `` | Toggle Terminal |
-| `Ctrl+L` | Focus AI Chat |
-| `Ctrl+,` | Settings |
-| `Ctrl+K` | Inline AI Edit |
-| `Ctrl+Shift+E` | Explorer |
-| `Ctrl+Shift+F` | Search |
-| `Ctrl+Shift+G` | Source Control |
+
+---
+
+## AI Providers
+
+| Provider | Models | Cost | Setup |
+|----------|--------|------|-------|
+| **Ollama** | llama3.2, deepseek-r1, mistral, qwen, + any | **Free** | `ollama pull llama3.2` |
+| **Anthropic** | Claude Sonnet 4, Opus 4, Haiku | API key | [console.anthropic.com](https://console.anthropic.com) |
+| **OpenAI** | GPT-4o, GPT-4o-mini, o3 | API key | [platform.openai.com](https://platform.openai.com) |
+
+Ollama works out of the box with no API key. Run `orion config` for API key setup.
 
 ---
 
 ## Tech Stack
 
-| Component | Technology |
-|-----------|-----------|
-| CLI | Node.js + Commander + Chalk + Ora + Marked |
-| Desktop | Electron 33 + React 19 + TypeScript 5.7 |
+| Layer | Technology |
+|-------|-----------|
+| CLI | Node.js · Commander · Chalk · Ora · Marked |
+| Desktop | Electron 33 · React 19 · TypeScript 5.7 |
 | Editor | Monaco Editor 0.52 |
-| Terminal | xterm.js 5 + node-pty |
+| Terminal | xterm.js 5 · node-pty |
 | State | Zustand 5 (33 stores) |
-| Styling | TailwindCSS v4 + 2,300-line design system |
-| Build | Vite 6 + esbuild |
-| AI | Anthropic SDK + OpenAI SDK + Ollama API |
+| Styling | TailwindCSS v4 |
+| Build | Vite 6 · esbuild |
+| AI | Anthropic SDK · OpenAI SDK · Ollama API |
 | Packaging | electron-builder 25 |
 
 ---
@@ -207,56 +245,123 @@ orion gui                               # From CLI
 
 ```
 orion/
-├── cli/                    # CLI tool
-│   ├── index.ts            # Entry point (Commander)
-│   ├── ai-client.ts        # Multi-provider AI client
-│   ├── ui.ts               # Premium UI components
-│   ├── markdown.ts         # Terminal markdown renderer
-│   ├── shared.ts           # Shared patterns
-│   ├── pipeline.ts         # CI/CD pipeline mode
-│   ├── stdin.ts            # Unix pipe support
-│   └── commands/           # 12 commands
-├── electron/               # Desktop main process
-│   ├── main.ts             # Electron entry
-│   ├── preload.ts          # IPC bridge
-│   └── ipc/                # IPC handlers
-├── src/                    # Desktop renderer (React)
-│   ├── components/         # 60+ UI components
-│   ├── panels/             # 30+ workspace panels
-│   ├── store/              # 33 Zustand stores
-│   ├── themes/             # 18 built-in themes
-│   └── i18n/               # 4 languages
-├── shared/                 # Shared types & constants
+├── cli/                        # CLI tool (20 commands)
+│   ├── index.ts                # Entry point
+│   ├── ai-client.ts            # Multi-provider AI client
+│   ├── ui.ts                   # Premium UI components
+│   ├── markdown.ts             # Terminal markdown renderer
+│   ├── backup.ts               # Automatic backup system
+│   ├── shared.ts               # Shared patterns
+│   ├── pipeline.ts             # CI/CD pipeline mode
+│   ├── stdin.ts                # Unix pipe support
+│   └── commands/               # 20 command implementations
+│       ├── chat.ts             # Interactive chat with hot-switch
+│       ├── ask.ts              # Quick questions with @file refs
+│       ├── review.ts           # Code review with severity
+│       ├── fix.ts              # Auto-fix with test loop
+│       ├── edit.ts             # AI file editing
+│       ├── search.ts           # Codebase search + AI
+│       ├── diff.ts             # Git diff AI review
+│       ├── run.ts              # Command execution + diagnosis
+│       ├── test.ts             # Test runner + generation
+│       ├── undo.ts             # Backup restore
+│       └── ...
+├── electron/                   # Desktop main process
+├── src/                        # Desktop renderer (React)
+│   ├── components/             # 60+ UI components
+│   ├── panels/                 # 30+ workspace panels
+│   ├── store/                  # 33 Zustand stores
+│   └── themes/                 # 18 built-in themes
+├── shared/                     # Shared types & constants
 └── package.json
 ```
 
 ---
 
-## Scripts
+## Contributing
 
-| Script | Description |
-|--------|-------------|
-| `npm run dev` | Launch desktop IDE with hot reload |
-| `npm run cli:build` | Build CLI tool |
-| `npm run cli:dev` | Run CLI in dev mode |
-| `npm run build` | Production build |
-| `npm run package:win` | Package for Windows |
-| `npm run package:mac` | Package for macOS |
-| `npm run package:linux` | Package for Linux |
-| `npm test` | Run tests |
+We welcome contributions from everyone! Here's how to get involved:
+
+### Getting Started
+
+```bash
+# 1. Fork the repo on GitHub
+# 2. Clone your fork
+git clone https://github.com/YOUR_USERNAME/orion.git
+cd orion
+
+# 3. Install dependencies
+npm install
+
+# 4. Create a branch
+git checkout -b feat/my-feature
+
+# 5. Make changes and test
+npm run cli:build && orion --help
+npm run dev  # Test desktop IDE
+
+# 6. Commit and push
+git commit -m "feat: add awesome feature"
+git push origin feat/my-feature
+
+# 7. Open a Pull Request on GitHub
+```
+
+### Ways to Contribute
+
+| Type | Description |
+|------|-------------|
+| **Bug Reports** | Found a bug? [Open an issue](https://github.com/concrete-sangminlee/orion/issues/new) with steps to reproduce |
+| **Feature Requests** | Have an idea? [Start a discussion](https://github.com/concrete-sangminlee/orion/issues/new) |
+| **Code** | Pick an issue, write code, open a PR |
+| **Documentation** | Improve README, add examples, write guides |
+| **Translations** | Add or improve translations in `src/i18n/locales/` |
+| **Themes** | Create new themes in `src/themes/index.ts` |
+| **CLI Commands** | Add new commands in `cli/commands/` |
+| **Testing** | Write tests, improve test coverage |
+
+### Good First Issues
+
+Look for issues labeled [`good first issue`](https://github.com/concrete-sangminlee/orion/labels/good%20first%20issue) — these are beginner-friendly tasks.
+
+### Development Guidelines
+
+- Follow existing code style (`.prettierrc` + `.editorconfig`)
+- Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages
+- Keep PRs focused on a single change
+- Add tests for new features where applicable
+- Update README if your change affects user-facing behavior
+
+### Architecture Overview
+
+```
+CLI Flow:     orion <cmd> → Commander → ai-client.ts → Provider API → markdown.ts → stdout
+Desktop Flow: Electron main.ts → IPC → React App.tsx → Monaco/Panels → Zustand stores
+AI Flow:      User input → System prompt + context → Provider (stream) → Response rendering
+```
 
 ---
 
-## Contributing
+## Roadmap
 
-1. Fork the repository
-2. Create a branch: `git checkout -b feat/my-feature`
-3. Make changes and test: `npm test`
-4. Commit with [Conventional Commits](https://www.conventionalcommits.org/)
-5. Open a Pull Request
+- [ ] MCP (Model Context Protocol) support
+- [ ] Workspace checkpoints (multi-file undo)
+- [ ] Sandboxed execution environment
+- [ ] Web search grounding for AI
+- [ ] Voice-to-code input
+- [ ] Session sharing (shareable links)
+- [ ] VS Code extension marketplace integration
+- [ ] Plugin system for custom CLI commands
 
 ---
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — Free to use, modify, and distribute.
+
+---
+
+<p align="center">
+  <strong>✦ Built with Orion by the community</strong><br>
+  <sub>Star the repo if you find it useful!</sub>
+</p>
