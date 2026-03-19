@@ -18,3 +18,7 @@ electron-builder.yml
 index.html
 CHANGELOG.md
 *.tsbuildinfo
+cli/__tests__/
+.github/
+CONTRIBUTING.md
+SECURITY.md
