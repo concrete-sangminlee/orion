@@ -639,7 +639,7 @@ program
   });
 
 // ─── Analysis Commands ───────────────────────────────────────────────────────
-// debug · benchmark · security · typecheck
+// debug · benchmark · security · typecheck · optimize
 
 program
   .command('debug [file]')
@@ -702,6 +702,25 @@ program
       });
     } catch (err: any) {
       handleCommandError(err, 'typecheck', 'Ensure the file exists and your AI provider is configured.');
+    }
+  });
+
+program
+  .command('optimize <target>')
+  .description('AI-powered performance optimization suggestions (bundle, SQL, React)')
+  .option('--bundle', 'Bundle size optimization (imports, tree-shaking, lazy loading)')
+  .option('--sql', 'SQL query optimization (indexes, N+1, parameterization)')
+  .option('--react', 'React-specific optimization (memo, useMemo, useCallback)')
+  .action(async (target: string, options: { bundle?: boolean; sql?: boolean; react?: boolean }) => {
+    try {
+      const { optimizeCommand } = await import('./commands/optimize.js');
+      await optimizeCommand(target, {
+        bundle: options.bundle,
+        sql: options.sql,
+        react: options.react,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'optimize', 'Ensure the file/directory exists and your AI provider is configured.');
     }
   });
 
@@ -867,7 +886,7 @@ program
   });
 
 // ─── Git Commands ────────────────────────────────────────────────────────────
-// hooks · alias
+// hooks · alias · blame
 
 program
   .command('hooks <action>')
@@ -895,6 +914,23 @@ program
       await aliasCommand(action, name, expansion);
     } catch (err: any) {
       handleCommandError(err, 'alias', 'Run `orion alias --help` for usage.');
+    }
+  });
+
+program
+  .command('blame <file>')
+  .description('AI-powered git blame analysis (ownership, history, hotspots)')
+  .option('--line <n>', 'Explain why a specific line was changed')
+  .option('--hotspots', 'Find most frequently changed sections')
+  .action(async (file: string, options: { line?: string; hotspots?: boolean }) => {
+    try {
+      const { blameCommand } = await import('./commands/blame.js');
+      await blameCommand(file, {
+        line: options.line ? parseInt(options.line, 10) : undefined,
+        hotspots: options.hotspots,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'blame', 'Ensure you are in a git repository and the file is tracked.');
     }
   });
 
@@ -1004,6 +1040,47 @@ program
     }
   });
 
+// ─── Insights Commands ───────────────────────────────────────────────────────
+// map · cost
+
+program
+  .command('map')
+  .description('Generate repository structure map (like Aider\'s repo-map)')
+  .option('--symbols', 'Include function/class/interface symbols')
+  .option('--deps', 'Include dependency graph between files')
+  .option('--output <file>', 'Save map to a file (markdown format)')
+  .action(async (options: { symbols?: boolean; deps?: boolean; output?: string }) => {
+    try {
+      const { mapCommand } = await import('./commands/map.js');
+      await mapCommand({
+        symbols: options.symbols,
+        deps: options.deps,
+        output: options.output,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'map', 'Run from a project directory.');
+    }
+  });
+
+program
+  .command('cost')
+  .description('AI usage cost tracker with budget alerts')
+  .option('--detailed', 'Show per-command breakdown and recent calls')
+  .option('--reset', 'Reset cost tracking data')
+  .option('--budget <amount>', 'Set monthly budget alert (USD)')
+  .action(async (options: { detailed?: boolean; reset?: boolean; budget?: string }) => {
+    try {
+      const { costCommand } = await import('./commands/cost.js');
+      await costCommand({
+        detailed: options.detailed,
+        reset: options.reset,
+        budget: options.budget,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'cost', 'Cost data is stored in ~/.orion/costs.json.');
+    }
+  });
+
 // ─── Help Commands ───────────────────────────────────────────────────────────
 // tutorial · examples · update · version
 
@@ -1098,12 +1175,13 @@ program.action(() => {
   console.log(category('Code', [cn('search'), cn('diff'), cn('pr'), cn('run'), cn('test'), cn('agent'), cn('refactor'), cn('compare')].join(sep)));
   console.log(category('Generate', [cn('plan'), cn('generate'), cn('docs'), cn('snippet'), cn('scaffold')].join(sep)));
   console.log(category('Tools', [cn('shell'), cn('todo'), cn('fetch'), cn('changelog'), cn('log'), cn('summarize'), cn('migrate'), cn('deps'), cn('format'), cn('translate'), cn('env')].join(sep)));
-  console.log(category('Analysis', [cn('debug'), cn('benchmark'), cn('security'), cn('typecheck')].join(sep)));
+  console.log(category('Analysis', [cn('debug'), cn('benchmark'), cn('security'), cn('typecheck'), cn('optimize')].join(sep)));
   console.log(category('Safety', [cn('undo'), cn('status'), cn('doctor'), cn('clean')].join(sep)));
   console.log(category('Session', [cn('session'), cn('watch'), cn('config'), cn('init'), cn('gui'), cn('completions')].join(sep)));
-  console.log(category('Git', [cn('hooks'), cn('alias')].join(sep)));
+  console.log(category('Git', [cn('hooks'), cn('alias'), cn('blame')].join(sep)));
   console.log(category('AI', [cn('learn'), cn('pair'), cn('context')].join(sep)));
   console.log(category('Extend', [cn('plugin'), cn('api'), cn('regex'), cn('cron')].join(sep)));
+  console.log(category('Insights', [cn('map'), cn('cost')].join(sep)));
   console.log(category('Help', [cn('tutorial'), cn('examples'), cn('update'), cn('info')].join(sep)));
   console.log();
 
@@ -1219,6 +1297,10 @@ program.action(() => {
   console.log(cmd('orion typecheck', '<file>', 'Analyze types, suggest improvements'));
   console.log(cmd('orion typecheck', '<file> --strict', 'Strict type safety audit'));
   console.log(cmd('orion typecheck', '<file> --convert', 'JS to TypeScript conversion'));
+  console.log(cmd('orion optimize', '<file>', 'General optimization suggestions'));
+  console.log(cmd('orion optimize', '<dir> --bundle', 'Bundle size optimization'));
+  console.log(cmd('orion optimize', '<file> --sql', 'SQL query optimization'));
+  console.log(cmd('orion optimize', '<file> --react', 'React rendering optimization'));
   console.log();
   console.log(palette.violet.bold('  Safety'));
   console.log();
@@ -1248,6 +1330,9 @@ program.action(() => {
   console.log(cmd('orion alias', 'set r "review"', 'Create command alias'));
   console.log(cmd('orion alias', 'list', 'List all aliases'));
   console.log(cmd('orion alias', 'remove r', 'Remove an alias'));
+  console.log(cmd('orion blame', '<file>', 'AI blame analysis & ownership'));
+  console.log(cmd('orion blame', '<file> --line 42', 'Explain why line 42 changed'));
+  console.log(cmd('orion blame', '<file> --hotspots', 'Find high-churn sections'));
   console.log();
   console.log(palette.violet.bold('  Help'));
   console.log();
@@ -1285,6 +1370,17 @@ program.action(() => {
   console.log(cmd('orion cron', '"every mon 9am"', 'Generate cron expression'));
   console.log(cmd('orion cron', '--explain "0 9 * * 1"', 'Explain cron expression'));
   console.log(cmd('orion cron', '--next "0 9 * * 1" 5', 'Show next 5 executions'));
+  console.log();
+  console.log(palette.violet.bold('  Insights'));
+  console.log();
+  console.log(cmd('orion map', '', 'Generate repository structure map'));
+  console.log(cmd('orion map', '--symbols', 'Include function/class symbols'));
+  console.log(cmd('orion map', '--deps', 'Include dependency graph'));
+  console.log(cmd('orion map', '--output map.md', 'Save map to file'));
+  console.log(cmd('orion cost', '', 'Show AI usage cost summary'));
+  console.log(cmd('orion cost', '--detailed', 'Per-command cost breakdown'));
+  console.log(cmd('orion cost', '--reset', 'Reset cost tracking data'));
+  console.log(cmd('orion cost', '--budget 10.00', 'Set monthly budget alert'));
   console.log();
   console.log(palette.violet.bold('  Pipe Support'));
   console.log();

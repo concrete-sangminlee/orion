@@ -7,7 +7,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import chalk from 'chalk';
-import { readConfig, colors } from './utils.js';
+import { readConfig, colors, trackCost, estimateTokens } from './utils.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -357,6 +357,15 @@ async function streamOllama(
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
+// ─── Active Command Tracking (for cost attribution) ──────────────────────────
+
+let _activeCommand: string = 'unknown';
+
+/** Set the active command name for cost tracking attribution. */
+export function setActiveCommand(command: string): void {
+  _activeCommand = command;
+}
+
 export async function streamChat(
   messages: AIMessage[],
   callbacks: AIStreamCallbacks = {},
@@ -365,17 +374,31 @@ export async function streamChat(
 ): Promise<string> {
   const config = await resolveProviderConfig(overrideProvider, overrideModel);
 
+  // Estimate input tokens from all messages
+  const inputText = messages.map(m => m.content).join('');
+  const inputTokens = estimateTokens(inputText);
+
   try {
+    let result: string;
     switch (config.provider) {
       case 'anthropic':
-        return await streamAnthropic(messages, config, callbacks);
+        result = await streamAnthropic(messages, config, callbacks);
+        break;
       case 'openai':
-        return await streamOpenAI(messages, config, callbacks);
+        result = await streamOpenAI(messages, config, callbacks);
+        break;
       case 'ollama':
-        return await streamOllama(messages, config, callbacks);
+        result = await streamOllama(messages, config, callbacks);
+        break;
       default:
         throw new Error(`Unknown provider: ${config.provider}`);
     }
+
+    // Track cost after successful completion
+    const outputTokens = estimateTokens(result);
+    trackCost(config.provider, config.model, inputTokens, outputTokens, _activeCommand);
+
+    return result;
   } catch (err: any) {
     callbacks.onError?.(err);
     throw err;

@@ -745,3 +745,133 @@ export function trackSession(): void {
     // Silently ignore metrics errors
   }
 }
+
+// ─── Cost Tracking Helper ────────────────────────────────────────────────────
+
+const COSTS_FILE = path.join(CONFIG_DIR, 'costs.json');
+
+interface CostEntry {
+  timestamp: string;
+  provider: string;
+  model: string;
+  command: string;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCost: number;
+}
+
+interface CostData {
+  version: number;
+  budget: number | null;
+  entries: CostEntry[];
+}
+
+// Provider pricing per 1M tokens (USD)
+const COST_PRICING: Record<string, { input: number; output: number }> = {
+  'claude-sonnet-4-20250514':     { input: 3.00,  output: 15.00 },
+  'claude-opus-4-20250514':       { input: 15.00, output: 75.00 },
+  'claude-haiku-4-5-20251001':    { input: 0.80,  output: 4.00 },
+  'claude-3-5-sonnet-20241022':   { input: 3.00,  output: 15.00 },
+  'claude-3-haiku-20240307':      { input: 0.25,  output: 1.25 },
+  'gpt-4o':       { input: 2.50,  output: 10.00 },
+  'gpt-4o-mini':  { input: 0.15,  output: 0.60 },
+  'gpt-4-turbo':  { input: 10.00, output: 30.00 },
+  'gpt-4':        { input: 30.00, output: 60.00 },
+  'gpt-3.5-turbo':{ input: 0.50,  output: 1.50 },
+  'o3':           { input: 10.00, output: 40.00 },
+  'o3-mini':      { input: 1.10,  output: 4.40 },
+};
+
+const DEFAULT_COST_PRICING: Record<string, { input: number; output: number }> = {
+  anthropic: { input: 3.00, output: 15.00 },
+  openai:    { input: 2.50, output: 10.00 },
+  ollama:    { input: 0.00, output: 0.00 },
+};
+
+/**
+ * Track the cost of an AI call.
+ * Appends an entry to ~/.orion/costs.json and checks budget limits.
+ *
+ * @param provider  - 'anthropic' | 'openai' | 'ollama'
+ * @param model     - The model name (e.g., 'claude-sonnet-4-20250514')
+ * @param inputTokens  - Estimated input token count
+ * @param outputTokens - Estimated output token count
+ * @param command   - The orion command that triggered this call (e.g., 'chat', 'review')
+ */
+export function trackCost(
+  provider: string,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  command: string = 'unknown'
+): void {
+  try {
+    ensureConfigDir();
+
+    // Calculate cost
+    let pricing = COST_PRICING[model];
+    if (!pricing) pricing = DEFAULT_COST_PRICING[provider] || { input: 0, output: 0 };
+    if (provider === 'ollama') pricing = { input: 0, output: 0 };
+
+    const inputCost = (inputTokens / 1_000_000) * pricing.input;
+    const outputCost = (outputTokens / 1_000_000) * pricing.output;
+    const totalCost = inputCost + outputCost;
+
+    // Load existing data
+    let data: CostData = { version: 1, budget: null, entries: [] };
+    if (fs.existsSync(COSTS_FILE)) {
+      try {
+        const raw = fs.readFileSync(COSTS_FILE, 'utf-8');
+        data = JSON.parse(raw) as CostData;
+        if (!Array.isArray(data.entries)) data.entries = [];
+      } catch { /* use empty */ }
+    }
+
+    // Append entry
+    data.entries.push({
+      timestamp: new Date().toISOString(),
+      provider,
+      model,
+      command,
+      inputTokens,
+      outputTokens,
+      estimatedCost: totalCost,
+    });
+
+    // Save
+    fs.writeFileSync(COSTS_FILE, JSON.stringify(data, null, 2), 'utf-8');
+
+    // Budget check
+    if (data.budget !== null && data.budget > 0) {
+      const monthStart = new Date();
+      monthStart.setDate(1);
+      monthStart.setHours(0, 0, 0, 0);
+      const monthStartStr = monthStart.toISOString();
+
+      const monthTotal = data.entries
+        .filter(e => e.timestamp >= monthStartStr)
+        .reduce((sum, e) => sum + e.estimatedCost, 0);
+
+      if (monthTotal >= data.budget) {
+        console.error(
+          chalk.yellow(`\n  ! Budget alert: Monthly spending ($${monthTotal.toFixed(4)}) has reached budget ($${data.budget.toFixed(2)})!\n`)
+        );
+      } else if (monthTotal >= data.budget * 0.8) {
+        console.error(
+          chalk.yellow(`\n  ! Budget warning: ${((monthTotal / data.budget) * 100).toFixed(0)}% of monthly budget used ($${monthTotal.toFixed(4)} / $${data.budget.toFixed(2)})\n`)
+        );
+      }
+    }
+  } catch {
+    // Never break the actual command due to cost tracking errors
+  }
+}
+
+/**
+ * Estimate token count from text.
+ * Rough heuristic: ~4 characters per token for English text.
+ */
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
+}
