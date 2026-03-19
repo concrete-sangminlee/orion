@@ -432,6 +432,70 @@ program
     }
   });
 
+program
+  .command('pr')
+  .description('AI-powered pull request helper (generate description, title, or review)')
+  .option('--title', 'Generate PR title only')
+  .option('--review', 'Review current branch changes as a PR')
+  .action(async (options: { title?: boolean; review?: boolean }) => {
+    try {
+      const { prCommand } = await import('./commands/pr.js');
+      await prCommand({
+        title: options.title,
+        review: options.review,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'pr', 'Ensure you are in a git repository and your AI provider is configured.');
+    }
+  });
+
+program
+  .command('compare [files...]')
+  .description('Compare two files or technology approaches with AI analysis')
+  .option('--approach <question>', 'Compare technology approaches instead of files')
+  .action(async (files: string[], options: { approach?: string }) => {
+    try {
+      const { compareCommand } = await import('./commands/compare.js');
+      await compareCommand(files, {
+        approach: options.approach,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'compare', 'Ensure your AI provider is configured. Run `orion config`.');
+    }
+  });
+
+// ─── Security & Type Analysis ─────────────────────────────────────────────
+
+program
+  .command('security [target]')
+  .description('Scan for security vulnerabilities (SQL injection, XSS, secrets, etc.)')
+  .option('--owasp', 'Check against OWASP Top 10 categories')
+  .action(async (target: string | undefined, options: { owasp?: boolean }) => {
+    try {
+      const { securityCommand } = await import('./commands/security.js');
+      await securityCommand(target, { owasp: options.owasp });
+    } catch (err: any) {
+      handleCommandError(err, 'security', 'Ensure your AI provider is configured. Run `orion config`.');
+    }
+  });
+
+program
+  .command('typecheck <target>')
+  .description('AI-powered type analysis and improvement suggestions')
+  .option('--strict', 'Strict mode: flag all type safety issues')
+  .option('--convert', 'Suggest full JS-to-TypeScript conversion')
+  .action(async (target: string, options: { strict?: boolean; convert?: boolean }) => {
+    try {
+      const { typecheckCommand } = await import('./commands/typecheck.js');
+      await typecheckCommand(target, {
+        strict: options.strict,
+        convert: options.convert,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'typecheck', 'Ensure the file exists and your AI provider is configured.');
+    }
+  });
+
 // ─── Refactoring & Diagnostics ────────────────────────────────────────────
 
 program
@@ -526,6 +590,27 @@ program
     }
   });
 
+// ─── Snippet Manager ─────────────────────────────────────────────────────────
+
+program
+  .command('snippet <action> [name]')
+  .description('Manage code snippets (save, list, search, use, generate)')
+  .option('--file <file>', 'Source file to extract snippet from')
+  .option('--lines <range>', 'Line range to extract (e.g., 10-25)')
+  .option('--tag <tags>', 'Comma-separated tags for the snippet')
+  .action(async (action: string, name: string | undefined, options: { file?: string; lines?: string; tag?: string }) => {
+    try {
+      const { snippetCommand } = await import('./commands/snippet.js');
+      await snippetCommand(action, name, {
+        file: options.file,
+        lines: options.lines,
+        tag: options.tag,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'snippet', 'Run `orion snippet --help` for usage.');
+    }
+  });
+
 // ─── Web Fetch ───────────────────────────────────────────────────────────────
 
 program
@@ -594,6 +679,59 @@ program
     }
   });
 
+// ─── Debug, Benchmark & Docs ─────────────────────────────────────────────────
+
+program
+  .command('debug [file]')
+  .description('AI-powered debugging assistant (analyze files, diagnose errors, parse stack traces)')
+  .option('--error <message>', 'Diagnose a specific error message')
+  .option('--stacktrace', 'Paste a stack trace for analysis')
+  .action(async (file?: string, options?: { error?: string; stacktrace?: boolean }) => {
+    try {
+      const { debugCommand } = await import('./commands/debug.js');
+      await debugCommand(file, {
+        error: options?.error,
+        stacktrace: options?.stacktrace,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'debug', 'Ensure your AI provider is configured. Run `orion config`.');
+    }
+  });
+
+program
+  .command('benchmark [file]')
+  .description('AI-powered performance analysis (bottlenecks, complexity, memory)')
+  .option('--memory', 'Focus on memory usage analysis')
+  .option('--complexity', 'Focus on time/space complexity analysis')
+  .action(async (file?: string, options?: { memory?: boolean; complexity?: boolean }) => {
+    try {
+      const { benchmarkCommand } = await import('./commands/benchmark.js');
+      await benchmarkCommand(file, {
+        memory: options?.memory,
+        complexity: options?.complexity,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'benchmark', 'Ensure your AI provider is configured. Run `orion config`.');
+    }
+  });
+
+program
+  .command('docs [target]')
+  .description('AI-powered documentation generator (JSDoc, README, API docs)')
+  .option('--readme', 'Generate a README.md for the directory')
+  .option('--api', 'Generate API documentation')
+  .action(async (target?: string, options?: { readme?: boolean; api?: boolean }) => {
+    try {
+      const { docsCommand } = await import('./commands/docs.js');
+      await docsCommand(target, {
+        readme: options?.readme,
+        api: options?.api,
+      });
+    } catch (err: any) {
+      handleCommandError(err, 'docs', 'Ensure your AI provider is configured. Run `orion config`.');
+    }
+  });
+
 // ─── Shell Completions ───────────────────────────────────────────────────────
 
 program
@@ -625,9 +763,10 @@ program.action(() => {
   console.log(palette.violet.bold('  Commands'));
   console.log();
   console.log(category('Core', [cn('chat'), cn('ask'), cn('explain'), cn('review'), cn('fix'), cn('edit'), cn('commit')].join(sep)));
-  console.log(category('Code', [cn('search'), cn('diff'), cn('run'), cn('test'), cn('agent'), cn('refactor')].join(sep)));
-  console.log(category('Generate', [cn('plan'), cn('generate')].join(sep)));
-  console.log(category('Tools', [cn('shell'), cn('todo'), cn('fetch'), cn('changelog'), cn('migrate'), cn('deps')].join(sep)));
+  console.log(category('Code', [cn('search'), cn('diff'), cn('pr'), cn('run'), cn('test'), cn('agent'), cn('refactor')].join(sep)));
+  console.log(category('Generate', [cn('plan'), cn('generate'), cn('docs')].join(sep)));
+  console.log(category('Tools', [cn('shell'), cn('todo'), cn('fetch'), cn('changelog'), cn('migrate'), cn('deps'), cn('snippet'), cn('compare')].join(sep)));
+  console.log(category('Analysis', [cn('debug'), cn('benchmark'), cn('security'), cn('typecheck')].join(sep)));
   console.log(category('Safety', [cn('undo'), cn('status'), cn('doctor')].join(sep)));
   console.log(category('Session', [cn('session'), cn('watch'), cn('config'), cn('init'), cn('completions')].join(sep)));
   console.log();
@@ -654,6 +793,9 @@ program.action(() => {
   console.log();
   console.log(cmd('orion search', '"pattern"', 'Search codebase + AI analysis'));
   console.log(cmd('orion diff', '[ref]', 'AI-powered diff review'));
+  console.log(cmd('orion pr', '', 'Generate PR description from branch'));
+  console.log(cmd('orion pr', '--title', 'Generate PR title only'));
+  console.log(cmd('orion pr', '--review', 'AI reviews all branch changes'));
   console.log(cmd('orion run', '"command"', 'Run command, AI analyzes errors'));
   console.log(cmd('orion run', '--fix "cmd"', 'Run & auto-apply AI fixes'));
   console.log(cmd('orion test', '', 'Run tests, AI analyzes failures'));
@@ -674,6 +816,9 @@ program.action(() => {
   console.log(cmd('orion generate', 'hook useName', 'Generate custom hook'));
   console.log(cmd('orion generate', 'test file.ts', 'Generate tests for a file'));
   console.log(cmd('orion generate', 'service Name', 'Generate service class'));
+  console.log(cmd('orion docs', '<file>', 'Generate JSDoc/docstrings'));
+  console.log(cmd('orion docs', '<dir> --readme', 'Generate README for directory'));
+  console.log(cmd('orion docs', '<file> --api', 'Generate API documentation'));
   console.log();
   console.log(palette.violet.bold('  Tools'));
   console.log();
@@ -693,6 +838,27 @@ program.action(() => {
   console.log(cmd('orion deps', '--security', 'Security vulnerability audit'));
   console.log(cmd('orion deps', '--outdated', 'Find outdated packages'));
   console.log(cmd('orion deps', '--unused', 'Find unused dependencies'));
+  console.log(cmd('orion snippet', 'save "name" --file f', 'Save code snippet from file'));
+  console.log(cmd('orion snippet', 'list', 'List all saved snippets'));
+  console.log(cmd('orion snippet', 'search "query"', 'Search snippets by keyword'));
+  console.log(cmd('orion snippet', 'use "name"', 'Output snippet to stdout'));
+  console.log(cmd('orion snippet', 'generate "desc"', 'AI-generate a new snippet'));
+  console.log(cmd('orion compare', '<f1> <f2>', 'Compare two files with AI'));
+  console.log(cmd('orion compare', '--approach "Q"', 'Compare tech approaches'));
+  console.log();
+  console.log(palette.violet.bold('  Analysis'));
+  console.log();
+  console.log(cmd('orion debug', '<file>', 'Analyze file for potential bugs'));
+  console.log(cmd('orion debug', '--error "msg"', 'Diagnose a specific error'));
+  console.log(cmd('orion debug', '--stacktrace', 'Paste stack trace for analysis'));
+  console.log(cmd('orion benchmark', '<file>', 'Analyze file for performance'));
+  console.log(cmd('orion benchmark', '--memory <f>', 'Memory usage analysis'));
+  console.log(cmd('orion benchmark', '--complexity <f>', 'Time complexity analysis'));
+  console.log(cmd('orion security', '<path>', 'Scan for security vulnerabilities'));
+  console.log(cmd('orion security', '--owasp', 'OWASP Top 10 audit'));
+  console.log(cmd('orion typecheck', '<file>', 'Analyze types, suggest improvements'));
+  console.log(cmd('orion typecheck', '<file> --strict', 'Strict type safety audit'));
+  console.log(cmd('orion typecheck', '<file> --convert', 'JS to TypeScript conversion'));
   console.log();
   console.log(palette.violet.bold('  Safety'));
   console.log();
