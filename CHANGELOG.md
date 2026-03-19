@@ -5,6 +5,59 @@ All notable changes to Orion IDE will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-03-19
+
+### Added
+
+#### CLI - 50+ Commands
+- **Core**: chat, ask, explain, review, fix (--auto), edit, commit
+- **Code**: search, diff, pr (--review), run (--fix), test (--generate), agent, refactor, compare
+- **Generate**: plan (--execute), generate (20+ frameworks), docs (--readme, --api), snippet, scaffold (11 templates), format (--style)
+- **Tools**: shell (natural language→commands), todo (--fix, --prioritize), fetch, changelog, migrate (6 targets), deps (--security, --unused)
+- **Analysis**: debug (--error, --stacktrace), benchmark (--memory, --complexity), security (--owasp), typecheck (--strict, --convert)
+- **Safety**: undo (--checkpoint), status, doctor (9 checks), update, clean
+- **Session**: session (new/resume/export), watch, config, init, gui, completions (bash/zsh/fish/powershell)
+- **Git**: hooks (install/uninstall), alias (set/remove)
+- **Config**: profile (create/use/export/import), metrics
+- **Help**: tutorial (interactive 6-step), examples (per-command)
+- **Chat tools**: /read, /write, /run, /ls, /cat, /cd, /pwd, /fetch, custom .orion/commands/
+
+#### CLI Infrastructure
+- Multi-provider AI client (Claude, GPT, Ollama) with hot-switching
+- Terminal markdown rendering (marked + marked-terminal)
+- Premium UI component library (box, table, badge, progress bar, diff block)
+- Workspace checkpoints for multi-file atomic rollback
+- Conversation compaction for long sessions (auto-summarize at 20+ messages)
+- Automatic file backup before every edit/fix
+- Unix pipe support (stdin detection, stdout for piping)
+- Pipeline mode (--json, --yes, --dry-run, --quiet, --no-color)
+- Shell completions generation (bash, zsh, fish, PowerShell)
+- Lazy command loading for instant --help
+- Non-blocking npm version check with 24h cache
+- Cross-platform CRLF handling (18 fixes)
+- Git commit via temp file (Windows shell escaping fix)
+- Project memory (.orion/context.md, hierarchical loading)
+- Custom slash commands (.orion/commands/*.md)
+- Usage metrics tracking (commands, tokens, files)
+- 161 unit tests (vitest) across 8 test files
+
+#### Desktop IDE
+- Premium design system (50+ CSS classes, 2,300+ lines)
+- Light theme support (GitHub Light, Solarized Light, Gruvbox Light, Ayu Light)
+- Professional About dialog with Orion constellation SVG
+- Enhanced SplashScreen (60 particle star field, nebula background)
+- Welcome page with keyboard shortcuts card and AI showcase
+- Chat panel redesign (provider badges, timestamps, token counts)
+- Window focus/blur desaturation effect
+- Per-panel ErrorBoundary (side, editor, chat)
+- i18n: 4 languages with 7 new sections (EN/KO/JA/ZH)
+- TypeScript zero-error build (all type issues resolved)
+
+### Changed
+- Version bumped to 2.1.0
+- Package scripts: tsc removed from package builds (vite-only)
+- README completely rewritten as dual-mode (CLI + IDE) documentation
+
 ## [2.0.0] - 2026-03-16
 
 ### Added
