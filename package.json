@@ -1,6 +1,6 @@
 {
   "name": "orion-ide",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "AI-Powered Coding Assistant for the Terminal. 60+ commands. Claude, GPT, Ollama. Cross-platform.",
   "type": "module",
   "productName": "Orion IDE",

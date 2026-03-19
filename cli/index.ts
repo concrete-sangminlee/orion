@@ -19,7 +19,7 @@ import { errorDisplay, palette } from './ui.js';
 
 // ─── Version Check (non-blocking) ───────────────────────────────────────────
 
-const CURRENT_VERSION = '2.1.0';
+const CURRENT_VERSION = '2.2.0';
 const PACKAGE_NAME = 'orion-ide';
 const VERSION_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
