@@ -898,6 +898,46 @@ program
     }
   });
 
+// ─── AI Commands ─────────────────────────────────────────────────────────────
+// learn · pair · context (management)
+
+program
+  .command('learn')
+  .description('Analyze codebase patterns and generate .orion/patterns.md for AI accuracy')
+  .option('--update', 'Update patterns from recent changes instead of full re-analysis')
+  .action(async (options: { update?: boolean }) => {
+    try {
+      const { learnCommand } = await import('./commands/learn.js');
+      await learnCommand({ update: options.update });
+    } catch (err: any) {
+      handleCommandError(err, 'learn', 'Ensure your AI provider is configured. Run `orion config`.');
+    }
+  });
+
+program
+  .command('pair')
+  .description('Start AI pair programming - watches files, auto-reviews changes in real-time')
+  .action(async () => {
+    try {
+      const { pairCommand } = await import('./commands/pair.js');
+      await pairCommand();
+    } catch (err: any) {
+      handleCommandError(err, 'pair', 'Ensure chokidar is installed and your AI provider is configured.');
+    }
+  });
+
+program
+  .command('context <action> [target]')
+  .description('Manage AI context files (show, add, remove, list, estimate)')
+  .action(async (action: string, target?: string) => {
+    try {
+      const { contextCmdCommand } = await import('./commands/context-cmd.js');
+      await contextCmdCommand(action, target);
+    } catch (err: any) {
+      handleCommandError(err, 'context', 'Run `orion context --help` for usage.');
+    }
+  });
+
 // ─── Help Commands ───────────────────────────────────────────────────────────
 // tutorial · examples · update · version
 
@@ -996,6 +1036,7 @@ program.action(() => {
   console.log(category('Safety', [cn('undo'), cn('status'), cn('doctor'), cn('clean')].join(sep)));
   console.log(category('Session', [cn('session'), cn('watch'), cn('config'), cn('init'), cn('gui'), cn('completions')].join(sep)));
   console.log(category('Git', [cn('hooks'), cn('alias')].join(sep)));
+  console.log(category('AI', [cn('learn'), cn('pair'), cn('context')].join(sep)));
   console.log(category('Help', [cn('tutorial'), cn('examples'), cn('update'), cn('info')].join(sep)));
   console.log();
 
@@ -1150,6 +1191,17 @@ program.action(() => {
   console.log(cmd('orion update', '', 'Check for latest version'));
   console.log(cmd('orion info', '', 'Detailed version & environment'));
   console.log(cmd('orion info', '--json', 'Version info as JSON'));
+  console.log();
+  console.log(palette.violet.bold('  AI'));
+  console.log();
+  console.log(cmd('orion learn', '', 'Analyze codebase, generate patterns'));
+  console.log(cmd('orion learn', '--update', 'Update patterns from recent changes'));
+  console.log(cmd('orion pair', '', 'Start AI pair programming session'));
+  console.log(cmd('orion context', 'show', 'Show current AI context'));
+  console.log(cmd('orion context', 'add <file>', 'Add file to permanent context'));
+  console.log(cmd('orion context', 'remove <file>', 'Remove file from context'));
+  console.log(cmd('orion context', 'list', 'List all context files'));
+  console.log(cmd('orion context', 'estimate', 'Estimate token count of context'));
   console.log();
   console.log(palette.violet.bold('  Pipe Support'));
   console.log();
