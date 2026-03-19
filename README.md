@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/license/concrete-sangminlee/orion?style=flat-square&color=22C55E" alt="License">
   <img src="https://img.shields.io/badge/version-2.1.0-7C5CFC?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/commands-53%2B-38BDF8?style=flat-square" alt="Commands">
+  <img src="https://img.shields.io/badge/commands-60%2B-38BDF8?style=flat-square" alt="Commands">
   <img src="https://img.shields.io/badge/platform-Win%20%7C%20Mac%20%7C%20Linux-F59E0B?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/AI-Claude%20%7C%20GPT%20%7C%20Ollama-9B59B6?style=flat-square" alt="AI">
   <img src="https://img.shields.io/github/stars/concrete-sangminlee/orion?style=flat-square" alt="Stars">
@@ -26,20 +26,11 @@
 
 ---
 
-## Quick Install
-
-```bash
-npm install -g orion-ide
-orion tutorial
-```
-
----
-
 ## What is Orion?
 
 Orion is an **open-source AI coding tool** with two modes:
 
-**CLI** — 53+ commands for AI-assisted coding directly in your terminal. Chat with AI, review code, fix bugs, generate tests, search codebases — all from the command line. Switch between Claude, GPT, and local Ollama models mid-conversation.
+**CLI** — 60+ commands for AI-assisted coding directly in your terminal. Chat with AI, review code, fix bugs, generate tests, search codebases — all from the command line. Switch between Claude, GPT, and local Ollama models mid-conversation.
 
 **Desktop IDE** — A full-featured code editor built on Electron with Monaco Editor, 18 themes, integrated terminal, Git workflow, and multi-agent AI orchestration.
 
@@ -87,6 +78,15 @@ Orion is an **open-source AI coding tool** with two modes:
 
 ---
 
+## Install
+
+```bash
+npm install -g orion-ide
+orion tutorial
+```
+
+---
+
 ## Quick Start
 
 ```bash
@@ -114,22 +114,23 @@ orion status                  # Check setup
 
 ## CLI Commands
 
-### 53+ commands organized in 12 categories:
+### 60+ commands organized in 12 categories:
 
 ```
-Core:       chat · ask · explain · review · fix · edit · commit
-Code:       search · diff · pr · run · test · agent · refactor · compare
-Generate:   plan · generate · docs · snippet · scaffold · format
-Tools:      shell · todo · fetch · changelog · migrate · deps · clean · pipe
-Analysis:   debug · benchmark · security · typecheck · summarize · log
-Safety:     undo · status · doctor · update · version
-Session:    session · watch · config · init · gui · completions
-Git:        hooks · alias
-Config:     profile · metrics · env
-AI/NLP:     translate · context
-Help:       tutorial · examples
-Chat:       /read · /write · /run · /ls · /cat · /cd · /fetch · custom commands
+Core:       chat · ask · explain · review · fix · edit · commit (7)
+Code:       search · diff · pr · run · test · agent · refactor · compare (8)
+Generate:   plan · generate · docs · snippet · scaffold · format (6)
+Tools:      shell · todo · fetch · changelog · migrate · deps · translate · env · log · summarize (10)
+Analysis:   debug · benchmark · security · typecheck (4)
+AI:         learn · pair · context (3)
+Safety:     undo · status · doctor · update · clean (5)
+Session:    session · watch · config · init · gui · completions (6)
+Git:        hooks · alias (2)
+Config:     profile · metrics (2)
+Help:       tutorial · examples · info (3)
+Extend:     plugin · api · regex · cron (4)
 ```
+Total: 60
 
 ### Core — AI Coding
 
@@ -338,7 +339,7 @@ Ollama works out of the box with no API key. Run `orion config` for API key setu
 
 ```
 orion/
-├── cli/                        # CLI tool (53 commands)
+├── cli/                        # CLI tool (60 commands)
 │   ├── index.ts                # Entry point
 │   ├── ai-client.ts            # Multi-provider AI client
 │   ├── ui.ts                   # Premium UI components
@@ -347,7 +348,7 @@ orion/
 │   ├── shared.ts               # Shared patterns
 │   ├── pipeline.ts             # CI/CD pipeline mode
 │   ├── stdin.ts                # Unix pipe support
-│   └── commands/               # 53 command implementations
+│   └── commands/               # 60 command implementations
 │       ├── chat.ts             # Interactive chat with hot-switch
 │       ├── ask.ts              # Quick questions with @file refs
 │       ├── review.ts           # Code review with severity
