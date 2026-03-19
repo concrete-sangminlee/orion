@@ -8,7 +8,7 @@ const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const CLI_DIR = path.join(PROJECT_ROOT, 'cli');
 const COMMANDS_DIR = path.join(CLI_DIR, 'commands');
 const DIST_CLI_DIR = path.join(PROJECT_ROOT, 'dist-cli');
-const BUILT_INDEX = path.join(DIST_CLI_DIR, 'index.js');
+const BUILT_INDEX = path.join(DIST_CLI_DIR, 'index.mjs');
 const PACKAGE_JSON_PATH = path.join(PROJECT_ROOT, 'package.json');
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ describe('CLI build output', () => {
     expect(fs.existsSync(DIST_CLI_DIR)).toBe(true);
   });
 
-  it('dist-cli/index.js exists', () => {
+  it('dist-cli/index.mjs exists', () => {
     expect(fs.existsSync(BUILT_INDEX)).toBe(true);
   });
 
@@ -74,7 +74,7 @@ describe('package.json configuration', () => {
 
   it('bin field maps "orion" to dist-cli/index.js', () => {
     const pkg = readPackageJson();
-    expect(pkg.bin.orion).toBe('./dist-cli/index.js');
+    expect(pkg.bin.orion).toBe('./dist-cli/index.mjs');
   });
 
   it('has a name field set to "orion-ide"', () => {

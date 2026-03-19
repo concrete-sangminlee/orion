@@ -41,7 +41,7 @@
   },
   "main": "dist-electron/main.js",
   "bin": {
-    "orion": "./dist-cli/index.js"
+    "orion": "./dist-cli/index.mjs"
   },
   "scripts": {
     "dev": "vite",
@@ -57,7 +57,7 @@
     "package:linux": "vite build && electron-builder --config electron-builder.yml --linux",
     "package:all": "vite build && electron-builder --config electron-builder.yml -mwl",
     "prepublishOnly": "npm run cli:build",
-    "cli:build": "npx esbuild cli/index.ts --bundle --platform=node --target=node18 --outfile=dist-cli/index.js --banner:js=\"#!/usr/bin/env node\" --external:@anthropic-ai/sdk --external:openai --external:commander --external:chalk --external:ora --external:inquirer --external:marked --external:marked-terminal --external:cli-highlight",
+    "cli:build": "npx esbuild cli/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist-cli/index.mjs --external:@anthropic-ai/sdk --external:openai --external:commander --external:chalk --external:ora --external:inquirer --external:marked --external:marked-terminal --external:cli-highlight",
     "cli:dev": "npx tsx cli/index.ts",
     "test:cli": "vitest run cli/__tests__/"
   },
