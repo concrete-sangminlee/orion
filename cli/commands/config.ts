@@ -4,6 +4,8 @@
  * Loops back to menu after each action. Validates model names.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import inquirer from 'inquirer';
 import {
   colors,
@@ -306,11 +308,38 @@ export async function initCommand(): Promise<void> {
   console.log();
   initProjectContext();
 
+  // Create .orion/rules/ directory with a sample rule file
+  const orionDir = path.join(process.cwd(), '.orion');
+  const rulesDir = path.join(orionDir, 'rules');
+  if (!fs.existsSync(rulesDir)) {
+    fs.mkdirSync(rulesDir, { recursive: true });
+    printSuccess(`Created ${colors.file('.orion/rules/')} directory`);
+  } else {
+    printInfo(`${colors.file('.orion/rules/')} directory already exists`);
+  }
+
+  const sampleRulePath = path.join(rulesDir, 'general.md');
+  if (!fs.existsSync(sampleRulePath)) {
+    const sampleRule = `---
+glob: "*"
+description: "General project conventions"
+---
+Follow the existing code style and conventions in this project.
+Use descriptive variable names and add comments for complex logic.
+Prefer small, focused functions over large monolithic ones.
+`;
+    fs.writeFileSync(sampleRulePath, sampleRule, 'utf-8');
+    printSuccess(`Created ${colors.file('.orion/rules/general.md')} sample rule`);
+  } else {
+    printWarning(`${colors.file('.orion/rules/general.md')} already exists, skipping`);
+  }
+
   console.log();
   printSuccess('Orion initialized successfully!');
   printInfo(`Config saved to: ${colors.file(getConfigPath())}`);
   printInfo(`Project context: ${colors.file('.orion/context.md')}`);
   printInfo(`Custom commands: ${colors.file('.orion/commands/')}`);
+  printInfo(`Rules directory: ${colors.file('.orion/rules/')}`);
   console.log();
   printInfo('Quick start:');
   console.log(`    ${colors.command('orion chat')}        Start an interactive AI chat`);
@@ -320,5 +349,6 @@ export async function initCommand(): Promise<void> {
   console.log();
   printInfo('Edit .orion/context.md to add project-specific AI context.');
   printInfo('Add .md files to .orion/commands/ to create custom slash commands.');
+  printInfo('Add .md files to .orion/rules/ to create path-scoped rules.');
   console.log();
 }

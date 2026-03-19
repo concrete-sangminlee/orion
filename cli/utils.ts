@@ -482,28 +482,145 @@ export function maskApiKey(key: string): string {
 // ─── Project Context (Memory) ────────────────────────────────────────────────
 
 /**
- * Loads project context from hierarchical context files.
- * 1. Global context: ~/.orion/global-context.md
- * 2. Project context: .orion/context.md (in current working directory)
+ * Simple glob-pattern matcher supporting *, **, and ? wildcards.
+ * Converts a glob pattern into a RegExp and tests the input string.
+ */
+export function matchGlob(pattern: string, filePath: string): boolean {
+  // Normalize separators to forward slashes for matching
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedPattern = pattern.replace(/\\/g, '/');
+
+  // Escape regex special chars except our wildcards
+  let regexStr = normalizedPattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\u0000')        // placeholder for **
+    .replace(/\*/g, '[^/]*')           // * matches within a single segment
+    .replace(/\?/g, '[^/]')           // ? matches single non-separator char
+    .replace(/\u0000/g, '.*');         // ** matches across separators
+
+  // If pattern has no path separators, match against basename only
+  if (!normalizedPattern.includes('/')) {
+    const basename = normalizedPath.split('/').pop() || '';
+    return new RegExp(`^${regexStr}$`).test(basename);
+  }
+
+  return new RegExp(`^${regexStr}$`).test(normalizedPath);
+}
+
+/**
+ * Parse YAML-like frontmatter from a markdown string.
+ * Returns the parsed key-value pairs and the body content after the frontmatter.
+ */
+function parseFrontmatter(content: string): { meta: Record<string, string>; body: string } {
+  const meta: Record<string, string> = {};
+  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+  if (!fmMatch) {
+    return { meta, body: content };
+  }
+
+  const fmBlock = fmMatch[1];
+  const body = fmMatch[2];
+
+  for (const line of fmBlock.split('\n')) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx === -1) continue;
+    const key = line.substring(0, colonIdx).trim();
+    let value = line.substring(colonIdx + 1).trim();
+    // Strip surrounding quotes
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    meta[key] = value;
+  }
+
+  return { meta, body };
+}
+
+/**
+ * Loads project context from hierarchical context files (like Claude Code's CLAUDE.md).
  *
+ * Three levels of context are merged in order:
+ *   1. Global:  ~/.orion/global-context.md   (user-wide rules)
+ *   2. Project: .orion/context.md            (walks up ancestor directories)
+ *   3. Local:   .orion/rules/*.md            (path-scoped rules, glob matching)
+ *
+ * @param currentFilePath - Optional path of the file currently being worked on.
+ *                          When provided, only rules whose glob matches this path
+ *                          are injected.
  * Returns the combined context string, ready to inject into system prompts.
  */
-export function loadProjectContext(): string {
-  let context = '';
+export function loadProjectContext(currentFilePath?: string): string {
+  const sections: string[] = [];
 
-  // 1. Global context
+  // ── 1. Global context ─────────────────────────────────────────────────
   const globalCtx = path.join(os.homedir(), '.orion', 'global-context.md');
   if (fs.existsSync(globalCtx)) {
-    context += fs.readFileSync(globalCtx, 'utf-8') + '\n\n';
+    try {
+      const content = fs.readFileSync(globalCtx, 'utf-8').trim();
+      if (content) {
+        sections.push(`## [Global Context] (~/.orion/global-context.md)\n\n${content}`);
+      }
+    } catch { /* skip unreadable */ }
   }
 
-  // 2. Project context
-  const projectCtx = path.join(process.cwd(), '.orion', 'context.md');
-  if (fs.existsSync(projectCtx)) {
-    context += fs.readFileSync(projectCtx, 'utf-8') + '\n\n';
+  // ── 2. Project context (walk up ancestor directories) ─────────────────
+  const cwd = process.cwd();
+  const root = path.parse(cwd).root;
+  let dir = cwd;
+  const visited = new Set<string>();
+
+  while (dir && dir !== root && !visited.has(dir)) {
+    visited.add(dir);
+    const ctxFile = path.join(dir, '.orion', 'context.md');
+    if (fs.existsSync(ctxFile)) {
+      try {
+        const content = fs.readFileSync(ctxFile, 'utf-8').trim();
+        if (content) {
+          const relDir = path.relative(cwd, dir) || '.';
+          sections.push(`## [Project Context] (${relDir}/.orion/context.md)\n\n${content}`);
+        }
+      } catch { /* skip unreadable */ }
+    }
+    dir = path.dirname(dir);
   }
 
-  return context;
+  // ── 3. Local rules (.orion/rules/*.md with glob matching) ─────────────
+  const rulesDir = path.join(cwd, '.orion', 'rules');
+  if (fs.existsSync(rulesDir)) {
+    try {
+      const ruleFiles = fs.readdirSync(rulesDir).filter(f => f.endsWith('.md')).sort();
+      for (const ruleFile of ruleFiles) {
+        const rulePath = path.join(rulesDir, ruleFile);
+        try {
+          const raw = fs.readFileSync(rulePath, 'utf-8');
+          const { meta, body } = parseFrontmatter(raw);
+          const globPattern = meta.glob || meta.pattern;
+
+          // If there is a glob and a current file, only include matching rules
+          if (globPattern && currentFilePath) {
+            if (!matchGlob(globPattern, currentFilePath)) {
+              continue; // skip non-matching rule
+            }
+          }
+
+          // If there is a glob but no current file context, still include (general prompt)
+          const desc = meta.description ? ` - ${meta.description}` : '';
+          const globInfo = globPattern ? ` [glob: ${globPattern}]` : '';
+          const header = `## [Rule] ${ruleFile}${globInfo}${desc}`;
+          const bodyTrimmed = body.trim();
+          if (bodyTrimmed) {
+            sections.push(`${header}\n\n${bodyTrimmed}`);
+          }
+        } catch { /* skip unreadable rule */ }
+      }
+    } catch { /* skip unreadable directory */ }
+  }
+
+  if (sections.length === 0) {
+    return '';
+  }
+
+  return sections.join('\n\n---\n\n') + '\n';
 }
 
 // ─── Chat History Management ─────────────────────────────────────────────────

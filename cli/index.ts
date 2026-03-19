@@ -127,6 +127,9 @@ program
   .option('--no-color', 'Disable color output')
   .option('--quiet', 'Minimal output')
   .option('--dry-run', 'Show what would be changed without writing files')
+  .option('--system-prompt <text>', 'Override the default system prompt for AI commands')
+  .option('--max-turns <n>', 'Max conversation turns for headless multi-turn sessions')
+  .option('--output-format <format>', 'Output format: text, json, stream-json (for ask command)')
   .addHelpText('beforeAll', () => {
     printBanner();
     return '';
@@ -163,8 +166,13 @@ program
   .argument('[refs...]', 'Optional @file references for multi-file context')
   .action(async (question: string, refs: string[]) => {
     try {
+      const globalOpts = program.opts();
       const { askCommand } = await import('./commands/ask.js');
-      await askCommand(question, refs);
+      await askCommand(question, refs, {
+        systemPrompt: globalOpts.systemPrompt,
+        maxTurns: globalOpts.maxTurns ? parseInt(globalOpts.maxTurns, 10) : undefined,
+        outputFormat: globalOpts.outputFormat as 'text' | 'json' | 'stream-json' | undefined,
+      });
     } catch (err: any) {
       handleCommandError(err, 'ask', 'Ensure your AI provider is configured. Run `orion config`.');
     }
@@ -941,10 +949,11 @@ program
   .command('learn')
   .description('Analyze codebase patterns and generate .orion/patterns.md for AI accuracy')
   .option('--update', 'Update patterns from recent changes instead of full re-analysis')
-  .action(async (options: { update?: boolean }) => {
+  .option('--auto', 'Enable auto-learn mode: detect and record patterns from AI interactions')
+  .action(async (options: { update?: boolean; auto?: boolean }) => {
     try {
       const { learnCommand } = await import('./commands/learn.js');
-      await learnCommand({ update: options.update });
+      await learnCommand({ update: options.update, auto: options.auto });
     } catch (err: any) {
       handleCommandError(err, 'learn', 'Ensure your AI provider is configured. Run `orion config`.');
     }
@@ -963,12 +972,13 @@ program
   });
 
 program
-  .command('context <action> [target]')
-  .description('Manage AI context files (show, add, remove, list, estimate)')
-  .action(async (action: string, target?: string) => {
+  .command('context <action> [target] [extra]')
+  .description('Manage AI context files (show, add, remove, list, estimate, rules)')
+  .option('--rule <text>', 'Rule text for rules add command')
+  .action(async (action: string, target?: string, extra?: string, options?: { rule?: string }) => {
     try {
       const { contextCmdCommand } = await import('./commands/context-cmd.js');
-      await contextCmdCommand(action, target);
+      await contextCmdCommand(action, target, { rule: options?.rule, rulesAction: extra });
     } catch (err: any) {
       handleCommandError(err, 'context', 'Run `orion context --help` for usage.');
     }

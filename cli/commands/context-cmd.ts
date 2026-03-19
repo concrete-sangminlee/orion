@@ -22,6 +22,7 @@ import {
   loadProjectContext,
   readFileContent,
   fileExists,
+  matchGlob,
 } from '../utils.js';
 import { commandHeader, divider, statusLine, palette, table as uiTable } from '../ui.js';
 
@@ -478,9 +479,218 @@ function estimateContext(): void {
   console.log();
 }
 
+// ─── Rules Subcommands ──────────────────────────────────────────────────────
+
+function ensureRulesDir(): string {
+  const rulesDir = path.join(process.cwd(), ORION_DIR, 'rules');
+  if (!fs.existsSync(rulesDir)) {
+    fs.mkdirSync(rulesDir, { recursive: true });
+  }
+  return rulesDir;
+}
+
+function listRules(): void {
+  console.log(commandHeader('Orion Context - Rules'));
+
+  const rulesDir = path.join(process.cwd(), ORION_DIR, 'rules');
+  if (!fs.existsSync(rulesDir)) {
+    console.log();
+    console.log(`  ${palette.dim('No rules directory found.')}`);
+    console.log();
+    printInfo(`Run ${colors.command('orion init')} or ${colors.command('orion context rules add')} to create one.`);
+    console.log();
+    return;
+  }
+
+  let ruleFiles: string[];
+  try {
+    ruleFiles = fs.readdirSync(rulesDir).filter(f => f.endsWith('.md')).sort();
+  } catch {
+    printError('Could not read rules directory.');
+    return;
+  }
+
+  if (ruleFiles.length === 0) {
+    console.log();
+    console.log(`  ${palette.dim('No rule files found in .orion/rules/')}`);
+    console.log();
+    printInfo(`Use ${colors.command('orion context rules add <glob> --rule "..."')} to create rules.`);
+    console.log();
+    return;
+  }
+
+  console.log();
+
+  const rows: string[][] = [];
+
+  for (const ruleFile of ruleFiles) {
+    const rulePath = path.join(rulesDir, ruleFile);
+    try {
+      const raw = fs.readFileSync(rulePath, 'utf-8');
+      const fmMatch = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+      let glob = '-';
+      let description = '-';
+      let bodyPreview = '';
+
+      if (fmMatch) {
+        const fmBlock = fmMatch[1];
+        const body = fmMatch[2].trim();
+        for (const line of fmBlock.split('\n')) {
+          const colonIdx = line.indexOf(':');
+          if (colonIdx === -1) continue;
+          const key = line.substring(0, colonIdx).trim();
+          let value = line.substring(colonIdx + 1).trim();
+          if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1);
+          }
+          if (key === 'glob' || key === 'pattern') glob = value;
+          if (key === 'description') description = value;
+        }
+        bodyPreview = body.substring(0, 60) + (body.length > 60 ? '...' : '');
+      } else {
+        bodyPreview = raw.trim().substring(0, 60) + (raw.trim().length > 60 ? '...' : '');
+      }
+
+      rows.push([
+        colors.file(ruleFile),
+        glob,
+        description,
+        `~${estimateTokenCount(raw)}`,
+      ]);
+    } catch {
+      rows.push([
+        colors.file(ruleFile),
+        palette.dim('error'),
+        '-',
+        '-',
+      ]);
+    }
+  }
+
+  console.log(uiTable(
+    ['Rule File', 'Glob', 'Description', 'Tokens'],
+    rows,
+  ));
+  console.log();
+
+  printInfo(`${ruleFiles.length} rule(s) in ${colors.file('.orion/rules/')}`);
+  console.log();
+}
+
+function addRule(globPattern: string, ruleText?: string): void {
+  if (!ruleText) {
+    printError('Rule text is required.');
+    printInfo(`Usage: ${colors.command('orion context rules add "<glob>" --rule "Your rule text"')}`);
+    console.log();
+    return;
+  }
+
+  const rulesDir = ensureRulesDir();
+
+  // Generate a filename from the glob pattern
+  const safeName = globPattern
+    .replace(/[*?]/g, '')
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    || 'rule';
+  const baseName = safeName || 'rule';
+
+  // Find unique filename
+  let filename = `${baseName}.md`;
+  let counter = 1;
+  while (fs.existsSync(path.join(rulesDir, filename))) {
+    filename = `${baseName}-${counter}.md`;
+    counter++;
+  }
+
+  // Build frontmatter content
+  const content = `---
+glob: "${globPattern}"
+description: "Rule for ${globPattern}"
+---
+${ruleText}
+`;
+
+  const rulePath = path.join(rulesDir, filename);
+  fs.writeFileSync(rulePath, content, 'utf-8');
+
+  printSuccess(`Created rule ${colors.file(`.orion/rules/${filename}`)}`);
+  printInfo(`Glob: ${globPattern}`);
+  printInfo(`Rule: ${ruleText}`);
+  console.log();
+}
+
+function removeRule(ruleName: string): void {
+  const rulesDir = path.join(process.cwd(), ORION_DIR, 'rules');
+
+  if (!fs.existsSync(rulesDir)) {
+    printError('No rules directory found.');
+    return;
+  }
+
+  // Try exact match, then with .md extension
+  let target = ruleName;
+  if (!target.endsWith('.md')) {
+    target = target + '.md';
+  }
+
+  const rulePath = path.join(rulesDir, target);
+  if (!fs.existsSync(rulePath)) {
+    printError(`Rule file not found: ${colors.file(target)}`);
+    printInfo(`Use ${colors.command('orion context rules list')} to see available rules.`);
+    return;
+  }
+
+  fs.unlinkSync(rulePath);
+  printSuccess(`Removed rule ${colors.file(target)}`);
+  console.log();
+}
+
+function handleRulesSubcommand(action: string, target?: string, ruleText?: string): void {
+  switch (action) {
+    case 'list':
+    case 'ls':
+      listRules();
+      break;
+
+    case 'add':
+      if (!target) {
+        printError('Glob pattern required.');
+        printInfo(`Usage: ${colors.command('orion context rules add "<glob>" --rule "..."')}`);
+        console.log();
+        return;
+      }
+      addRule(target, ruleText);
+      break;
+
+    case 'remove':
+    case 'rm':
+      if (!target) {
+        printError('Rule filename required.');
+        printInfo(`Usage: ${colors.command('orion context rules remove <filename>')}`);
+        console.log();
+        return;
+      }
+      removeRule(target);
+      break;
+
+    default:
+      printError(`Unknown rules action: ${action}`);
+      console.log();
+      console.log(`  ${palette.violet.bold('Rules commands:')}`);
+      console.log();
+      console.log(`  ${colors.command('orion context rules list')}                        List all rule files`);
+      console.log(`  ${colors.command('orion context rules add "<glob>" --rule "..."')}   Add a new rule`);
+      console.log(`  ${colors.command('orion context rules remove <file>')}               Remove a rule`);
+      console.log();
+      break;
+  }
+}
+
 // ─── Main Command ───────────────────────────────────────────────────────────
 
-export async function contextCmdCommand(action: string, target?: string): Promise<void> {
+export async function contextCmdCommand(action: string, target?: string, extra?: { rule?: string; rulesAction?: string }): Promise<void> {
   switch (action) {
     case 'show':
       showContext();
@@ -519,6 +729,15 @@ export async function contextCmdCommand(action: string, target?: string): Promis
       estimateContext();
       break;
 
+    case 'rules': {
+      // Sub-dispatch: orion context rules <action> [target] [--rule "..."]
+      const rulesAction = target || 'list';
+      const rulesTarget = extra?.rulesAction;
+      const ruleText = extra?.rule;
+      handleRulesSubcommand(rulesAction, rulesTarget, ruleText);
+      break;
+    }
+
     default:
       printError(`Unknown action: ${action}`);
       console.log();
@@ -529,6 +748,7 @@ export async function contextCmdCommand(action: string, target?: string): Promis
       console.log(`  ${colors.command('orion context remove <file>')}     Remove a file from context`);
       console.log(`  ${colors.command('orion context list')}              List all context files`);
       console.log(`  ${colors.command('orion context estimate')}          Estimate token count`);
+      console.log(`  ${colors.command('orion context rules [action]')}    Manage path-scoped rules`);
       console.log();
       break;
   }

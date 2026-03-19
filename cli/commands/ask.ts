@@ -76,7 +76,13 @@ function loadFileContexts(filePaths: string[]): { contextBlock: string; loaded: 
   };
 }
 
-export async function askCommand(question: string, extraArgs: string[] = []): Promise<void> {
+export interface AskOptions {
+  systemPrompt?: string;
+  maxTurns?: number;
+  outputFormat?: 'text' | 'json' | 'stream-json';
+}
+
+export async function askCommand(question: string, extraArgs: string[] = [], options: AskOptions = {}): Promise<void> {
   // Parse @file references from extra arguments
   const parsed = parseAskArgs(extraArgs);
   const filePaths = parsed.filePaths;
@@ -128,29 +134,136 @@ export async function askCommand(question: string, extraArgs: string[] = []): Pr
     userMessage += fileContext;
   }
 
-  console.log(commandHeader('Orion Quick Ask'));
-  console.log(box(fullQuestion, { title: 'Question', color: '#38BDF8', padding: 0 }));
-  if (stdinData) {
-    console.log(`  ${palette.dim(`(with ${stdinData.split('\n').length} lines of piped input)`)}`);
-  }
-  if (filePaths.length > 0) {
-    console.log(`  ${palette.dim(`(with ${filePaths.length} file reference${filePaths.length > 1 ? 's' : ''})`)}`);
-  }
-  console.log();
+  const isHeadless = options.outputFormat === 'json' || options.outputFormat === 'stream-json' || (options.maxTurns && options.maxTurns > 1);
 
-  const spinner = startSpinner('Thinking...');
+  if (!isHeadless) {
+    console.log(commandHeader('Orion Quick Ask'));
+    console.log(box(fullQuestion, { title: 'Question', color: '#38BDF8', padding: 0 }));
+    if (stdinData) {
+      console.log(`  ${palette.dim(`(with ${stdinData.split('\n').length} lines of piped input)`)}`);
+    }
+    if (filePaths.length > 0) {
+      console.log(`  ${palette.dim(`(with ${filePaths.length} file reference${filePaths.length > 1 ? 's' : ''})`)}`);
+    }
+    console.log();
+  }
+
+  const spinner = isHeadless ? null : startSpinner('Thinking...');
   const context = getCurrentDirectoryContext();
   const projectContext = loadProjectContext();
 
-  const { callbacks } = createStreamHandler(spinner, {
+  const { callbacks } = createStreamHandler(spinner!, {
     label: 'Orion:',
     markdown: true,
   });
 
+  const baseSystemPrompt = options.systemPrompt || SYSTEM_PROMPT;
   const fullSystemPrompt = projectContext
-    ? SYSTEM_PROMPT + context + '\n\nProject context:\n' + projectContext
-    : SYSTEM_PROMPT + context;
+    ? baseSystemPrompt + context + '\n\nProject context:\n' + projectContext
+    : baseSystemPrompt + context;
 
+  // ── JSON output mode (headless) ─────────────────────────────────────────
+  if (options.outputFormat === 'json' || options.outputFormat === 'stream-json') {
+    const startTime = Date.now();
+    let responseText = '';
+    let inputTokenEst = Math.ceil((fullSystemPrompt.length + userMessage.length) / 4);
+
+    try {
+      await askAI(fullSystemPrompt, userMessage, {
+        onToken(token: string) {
+          responseText += token;
+          if (options.outputFormat === 'stream-json') {
+            // Emit each token as a stream-json line
+            process.stdout.write(JSON.stringify({ type: 'token', content: token }) + '\n');
+          }
+        },
+        onComplete(text: string) {
+          responseText = text;
+        },
+        onError(error: Error) {
+          const errJson = { type: 'error', error: error.message };
+          process.stdout.write(JSON.stringify(errJson) + '\n');
+        },
+      });
+
+      const durationMs = Date.now() - startTime;
+      const outputTokenEst = Math.ceil(responseText.length / 4);
+
+      const result = {
+        role: 'assistant',
+        content: responseText,
+        tokens: { input: inputTokenEst, output: outputTokenEst },
+        model: 'auto',
+        duration_ms: durationMs,
+      };
+
+      if (options.outputFormat === 'stream-json') {
+        process.stdout.write(JSON.stringify({ type: 'result', ...result }) + '\n');
+      } else {
+        process.stdout.write(JSON.stringify(result) + '\n');
+      }
+    } catch (err: any) {
+      const errJson = { role: 'error', error: err.message, duration_ms: Date.now() - startTime };
+      process.stdout.write(JSON.stringify(errJson) + '\n');
+      process.exit(1);
+    }
+    return;
+  }
+
+  // ── Multi-turn headless mode ────────────────────────────────────────────
+  if (options.maxTurns && options.maxTurns > 1) {
+    const readline = await import('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+    const messages: { role: string; content: string }[] = [
+      { role: 'user', content: userMessage },
+    ];
+    let turn = 0;
+
+    // First turn
+    try {
+      let response = '';
+      await askAI(fullSystemPrompt, userMessage, {
+        onToken(token: string) { response += token; },
+        onComplete(text: string) { response = text; },
+      });
+      turn++;
+      console.log(response);
+      messages.push({ role: 'assistant', content: response });
+    } catch (err: any) {
+      printCommandError(err, 'ask', 'Run `orion config` to check your AI provider settings.');
+      process.exit(1);
+    }
+
+    // Subsequent turns from stdin
+    if (turn < options.maxTurns) {
+      for await (const line of rl) {
+        if (turn >= options.maxTurns) break;
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === '/exit' || trimmed === '/quit') break;
+
+        messages.push({ role: 'user', content: trimmed });
+        const historyContext = messages.map(m => `${m.role}: ${m.content}`).join('\n\n');
+
+        try {
+          let response = '';
+          await askAI(fullSystemPrompt, historyContext + '\n\nuser: ' + trimmed, {
+            onToken(token: string) { response += token; },
+            onComplete(text: string) { response = text; },
+          });
+          turn++;
+          console.log(response);
+          messages.push({ role: 'assistant', content: response });
+        } catch (err: any) {
+          printCommandError(err, 'ask', 'Run `orion config` to check your AI provider settings.');
+          break;
+        }
+      }
+    }
+    rl.close();
+    return;
+  }
+
+  // ── Standard text output ────────────────────────────────────────────────
   try {
     await askAI(fullSystemPrompt, userMessage, callbacks);
     console.log();

@@ -218,6 +218,16 @@ export async function chatCommand(): Promise<void> {
     content: fullSystemContent,
   };
 
+  // ── Effort Level State ─────────────────────────────────────────────────────
+  type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+  const EFFORT_PROMPTS: Record<EffortLevel, string> = {
+    low: 'Be very concise, one-liner answers.',
+    medium: 'Be clear and thorough.',
+    high: 'Think step by step, consider edge cases.',
+    max: 'Think deeply, consider all angles, provide comprehensive analysis.',
+  };
+  let currentEffort: EffortLevel = 'medium';
+
   // Session tracking
   const sessionId = generateSessionId();
   let sessionSaved = false;
@@ -237,7 +247,10 @@ export async function chatCommand(): Promise<void> {
   }
 
   function prompt(): void {
-    process.stdout.write(`\n  ${getProviderBadge()}\n${palette.blue.bold('  You:')} `);
+    const effortTag = currentEffort !== 'medium'
+      ? ` ${chalk.dim(`[effort:${currentEffort}]`)}`
+      : '';
+    process.stdout.write(`\n  ${getProviderBadge()}${effortTag}\n${palette.blue.bold('  You:')} `);
   }
 
   function switchToNextProvider(): void {
@@ -375,6 +388,11 @@ ${colors.label('Session Commands:')}
   ${colors.command('/load <id>')}     Load a previous session
   ${colors.command('/stats')}         Show conversation statistics
   ${colors.command('/clear')}         Clear conversation history
+
+${colors.label('Context & Effort:')}
+  ${colors.command('/compact')}       Manually compact conversation history
+  ${colors.command('/context')}       Show context usage estimation (tokens)
+  ${colors.command('/effort <lvl>')}  Set effort level: low, medium, high, max
 
 ${colors.label('File & Shell:')}
   ${colors.command('/read <file>')}   Read a file and add it to conversation context
@@ -542,6 +560,99 @@ ${colors.label('Model Shortcuts:')}
         printSuccess('Conversation history cleared.');
         prompt();
         return true;
+
+      // ── Context & Effort commands ──────────────────────────────
+      case '/compact': {
+        if (history.length < 2) {
+          printInfo('Nothing to compact (conversation too short).');
+          prompt();
+          return true;
+        }
+        const beforeCount = history.length;
+        const beforeTokens = estimateTokens(history);
+        const compactSpinner = startSpinner('Compacting conversation history...');
+        compactHistory(history).then(compacted => {
+          stopSpinner(compactSpinner, 'History compacted');
+          history.length = 0;
+          history.push(...compacted);
+          const afterTokens = estimateTokens(history);
+          printSuccess(`Compacted: ${beforeCount} messages -> ${history.length} messages`);
+          printInfo(`Tokens: ~${beforeTokens.toLocaleString()} -> ~${afterTokens.toLocaleString()} (saved ~${(beforeTokens - afterTokens).toLocaleString()})`);
+          prompt();
+        }).catch(() => {
+          stopSpinner(compactSpinner, 'Compaction failed', false);
+          printWarning('Could not compact history. Continuing with full history.');
+          prompt();
+        });
+        return true;
+      }
+
+      case '/context': {
+        const systemTokens = estimateTokens([systemMessage]);
+        const projectCtxTokens = projectContext ? Math.ceil(projectContext.length / 4) : 0;
+        const historyTokens = estimateTokens(history);
+        const historyMsgCount = history.length;
+        const totalTokens = systemTokens + historyTokens;
+
+        // Determine context limit based on active provider
+        const contextLimits: Record<string, number> = {
+          anthropic: 200000,
+          openai: 128000,
+          ollama: 128000,
+        };
+        const limit = contextLimits[activeProvider] || 128000;
+        const usagePercent = Math.min(100, (totalTokens / limit) * 100);
+
+        // Build progress bar (20 chars wide)
+        const filledCount = Math.round(usagePercent / 5);
+        const emptyCount = 20 - filledCount;
+        const barColor = usagePercent < 50 ? chalk.green : usagePercent < 80 ? chalk.yellow : chalk.red;
+        const progressBar = barColor('\u2588'.repeat(filledCount)) + chalk.dim('\u2591'.repeat(emptyCount));
+
+        console.log();
+        console.log(colors.label('  Context Usage:'));
+        console.log(`    System prompt:     ${chalk.white('~' + systemTokens.toLocaleString() + ' tokens')}`);
+        if (projectCtxTokens > 0) {
+          console.log(`    Project context:   ${chalk.white('~' + projectCtxTokens.toLocaleString() + ' tokens')}`);
+        }
+        console.log(`    Chat history:      ${chalk.white('~' + historyTokens.toLocaleString() + ' tokens')} ${chalk.dim('(' + historyMsgCount + ' messages)')}`);
+        console.log(chalk.dim('    ' + '\u2500'.repeat(35)));
+        console.log(`    Total:             ${chalk.bold('~' + totalTokens.toLocaleString() + ' tokens')}`);
+        console.log(`    Limit:             ${chalk.dim(limit.toLocaleString())} ${chalk.dim('(' + getProviderDisplay(activeProvider).name + ')')}`);
+        console.log(`    Usage:             ${usagePercent < 50 ? chalk.green(usagePercent.toFixed(1) + '%') : usagePercent < 80 ? chalk.yellow(usagePercent.toFixed(1) + '%') : chalk.red(usagePercent.toFixed(1) + '%')}`);
+        console.log(`    ${progressBar} ${chalk.dim(Math.round(usagePercent) + '%')}`);
+        console.log();
+        prompt();
+        return true;
+      }
+
+      case '/effort': {
+        const levelArg = parts[1]?.toLowerCase();
+        const validLevels: EffortLevel[] = ['low', 'medium', 'high', 'max'];
+        if (!levelArg) {
+          console.log();
+          console.log(colors.label('  Effort Level:'));
+          for (const lvl of validLevels) {
+            const marker = lvl === currentEffort ? chalk.green(' \u25CF ') : chalk.dim(' \u25CB ');
+            const label = lvl === currentEffort ? chalk.white.bold(lvl) : chalk.dim(lvl);
+            console.log(`  ${marker}${label.padEnd(lvl === currentEffort ? 8 : 8)} ${chalk.dim(EFFORT_PROMPTS[lvl])}`);
+          }
+          console.log();
+          printInfo('Usage: /effort <low|medium|high|max>');
+          prompt();
+          return true;
+        }
+        if (!validLevels.includes(levelArg as EffortLevel)) {
+          printWarning(`Invalid effort level: ${levelArg}. Use: low, medium, high, max`);
+          prompt();
+          return true;
+        }
+        currentEffort = levelArg as EffortLevel;
+        const emoji = { low: '\u26A1', medium: '\u2696', high: '\uD83E\uDDE0', max: '\uD83D\uDD2C' }[currentEffort];
+        printSuccess(`Effort set to ${chalk.bold(currentEffort)} ${emoji} - ${EFFORT_PROMPTS[currentEffort]}`);
+        prompt();
+        return true;
+      }
 
       // ── File & Shell tool-use commands ────────────────────────
       case '/read': {
@@ -883,7 +994,11 @@ ${colors.label('Model Shortcuts:')}
     const responseStart = new Date();
 
     try {
-      const messages: AIMessage[] = [systemMessage, ...history];
+      // Prepend effort-level modifier to system prompt when not default
+      const effectiveSystem: AIMessage = currentEffort !== 'medium'
+        ? { role: 'system', content: `[Effort: ${currentEffort}] ${EFFORT_PROMPTS[currentEffort]}\n\n${systemMessage.content}` }
+        : systemMessage;
+      const messages: AIMessage[] = [effectiveSystem, ...history];
 
       await streamChat(messages, {
         onToken(token: string) {
