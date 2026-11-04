@@ -92,6 +92,11 @@ const COMPAT_MAX_TOKENS = 4096
 
 type OnChunk = (text: string) => void
 
+export interface CallOptions {
+  /** Aborts the in-flight provider request; an aborted call is never added to history. */
+  signal?: AbortSignal
+}
+
 function toAnthropicRequest(config: AIConfig, messages: ChatMessage[]): Anthropic.MessageCreateParamsNonStreaming {
   return {
     model: config.model,
@@ -102,19 +107,19 @@ function toAnthropicRequest(config: AIConfig, messages: ChatMessage[]): Anthropi
 }
 
 // Call Anthropic API; streams through onChunk when it is given
-async function callAnthropic(config: AIConfig, messages: ChatMessage[], handler: EventHandler, onChunk?: OnChunk): Promise<string> {
+async function callAnthropic(config: AIConfig, messages: ChatMessage[], handler: EventHandler, onChunk?: OnChunk, signal?: AbortSignal): Promise<string> {
   const AnthropicSDK = (await import('@anthropic-ai/sdk')).default
   const client = new AnthropicSDK({ apiKey: config.apiKey })
   const request = toAnthropicRequest(config, messages)
 
   if (!onChunk) {
     log(handler, 'hephaestus', 'Calling Claude API...', 'action')
-    const response = await client.messages.create(request)
+    const response = await client.messages.create(request, { signal })
     return response.content.map(b => (b.type === 'text' ? b.text : '')).join('')
   }
 
   log(handler, 'hephaestus', 'Calling Claude API (streaming)...', 'action')
-  const stream = client.messages.stream(request)
+  const stream = client.messages.stream(request, { signal })
 
   let fullText = ''
   stream.on('text', (text) => {
@@ -133,7 +138,7 @@ function outputTokenLimit(config: AIConfig): { max_tokens?: number; max_completi
 }
 
 // Call OpenAI-compatible API (OpenAI, Moonshot, Gemini, NVIDIA NIM, Ollama); streams through onChunk when it is given
-async function callOpenAICompat(config: AIConfig, messages: ChatMessage[], handler: EventHandler, onChunk?: OnChunk): Promise<string> {
+async function callOpenAICompat(config: AIConfig, messages: ChatMessage[], handler: EventHandler, onChunk?: OnChunk, signal?: AbortSignal): Promise<string> {
   const OpenAI = (await import('openai')).default
   const client = new OpenAI({ apiKey: config.apiKey, ...(config.baseURL ? { baseURL: config.baseURL } : {}) })
 
@@ -146,12 +151,12 @@ async function callOpenAICompat(config: AIConfig, messages: ChatMessage[], handl
 
   if (!onChunk) {
     log(handler, 'hephaestus', `Calling ${label}...`, 'action')
-    const response = await client.chat.completions.create(request)
+    const response = await client.chat.completions.create(request, { signal })
     return response.choices[0]?.message?.content || 'No response generated.'
   }
 
   log(handler, 'hephaestus', `Calling ${label} (streaming)...`, 'action')
-  const stream = await client.chat.completions.create({ ...request, stream: true })
+  const stream = await client.chat.completions.create({ ...request, stream: true }, { signal })
 
   let fullText = ''
   for await (const chunk of stream) {
@@ -305,16 +310,20 @@ async function runCall(
   message: string,
   apiKeys: Record<string, string>,
   handler: EventHandler,
-  onChunk?: OnChunk,
+  onChunk: OnChunk | undefined,
+  { signal }: CallOptions = {},
 ): Promise<{ content: string; model: string } | null> {
+  signal?.throwIfAborted()
   const prepared = prepareCall(selectedModel, message, apiKeys, handler, onChunk !== undefined)
   if (!prepared) return null
 
   const { config, userTurn, messages } = prepared
   const content = config.provider === 'anthropic'
-    ? await callAnthropic(config, messages, handler, onChunk)
-    : await callOpenAICompat(config, messages, handler, onChunk)
+    ? await callAnthropic(config, messages, handler, onChunk, signal)
+    : await callOpenAICompat(config, messages, handler, onChunk, signal)
 
+  // A cancel that lands as the reply completes still discards the turn.
+  signal?.throwIfAborted()
   commitExchange(userTurn, content)
   return { content, model: config.model }
 }
@@ -324,8 +333,9 @@ export async function callAI(
   message: string,
   apiKeys: Record<string, string>,
   handler: EventHandler,
+  options?: CallOptions,
 ): Promise<{ content: string; model: string } | null> {
-  return runCall(selectedModel, message, apiKeys, handler)
+  return runCall(selectedModel, message, apiKeys, handler, undefined, options)
 }
 
 export async function callAIStreaming(
@@ -334,8 +344,9 @@ export async function callAIStreaming(
   apiKeys: Record<string, string>,
   handler: EventHandler,
   onChunk: (text: string) => void,
+  options?: CallOptions,
 ): Promise<{ content: string; model: string } | null> {
-  return runCall(selectedModel, message, apiKeys, handler, onChunk)
+  return runCall(selectedModel, message, apiKeys, handler, onChunk, options)
 }
 
 export function hasApiKey(selectedModel: string, apiKeys: Record<string, string>): boolean {
