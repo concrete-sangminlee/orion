@@ -3095,11 +3095,11 @@ export default function EditorPanel() {
               if (!activeFile) return
               try {
                 const result = await window.api.readFile(activeFile.path)
-                if (!result.error) {
-                  reloadFileContent(activeFile.path, result.content)
-                  addToast({ type: 'info', message: 'File reloaded from disk' })
-                }
-              } catch { /* ignore */ }
+                reloadFileContent(activeFile.path, result.content)
+                addToast({ type: 'info', message: 'File reloaded from disk' })
+              } catch (err) {
+                addToast({ type: 'error', message: `Failed to reload file: ${err instanceof Error ? err.message : String(err)}` })
+              }
             }}
             style={{
               padding: '2px 10px',

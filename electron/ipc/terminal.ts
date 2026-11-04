@@ -1,10 +1,11 @@
-import type { IpcMain, BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import { createTerminal, writeToTerminal, resizeTerminal, killTerminal } from '../terminal/manager'
 import { validateShellOptions } from './terminal-options-guard'
+import { handle, listen, emit } from './typed-ipc'
 
-export function registerTerminalHandlers(ipcMain: IpcMain, getWindow: () => BrowserWindow | null) {
-  ipcMain.handle(IPC.TERM_CREATE, async (_event, id: string, shellOptions?: unknown) => {
+export function registerTerminalHandlers(getWindow: () => BrowserWindow | null) {
+  handle(IPC.TERM_CREATE, async (_event, id: string, shellOptions?: unknown) => {
     let safeOptions
     try {
       safeOptions = validateShellOptions(shellOptions)
@@ -12,19 +13,19 @@ export function registerTerminalHandlers(ipcMain: IpcMain, getWindow: () => Brow
       return { success: false, error: err.message }
     }
     return await createTerminal(id, (data) => {
-      getWindow()?.webContents.send(IPC.TERM_DATA, id, data)
+      emit(getWindow(), IPC.TERM_DATA, id, data)
     }, safeOptions)
   })
 
-  ipcMain.on(IPC.TERM_WRITE, (_event, id: string, data: string) => {
+  listen(IPC.TERM_WRITE, (_event, id: string, data: string) => {
     writeToTerminal(id, data)
   })
 
-  ipcMain.on(IPC.TERM_RESIZE, (_event, id: string, cols: number, rows: number) => {
+  listen(IPC.TERM_RESIZE, (_event, id: string, cols: number, rows: number) => {
     resizeTerminal(id, cols, rows)
   })
 
-  ipcMain.on(IPC.TERM_KILL, (_event, id: string) => {
+  listen(IPC.TERM_KILL, (_event, id: string) => {
     killTerminal(id)
   })
 }

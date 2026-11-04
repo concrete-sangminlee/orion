@@ -1,11 +1,11 @@
-import type { IpcMain } from 'electron'
 import { clipboard } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import { validateClipboardImageSize, validateClipboardPngBuffer, validateClipboardText } from './clipboard-guard'
+import { handle } from './typed-ipc'
 
-export function registerClipboardHandlers(ipcMain: IpcMain) {
+export function registerClipboardHandlers() {
   // clipboard:read-text - read text from clipboard
-  ipcMain.handle(IPC.CLIPBOARD_READ_TEXT, async () => {
+  handle(IPC.CLIPBOARD_READ_TEXT, async () => {
     try {
       const text = clipboard.readText()
       return { success: true, text }
@@ -15,7 +15,7 @@ export function registerClipboardHandlers(ipcMain: IpcMain) {
   })
 
   // clipboard:write-text - write text to clipboard
-  ipcMain.handle(IPC.CLIPBOARD_WRITE_TEXT, async (_event, text: string) => {
+  handle(IPC.CLIPBOARD_WRITE_TEXT, async (_event, text: string) => {
     try {
       const safeText = validateClipboardText(text)
       clipboard.writeText(safeText)
@@ -26,7 +26,7 @@ export function registerClipboardHandlers(ipcMain: IpcMain) {
   })
 
   // clipboard:read-image - read image from clipboard as base64 PNG
-  ipcMain.handle(IPC.CLIPBOARD_READ_IMAGE, async () => {
+  handle(IPC.CLIPBOARD_READ_IMAGE, async () => {
     try {
       const image = clipboard.readImage()
       if (image.isEmpty()) {

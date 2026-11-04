@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, screen, globalShortcut } from 'electron'
+import { app, BrowserWindow, dialog, Menu, screen, globalShortcut } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { registerFilesystemHandlers } from './ipc/filesystem'
@@ -11,6 +11,8 @@ import { registerFileOperationHandlers } from './ipc/file-operations'
 import { registerClipboardHandlers } from './ipc/clipboard'
 import { registerShellHandlers } from './ipc/shell'
 import { registerTaskHandlers } from './ipc/tasks'
+import { handle, listen, emit } from './ipc/typed-ipc'
+import { grantFileAccess } from './workspace/granted-files'
 
 // --- Constants ---
 const isMac = process.platform === 'darwin'
@@ -151,7 +153,7 @@ interface UpdateStatus {
 
 function sendUpdateStatus(win: BrowserWindow, updateStatus: UpdateStatus): void {
   if (!win.isDestroyed()) {
-    win.webContents.send('app:update-status', updateStatus)
+    emit(win, 'app:update-status', updateStatus)
   }
 }
 
@@ -189,11 +191,15 @@ function getFilesFromArgs(argv: string[]): string[] {
 }
 
 function openFilesInWindow(win: BrowserWindow, filePaths: string[]): void {
+  // Every path reaching here was chosen by the user (native dialog, OS file
+  // association, command line), so the renderer may read and save it even
+  // when it lives outside the open workspace.
+  filePaths.forEach(grantFileAccess)
   if (filePaths.length > 0 && !win.isDestroyed()) {
     // Wait for renderer to be ready, then send file open requests
     const send = () => {
       filePaths.forEach((filePath) => {
-        win.webContents.send('app:open-file', filePath)
+        emit(win, 'app:open-file', filePath)
       })
     }
     if (win.webContents.isLoading()) {
@@ -202,6 +208,18 @@ function openFilesInWindow(win: BrowserWindow, filePaths: string[]): void {
       send()
     }
   }
+}
+
+async function showOpenFilesDialog(win: BrowserWindow | null): Promise<string[]> {
+  const options: Electron.OpenDialogOptions = {
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'All Supported', extensions: SUPPORTED_FILE_EXTENSIONS.map((e) => e.slice(1)) },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  }
+  const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+  return result.canceled ? [] : result.filePaths
 }
 
 // --- Application Menu ---
@@ -218,7 +236,7 @@ function buildAppMenu(): Menu {
         {
           label: 'Preferences...',
           accelerator: 'Cmd+,',
-          click: () => getActiveWindow()?.webContents.send('app:open-settings'),
+          click: () => emit(getActiveWindow(), 'app:open-settings'),
         },
         { type: 'separator' },
         { role: 'services' },
@@ -239,7 +257,7 @@ function buildAppMenu(): Menu {
       {
         label: 'New File',
         accelerator: 'CmdOrCtrl+N',
-        click: () => getActiveWindow()?.webContents.send('app:new-file'),
+        click: () => emit(getActiveWindow(), 'app:new-file'),
       },
       {
         label: 'New Window',
@@ -253,16 +271,8 @@ function buildAppMenu(): Menu {
         click: async () => {
           const win = getActiveWindow()
           if (!win) return
-          const result = await dialog.showOpenDialog(win, {
-            properties: ['openFile', 'multiSelections'],
-            filters: [
-              { name: 'All Supported', extensions: SUPPORTED_FILE_EXTENSIONS.map((e) => e.slice(1)) },
-              { name: 'All Files', extensions: ['*'] },
-            ],
-          })
-          if (!result.canceled) {
-            openFilesInWindow(win, result.filePaths)
-          }
+          const filePaths = await showOpenFilesDialog(win)
+          openFilesInWindow(win, filePaths)
         },
       },
       {
@@ -275,7 +285,7 @@ function buildAppMenu(): Menu {
             properties: ['openDirectory'],
           })
           if (!result.canceled && result.filePaths[0]) {
-            win.webContents.send('app:open-folder', result.filePaths[0])
+            emit(win, 'app:open-folder', result.filePaths[0])
           }
         },
       },
@@ -283,17 +293,17 @@ function buildAppMenu(): Menu {
       {
         label: 'Save',
         accelerator: 'CmdOrCtrl+S',
-        click: () => getActiveWindow()?.webContents.send('app:save'),
+        click: () => emit(getActiveWindow(), 'app:save'),
       },
       {
         label: 'Save As...',
         accelerator: 'CmdOrCtrl+Shift+S',
-        click: () => getActiveWindow()?.webContents.send('app:save-as'),
+        click: () => emit(getActiveWindow(), 'app:save-as'),
       },
       {
         label: 'Save All',
         accelerator: isMac ? 'Cmd+Alt+S' : 'Ctrl+K S',
-        click: () => getActiveWindow()?.webContents.send('app:save-all'),
+        click: () => emit(getActiveWindow(), 'app:save-all'),
       },
       { type: 'separator' },
       ...(!isMac
@@ -301,7 +311,7 @@ function buildAppMenu(): Menu {
             {
               label: 'Preferences',
               accelerator: 'Ctrl+,' as const,
-              click: () => getActiveWindow()?.webContents.send('app:open-settings'),
+              click: () => emit(getActiveWindow(), 'app:open-settings'),
             },
             { type: 'separator' as const },
           ]
@@ -325,23 +335,23 @@ function buildAppMenu(): Menu {
       {
         label: 'Find',
         accelerator: 'CmdOrCtrl+F',
-        click: () => getActiveWindow()?.webContents.send('app:find'),
+        click: () => emit(getActiveWindow(), 'app:find'),
       },
       {
         label: 'Replace',
         accelerator: 'CmdOrCtrl+H',
-        click: () => getActiveWindow()?.webContents.send('app:replace'),
+        click: () => emit(getActiveWindow(), 'app:replace'),
       },
       { type: 'separator' },
       {
         label: 'Find in Files',
         accelerator: 'CmdOrCtrl+Shift+F',
-        click: () => getActiveWindow()?.webContents.send('app:find-in-files'),
+        click: () => emit(getActiveWindow(), 'app:find-in-files'),
       },
       {
         label: 'Replace in Files',
         accelerator: 'CmdOrCtrl+Shift+H',
-        click: () => getActiveWindow()?.webContents.send('app:replace-in-files'),
+        click: () => emit(getActiveWindow(), 'app:replace-in-files'),
       },
     ],
   })
@@ -353,39 +363,39 @@ function buildAppMenu(): Menu {
       {
         label: 'Command Palette...',
         accelerator: 'CmdOrCtrl+Shift+P',
-        click: () => getActiveWindow()?.webContents.send('app:command-palette'),
+        click: () => emit(getActiveWindow(), 'app:command-palette'),
       },
       { type: 'separator' },
       {
         label: 'Explorer',
         accelerator: 'CmdOrCtrl+Shift+E',
-        click: () => getActiveWindow()?.webContents.send('app:toggle-sidebar', 'explorer'),
+        click: () => emit(getActiveWindow(), 'app:toggle-sidebar', 'explorer'),
       },
       {
         label: 'Search',
         accelerator: 'CmdOrCtrl+Shift+F',
-        click: () => getActiveWindow()?.webContents.send('app:toggle-sidebar', 'search'),
+        click: () => emit(getActiveWindow(), 'app:toggle-sidebar', 'search'),
       },
       {
         label: 'Source Control',
         accelerator: 'CmdOrCtrl+Shift+G',
-        click: () => getActiveWindow()?.webContents.send('app:toggle-sidebar', 'git'),
+        click: () => emit(getActiveWindow(), 'app:toggle-sidebar', 'git'),
       },
       {
         label: 'Extensions',
         accelerator: 'CmdOrCtrl+Shift+X',
-        click: () => getActiveWindow()?.webContents.send('app:toggle-sidebar', 'extensions'),
+        click: () => emit(getActiveWindow(), 'app:toggle-sidebar', 'extensions'),
       },
       { type: 'separator' },
       {
         label: 'Toggle Sidebar',
         accelerator: 'CmdOrCtrl+B',
-        click: () => getActiveWindow()?.webContents.send('app:toggle-sidebar'),
+        click: () => emit(getActiveWindow(), 'app:toggle-sidebar'),
       },
       {
         label: 'Toggle Panel',
         accelerator: 'CmdOrCtrl+J',
-        click: () => getActiveWindow()?.webContents.send('app:toggle-panel'),
+        click: () => emit(getActiveWindow(), 'app:toggle-panel'),
       },
       { type: 'separator' },
       {
@@ -429,39 +439,39 @@ function buildAppMenu(): Menu {
       {
         label: 'Go to File...',
         accelerator: 'CmdOrCtrl+P',
-        click: () => getActiveWindow()?.webContents.send('app:quick-open'),
+        click: () => emit(getActiveWindow(), 'app:quick-open'),
       },
       {
         label: 'Go to Symbol...',
         accelerator: 'CmdOrCtrl+Shift+O',
-        click: () => getActiveWindow()?.webContents.send('app:go-to-symbol'),
+        click: () => emit(getActiveWindow(), 'app:go-to-symbol'),
       },
       {
         label: 'Go to Line...',
         accelerator: 'CmdOrCtrl+G',
-        click: () => getActiveWindow()?.webContents.send('app:go-to-line'),
+        click: () => emit(getActiveWindow(), 'app:go-to-line'),
       },
       { type: 'separator' },
       {
         label: 'Go Back',
         accelerator: isMac ? 'Ctrl+-' : 'Alt+Left',
-        click: () => getActiveWindow()?.webContents.send('app:go-back'),
+        click: () => emit(getActiveWindow(), 'app:go-back'),
       },
       {
         label: 'Go Forward',
         accelerator: isMac ? 'Ctrl+Shift+-' : 'Alt+Right',
-        click: () => getActiveWindow()?.webContents.send('app:go-forward'),
+        click: () => emit(getActiveWindow(), 'app:go-forward'),
       },
       { type: 'separator' },
       {
         label: 'Go to Definition',
         accelerator: 'F12',
-        click: () => getActiveWindow()?.webContents.send('app:go-to-definition'),
+        click: () => emit(getActiveWindow(), 'app:go-to-definition'),
       },
       {
         label: 'Peek Definition',
         accelerator: isMac ? 'Alt+F12' : 'Alt+F12',
-        click: () => getActiveWindow()?.webContents.send('app:peek-definition'),
+        click: () => emit(getActiveWindow(), 'app:peek-definition'),
       },
     ],
   })
@@ -473,38 +483,38 @@ function buildAppMenu(): Menu {
       {
         label: 'Start Debugging',
         accelerator: 'F5',
-        click: () => getActiveWindow()?.webContents.send('app:start-debugging'),
+        click: () => emit(getActiveWindow(), 'app:start-debugging'),
       },
       {
         label: 'Run Without Debugging',
         accelerator: 'Ctrl+F5',
-        click: () => getActiveWindow()?.webContents.send('app:run-without-debugging'),
+        click: () => emit(getActiveWindow(), 'app:run-without-debugging'),
       },
       {
         label: 'Stop Debugging',
         accelerator: 'Shift+F5',
-        click: () => getActiveWindow()?.webContents.send('app:stop-debugging'),
+        click: () => emit(getActiveWindow(), 'app:stop-debugging'),
       },
       {
         label: 'Restart Debugging',
         accelerator: 'CmdOrCtrl+Shift+F5',
-        click: () => getActiveWindow()?.webContents.send('app:restart-debugging'),
+        click: () => emit(getActiveWindow(), 'app:restart-debugging'),
       },
       { type: 'separator' },
       {
         label: 'Toggle Breakpoint',
         accelerator: 'F9',
-        click: () => getActiveWindow()?.webContents.send('app:toggle-breakpoint'),
+        click: () => emit(getActiveWindow(), 'app:toggle-breakpoint'),
       },
       { type: 'separator' },
       {
         label: 'Run Task...',
-        click: () => getActiveWindow()?.webContents.send('app:run-task'),
+        click: () => emit(getActiveWindow(), 'app:run-task'),
       },
       {
         label: 'Run Build Task',
         accelerator: 'CmdOrCtrl+Shift+B',
-        click: () => getActiveWindow()?.webContents.send('app:run-build-task'),
+        click: () => emit(getActiveWindow(), 'app:run-build-task'),
       },
     ],
   })
@@ -516,21 +526,21 @@ function buildAppMenu(): Menu {
       {
         label: 'New Terminal',
         accelerator: 'CmdOrCtrl+`',
-        click: () => getActiveWindow()?.webContents.send('app:new-terminal'),
+        click: () => emit(getActiveWindow(), 'app:new-terminal'),
       },
       {
         label: 'Split Terminal',
         accelerator: 'CmdOrCtrl+Shift+`',
-        click: () => getActiveWindow()?.webContents.send('app:split-terminal'),
+        click: () => emit(getActiveWindow(), 'app:split-terminal'),
       },
       { type: 'separator' },
       {
         label: 'Run Active File',
-        click: () => getActiveWindow()?.webContents.send('app:run-active-file'),
+        click: () => emit(getActiveWindow(), 'app:run-active-file'),
       },
       {
         label: 'Run Selected Text',
-        click: () => getActiveWindow()?.webContents.send('app:run-selected-text'),
+        click: () => emit(getActiveWindow(), 'app:run-selected-text'),
       },
     ],
   })
@@ -541,7 +551,7 @@ function buildAppMenu(): Menu {
     submenu: [
       {
         label: 'Welcome',
-        click: () => getActiveWindow()?.webContents.send('app:show-welcome'),
+        click: () => emit(getActiveWindow(), 'app:show-welcome'),
       },
       {
         label: 'Documentation',
@@ -552,13 +562,13 @@ function buildAppMenu(): Menu {
       },
       {
         label: 'Release Notes',
-        click: () => getActiveWindow()?.webContents.send('app:show-release-notes'),
+        click: () => emit(getActiveWindow(), 'app:show-release-notes'),
       },
       { type: 'separator' },
       {
         label: 'Keyboard Shortcuts',
         accelerator: 'CmdOrCtrl+K CmdOrCtrl+S',
-        click: () => getActiveWindow()?.webContents.send('app:show-keybindings'),
+        click: () => emit(getActiveWindow(), 'app:show-keybindings'),
       },
       { type: 'separator' },
       {
@@ -584,7 +594,7 @@ function buildAppMenu(): Menu {
               click: () => {
                 const win = getActiveWindow()
                 if (win) {
-                  win.webContents.send('app:open-about')
+                  emit(win, 'app:open-about')
                 }
               },
             },
@@ -726,30 +736,30 @@ function createWindow(filesToOpen?: string[]): BrowserWindow {
 }
 
 function registerIpcHandlers() {
-  registerFilesystemHandlers(ipcMain, () => mainWindow)
-  registerTerminalHandlers(ipcMain, () => mainWindow)
-  registerSettingsHandlers(ipcMain)
-  registerOmoHandlers(ipcMain, () => mainWindow)
+  registerFilesystemHandlers(() => mainWindow)
+  registerTerminalHandlers(() => mainWindow)
+  registerSettingsHandlers()
+  registerOmoHandlers(() => mainWindow)
   registerGitHandlers()
-  registerWorkspaceHandlers(ipcMain)
-  registerFileOperationHandlers(ipcMain, () => mainWindow)
-  registerClipboardHandlers(ipcMain)
-  registerShellHandlers(ipcMain)
-  registerTaskHandlers(ipcMain, () => mainWindow)
+  registerWorkspaceHandlers()
+  registerFileOperationHandlers(() => mainWindow)
+  registerClipboardHandlers()
+  registerShellHandlers()
+  registerTaskHandlers(() => mainWindow)
 
   // Window controls
-  ipcMain.on('win:minimize', () => mainWindow?.minimize())
-  ipcMain.on('win:maximize', () => {
+  listen('win:minimize', () => mainWindow?.minimize())
+  listen('win:maximize', () => {
     if (mainWindow?.isMaximized()) {
       mainWindow.unmaximize()
     } else {
       mainWindow?.maximize()
     }
   })
-  ipcMain.on('win:close', () => mainWindow?.close())
+  listen('win:close', () => mainWindow?.close())
 
   // Open folder dialog
-  ipcMain.handle('fs:open-folder', async () => {
+  handle('fs:open-folder', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory'],
     })
@@ -757,19 +767,26 @@ function registerIpcHandlers() {
     return result.filePaths[0]
   })
 
+  handle('fs:open-file-dialog', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const filePaths = await showOpenFilesDialog(win)
+    filePaths.forEach(grantFileAccess)
+    return filePaths
+  })
+
   // New window via IPC (renderer can also request it)
-  ipcMain.on('app:new-window', () => {
+  listen('app:new-window', () => {
     createWindow()
   })
 
   // Update check via IPC
-  ipcMain.handle('app:check-for-updates', async () => {
+  handle('app:check-for-updates', async () => {
     const win = getActiveWindow()
     if (win) await checkForUpdates(win)
   })
 
   // Get app info
-  ipcMain.handle('app:get-info', () => ({
+  handle('app:get-info', () => ({
     version: app.getVersion(),
     electron: process.versions.electron,
     chrome: process.versions.chrome,

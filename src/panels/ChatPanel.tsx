@@ -2358,7 +2358,7 @@ export default function ChatPanel() {
 
   // Stop generation handler
   const handleStopGeneration = useCallback(() => {
-    window.api?.omoSend({ type: 'stop' })
+    window.api?.omoSend({ type: 'cancel', payload: {} })
     useChatStore.getState().setStreaming(false)
     addToast({ type: 'info', message: 'Generation stopped' })
   }, [addToast])

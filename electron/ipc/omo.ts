@@ -1,29 +1,30 @@
-import type { IpcMain, BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import { startOmo, sendToOmo, stopOmo, setApiKeys, setPrompts } from '../omo-bridge/bridge'
+import { handle, listen, emit } from './typed-ipc'
 
-export function registerOmoHandlers(ipcMain: IpcMain, getWindow: () => BrowserWindow | null) {
-  ipcMain.handle(IPC.OMO_START, async () => {
+export function registerOmoHandlers(getWindow: () => BrowserWindow | null) {
+  handle(IPC.OMO_START, async () => {
     await startOmo((event) => {
-      getWindow()?.webContents.send(IPC.OMO_MESSAGE, event)
+      emit(getWindow(), IPC.OMO_MESSAGE, event)
     })
   })
 
-  ipcMain.handle(IPC.OMO_STOP, async () => {
+  handle(IPC.OMO_STOP, async () => {
     stopOmo()
   })
 
-  ipcMain.on(IPC.OMO_SEND, (_event, message) => {
+  listen(IPC.OMO_SEND, (_event, message) => {
     sendToOmo(message)
   })
 
   // API keys management
-  ipcMain.handle('omo:set-api-keys', async (_event, keys: Record<string, string>) => {
+  handle('omo:set-api-keys', async (_event, keys: Record<string, string>) => {
     setApiKeys(keys)
     return { success: true }
   })
 
-  ipcMain.handle('omo:set-prompts', async (_event, prompts: { systemPrompt?: string; userPromptTemplate?: string }) => {
+  handle('omo:set-prompts', async (_event, prompts: { systemPrompt?: string; userPromptTemplate?: string }) => {
     setPrompts(prompts)
     return { success: true }
   })

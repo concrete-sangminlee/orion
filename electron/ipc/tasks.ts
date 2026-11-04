@@ -1,9 +1,10 @@
-import type { IpcMain, BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { IPC } from '../../shared/ipc-channels'
 import { resolveActiveWorkspacePath } from './workspace-path-guard'
+import { handle, emit } from './typed-ipc'
 
 const runningTasks = new Map<string, ChildProcess>()
 let taskCounter = 0
@@ -21,8 +22,8 @@ function isLikelyCommand(value: unknown): value is string {
   return true
 }
 
-export function registerTaskHandlers(ipcMain: IpcMain, getWindow: () => BrowserWindow | null) {
-  ipcMain.handle(
+export function registerTaskHandlers(getWindow: () => BrowserWindow | null) {
+  handle(
     IPC.TASK_RUN,
     async (_event, args: { command: string; cwd: string; label: string }) => {
       const taskId = `task-${++taskCounter}-${Date.now()}`
@@ -31,12 +32,12 @@ export function registerTaskHandlers(ipcMain: IpcMain, getWindow: () => BrowserW
 
       const emitFailure = (message: string) => {
         const win = getWindow()
-        win?.webContents.send(IPC.TASK_OUTPUT, {
+        emit(win, IPC.TASK_OUTPUT, {
           taskId,
           data: `Error: ${message}\n`,
           stream: 'stderr',
         })
-        win?.webContents.send(IPC.TASK_COMPLETE, { taskId, code: 1 })
+        emit(win, IPC.TASK_COMPLETE, { taskId, code: 1 })
         return { taskId, label: safeLabel, command: typeof command === 'string' ? command : '' }
       }
 
@@ -66,7 +67,7 @@ export function registerTaskHandlers(ipcMain: IpcMain, getWindow: () => BrowserW
       const win = getWindow()
 
       child.stdout?.on('data', (data: Buffer) => {
-        win?.webContents.send(IPC.TASK_OUTPUT, {
+        emit(win, IPC.TASK_OUTPUT, {
           taskId,
           data: data.toString(),
           stream: 'stdout',
@@ -74,7 +75,7 @@ export function registerTaskHandlers(ipcMain: IpcMain, getWindow: () => BrowserW
       })
 
       child.stderr?.on('data', (data: Buffer) => {
-        win?.webContents.send(IPC.TASK_OUTPUT, {
+        emit(win, IPC.TASK_OUTPUT, {
           taskId,
           data: data.toString(),
           stream: 'stderr',
@@ -83,7 +84,7 @@ export function registerTaskHandlers(ipcMain: IpcMain, getWindow: () => BrowserW
 
       child.on('close', (code) => {
         runningTasks.delete(taskId)
-        win?.webContents.send(IPC.TASK_COMPLETE, {
+        emit(win, IPC.TASK_COMPLETE, {
           taskId,
           code: code ?? 1,
         })
@@ -91,12 +92,12 @@ export function registerTaskHandlers(ipcMain: IpcMain, getWindow: () => BrowserW
 
       child.on('error', (err) => {
         runningTasks.delete(taskId)
-        win?.webContents.send(IPC.TASK_OUTPUT, {
+        emit(win, IPC.TASK_OUTPUT, {
           taskId,
           data: `Error: ${err.message}\n`,
           stream: 'stderr',
         })
-        win?.webContents.send(IPC.TASK_COMPLETE, {
+        emit(win, IPC.TASK_COMPLETE, {
           taskId,
           code: 1,
         })
@@ -106,7 +107,7 @@ export function registerTaskHandlers(ipcMain: IpcMain, getWindow: () => BrowserW
     }
   )
 
-  ipcMain.handle(IPC.TASK_KILL, async (_event, taskId: string) => {
+  handle(IPC.TASK_KILL, async (_event, taskId: string) => {
     const child = runningTasks.get(taskId)
     if (!child) return { success: false, error: 'Task not found' }
 
@@ -126,7 +127,7 @@ export function registerTaskHandlers(ipcMain: IpcMain, getWindow: () => BrowserW
     }
   })
 
-  ipcMain.handle(IPC.TASK_LIST_SCRIPTS, async (_event, cwd: string) => {
+  handle(IPC.TASK_LIST_SCRIPTS, async (_event, cwd: string) => {
     let safeCwd: string
     try {
       safeCwd = await resolveActiveWorkspacePath(cwd, 'scripts cwd')

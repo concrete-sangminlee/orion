@@ -1,5 +1,34 @@
 import { create } from 'zustand'
 import type { FileNode } from '@shared/types'
+import type { FileWatchEventPayload } from '@shared/ipc-contract'
+
+// ---------------------------------------------------------------------------
+// IPC helpers
+// ---------------------------------------------------------------------------
+
+let unsubscribeFileWatch: (() => void) | null = null
+
+/** Turn an `{ success: false }` IPC envelope into a thrown error. */
+function expectSuccess(result: { success: boolean; error?: string }, operation: string): void {
+  if (!result.success) throw new Error(result.error || `${operation} failed`)
+}
+
+/** Map the main-process chokidar event onto the store's watch-event shape. */
+function toFileWatchEvent(payload: FileWatchEventPayload): FileWatchEvent | null {
+  switch (payload.event) {
+    case 'change':
+      return { type: 'change', path: payload.path }
+    case 'add':
+      return { type: 'create', path: payload.path, isDirectory: false }
+    case 'addDir':
+      return { type: 'create', path: payload.path, isDirectory: true }
+    case 'unlink':
+    case 'unlinkDir':
+      return { type: 'delete', path: payload.path }
+    default:
+      return null
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -399,37 +428,27 @@ export const useFileStore = create<FileStore>((set, get) => ({
     const state = get()
     if (state.isWatching) return
 
-    // Register the root path with the IPC file watcher
-    try {
-      window.electronAPI?.watchDirectory?.(rootPath)
-    } catch {
-      // IPC not available (e.g. in tests / browser dev)
-    }
+    void window.api?.fileWatch(rootPath)
 
     const watched = new Set(state.watchedPaths)
     watched.add(rootPath)
 
     set({ isWatching: true, watchedPaths: watched })
 
-    // Set up the IPC listener for file-watch events
-    try {
-      window.electronAPI?.onFileWatchEvent?.((event: FileWatchEvent) => {
-        get().handleFileWatchEvent(event)
-      })
-    } catch {
-      // IPC not available
-    }
+    unsubscribeFileWatch?.()
+    unsubscribeFileWatch = window.api?.onFileWatchEvent((payload) => {
+      const event = toFileWatchEvent(payload)
+      if (event) get().handleFileWatchEvent(event)
+    }) ?? null
   },
 
   stopWatching: () => {
     const state = get()
     if (!state.isWatching) return
 
-    try {
-      window.electronAPI?.unwatchAll?.()
-    } catch {
-      // IPC not available
-    }
+    unsubscribeFileWatch?.()
+    unsubscribeFileWatch = null
+    void window.api?.fileUnwatchAll()
 
     set({ isWatching: false, watchedPaths: new Set<string>() })
   },
@@ -438,11 +457,7 @@ export const useFileStore = create<FileStore>((set, get) => ({
     set((state) => {
       const next = new Set(state.watchedPaths)
       next.add(path)
-      try {
-        window.electronAPI?.watchDirectory?.(path)
-      } catch {
-        // IPC not available
-      }
+      void window.api?.fileWatch(path)
       return { watchedPaths: next }
     }),
 
@@ -450,11 +465,7 @@ export const useFileStore = create<FileStore>((set, get) => ({
     set((state) => {
       const next = new Set(state.watchedPaths)
       next.delete(path)
-      try {
-        window.electronAPI?.unwatchPath?.(path)
-      } catch {
-        // IPC not available
-      }
+      void window.api?.fileUnwatch(path)
       return { watchedPaths: next }
     }),
 
@@ -527,7 +538,7 @@ export const useFileStore = create<FileStore>((set, get) => ({
 
   copyFile: async (sourcePath: string, destPath: string) => {
     try {
-      await window.electronAPI?.copyFile?.(sourcePath, destPath)
+      expectSuccess(await window.api.fileCopy(sourcePath, destPath), 'copyFile')
     } catch (err) {
       console.error('[FileStore] copyFile failed:', err)
       throw err
@@ -550,7 +561,7 @@ export const useFileStore = create<FileStore>((set, get) => ({
 
   copyFolder: async (sourcePath: string, destPath: string) => {
     try {
-      await window.electronAPI?.copyFolder?.(sourcePath, destPath)
+      expectSuccess(await window.api.fileCopy(sourcePath, destPath), 'copyFolder')
     } catch (err) {
       console.error('[FileStore] copyFolder failed:', err)
       throw err
@@ -570,7 +581,7 @@ export const useFileStore = create<FileStore>((set, get) => ({
 
   moveFile: async (sourcePath: string, destPath: string) => {
     try {
-      await window.electronAPI?.moveFile?.(sourcePath, destPath)
+      expectSuccess(await window.api.fileMove(sourcePath, destPath), 'moveFile')
     } catch (err) {
       console.error('[FileStore] moveFile failed:', err)
       throw err
@@ -608,7 +619,7 @@ export const useFileStore = create<FileStore>((set, get) => ({
 
   moveFolder: async (sourcePath: string, destPath: string) => {
     try {
-      await window.electronAPI?.moveFolder?.(sourcePath, destPath)
+      expectSuccess(await window.api.fileMove(sourcePath, destPath), 'moveFolder')
     } catch (err) {
       console.error('[FileStore] moveFolder failed:', err)
       throw err
@@ -666,10 +677,7 @@ export const useFileStore = create<FileStore>((set, get) => ({
     const filePath = `${dirPath}${sep}${fileName}`
 
     try {
-      const result = await window.electronAPI?.writeFile?.(filePath, template.content)
-      if (result && result.success === false) {
-        throw new Error(result.error || 'Failed to create file')
-      }
+      expectSuccess(await window.api.createFile(filePath, template.content), 'createFileFromTemplate')
     } catch (err) {
       console.error('[FileStore] createFileFromTemplate failed:', err)
       throw err
@@ -688,8 +696,8 @@ export const useFileStore = create<FileStore>((set, get) => ({
 
   moveToTrash: async (filePath: string) => {
     try {
-      // Use Electron's shell.trashItem for safe trash support
-      await window.electronAPI?.trashItem?.(filePath)
+      // Uses Electron's shell.trashItem (falls back to rm in the main process)
+      expectSuccess(await window.api.trashItem(filePath), 'moveToTrash')
     } catch (err) {
       console.error('[FileStore] moveToTrash failed:', err)
       throw err
@@ -906,22 +914,8 @@ export const useFileStore = create<FileStore>((set, get) => ({
   },
 
   convertEncoding: (content: string, _from: FileEncoding, to: FileEncoding): string => {
-    // In the browser/Electron renderer, JS strings are always UTF-16 internally.
-    // Real transcoding would use TextEncoder/TextDecoder or iconv-lite via IPC.
-    // This is a façade that delegates to the main process for actual conversion.
-    try {
-      // Attempt via IPC if available (synchronous bridge for simplicity)
-      const result = (window.electronAPI as Record<string, ((...args: any[]) => any) | undefined> | undefined)?.convertEncodingSync?.(
-        content,
-        _from,
-        to
-      )
-      if (typeof result === 'string') return result
-    } catch {
-      // IPC not available
-    }
-
-    // Fallback: use TextEncoder / TextDecoder for utf-8 round-trip
+    // JS strings are UTF-16 internally; only UTF-8/ASCII round-trips are
+    // supported in the renderer. (No main-process transcoding API exists.)
     if (to === 'utf-8' || to === 'ascii') {
       const encoder = new TextEncoder()
       const decoder = new TextDecoder(to === 'ascii' ? 'ascii' : 'utf-8')
