@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- `git:pull` / `git:push` passed the renderer-supplied remote straight to git, so `remote: '--upload-pack=<cmd>'` with `branch: '.'` executed `<cmd>` locally (reproduced against a real git in `electron/ipc/git-option-injection.test.ts`). Remotes and refspecs are now validated (no leading `-`, no whitespace, no `ext::`/`fd::` transports) and placed after `--`. `--` alone is not sufficient for `pull`, which re-invokes `fetch` without it.
+- `git:config-set` accepted any key, including ones that make git execute programs (`core.fsmonitor`, `core.sshCommand`, `alias.*`, `filter.*`, `credential.helper`, …). Writes are limited to an allowlist of identity/workflow keys.
+- `git:checkout`, `git:create-branch`, tag, remote, `git:reset`, `git:stage`, `git:unstage`, `git:blame`, and `git:check-ignored` validate refs and pass pathspecs after `--`.
 - Git IPC follow-ups now reject failed raw result envelopes even when the error string is empty, validate revert hashes through the shared commit-hash guard, and make `git clean` with `force: false` a safe no-op instead of invoking `git clean` without a mode flag.
 - Git timeline follow-ups now preserve reset/cherry-pick/revert IPC contracts end-to-end, wire cherry-pick/revert sequencer options through the main-process handlers, respect `git clean` ignored/force options, and prevent redundant initial timeline reloads or stale row refs after filtering.
 - Git timeline and shared git utility follow-ups now use cwd-first IPC argument order for show/revert/commit-amend/clean/cherry-pick calls, await post-action timeline refreshes, and stabilize timeline loading with request refs so stale fetch closures no longer race filter or mode changes.
@@ -38,18 +41,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `customCSS` passed to `MarkdownPreview` is now sanitized before injection into both the live preview and the exported HTML. `@import` directives, `</style>` breakout attempts, `expression(...)` (legacy IE), and any `url(...)` that isn't a `data:` URI are stripped — closes CSS-based exfiltration via attribute-selector tricks and external resource fetches.
 
 ### Fixed
+- **Source Control reported success for failed operations.** Git mutations (commit, push, pull, fetch, checkout, stage, stash, …) swallowed errors and resolved `''`/`true`; they now reject with git's diagnostic, which the panel already shows as a toast.
+- `git:status` trimmed porcelain output, so the first entry lost its leading space: ` M src/a.ts` was listed as *staged* with path `rc/a.ts`. Status now parses untrimmed `--porcelain=v1 -z` output (renames and paths with spaces handled).
+- `git:checkout` of a name that is not a ref but matches a file silently discarded that file's local edits; it now fails with "invalid reference".
+- `git:create-tag` tagged `HEAD` when the requested target hash was invalid.
+- File › Open File (menu and command palette), OS file associations, and files passed on the command line never opened: nothing listened for `app:open-file`, and the palette called a nonexistent method. Files the user opens this way can be read and saved even outside the workspace (single-file grants).
+- `fs:read-file` resolved `{ content: '' }` on failure while callers expected a rejection, so unreadable files opened as empty buffers that a save could write back. It now rejects.
+- The chat Stop button sent a message the AI bridge treated as a new chat turn (with an empty prompt). It now cancels the in-flight request.
+- The file store's copy, move, trash, create-from-template, and watch actions called a bridge the preload never exposed and only updated the tree. They now go through `window.api`; `file:unwatch` / `file:unwatch-all` stop watcher leaks.
+- Workspace extension recommendations were never loaded (read from a field the handler does not return).
+- Removed 8 preload methods (`appGetVersion`, `windowSetTitle`, `dialogShowMessageBox`, …) that had no main-process handler and always rejected.
+- Main-process event pushes no longer throw "Object has been destroyed" after a window closes.
 - Open Folder commands from the command palette, welcome tab, recent-folder list, and native app menu now all route through the shared workspace-open flow instead of only opening the OS picker or dispatching an unhandled event.
 - Top-level `program.parseAsync(...)` now has a `.catch()` handler, so unhandled rejections from command handlers print a friendly error and exit 1 instead of dumping an unhandled-rejection warning.
 - `FS_SEARCH` IPC handler: hoisted the regex out of the per-file loop (was rebuilding it for every file), dropped the unused `g` flag together with its fragile `lastIndex` reset, and now lets an invalid user regex reject the renderer promise instead of silently skipping every file.
 - `orion search`: same regex hot-loop fix — dropped the `g` flag and removed the per-iteration `lastIndex` resets that were papering over its stateful semantics.
 
 ### Added
+- `shared/ipc-contract.ts`: single typed contract for every IPC channel. The main process registers handlers through typed `handle()`/`listen()`/`emit()`, the preload builds `window.api` from an electron-free factory, and the renderer's `window.api` type is derived from it, so channel/argument/payload drift is a compile error.
+- IPC integrity tests: the preload exposes exactly the contract, the main process registers each channel exactly once, every event is emitted, and no module reachable from the app entry point uses `window.electron`, `window.electronAPI`, or `(window as any).api`.
+- `npm run audit:reachability` reports renderer modules the app never imports (currently 142 of 219 files under `src/`).
+- `npm run typecheck` now also type-checks `electron/` and `cli/` (previously only `src/` and `shared/`).
 - Dependabot configuration for weekly npm and GitHub Actions updates, with minor/patch updates grouped into a single PR per ecosystem.
 - `npm run typecheck` script (`tsc --noEmit`), wired into CI.
 - CI workflows now declare `timeout-minutes`, least-privilege `permissions`, `concurrency` with cancel-in-progress, and npm caching in `actions/setup-node@v6`.
 - `CHANGELOG.md` and `SECURITY.md` are now shipped in the published npm tarball via the `files` manifest.
 
 ### Changed
+- **AI models.** The previously hard-coded Claude IDs (`claude-sonnet-4-20250514`, …) are retired; the CLI now defaults to `claude-opus-5-5` (`claude`, `claude-opus`, `claude-sonnet`, `claude-haiku`, new `claude-fable` shortcuts point at current models), and `temperature` is only sent to models that still accept it. `temperature: 0` / `maxTokens` in config are no longer replaced by defaults (`||` → `??`).
+- **IDE model selector names now match the model they call.** "Claude Opus" called a Sonnet model and "GPT-5.3" called `gpt-4o`; Kimi and Gemini had no base URL and sent their keys to api.openai.com. Entries are now `Claude Opus 5.5`, `GPT-6.1 Sol`, `Kimi K3.1 Pro` (Moonshot endpoint), and `Gemini 3.6 Flash` (Gemini OpenAI-compatible endpoint).
+- IDE AI conversation history only records completed exchanges, so a failed or cancelled request no longer leaves a dangling user turn (or a duplicate one after the streaming → non-streaming retry).
 - AI chat markdown parsing was extracted from `AIChatWidget` into a shared `src/utils/aiChatMarkdown.ts` module. The widget no longer duplicates fenced-code-block detection: both call sites use `hasCodeBlock()` and the shared `CODE_BLOCK_REGEX`.
 
 ## [2.2.0] - 2026-05-18
