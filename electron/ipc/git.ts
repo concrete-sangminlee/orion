@@ -1,10 +1,19 @@
-import { ipcMain } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import * as path from 'path'
 import * as fs from 'fs'
 import { resolveGitCwd, resolveGitInternalPath } from './git-cwd-guard'
-import { normalizeGitBranchName, normalizeGitCommitHash, tryNormalizeGitCommitHash } from './git-ref-guard'
+import {
+  normalizeGitBranchName,
+  normalizeGitCommitHash,
+  normalizeGitConfigKey,
+  normalizeGitPathspec,
+  normalizeGitRefspec,
+  normalizeWritableGitConfigKey,
+  tryNormalizeGitCommitHash,
+  buildRemoteArgs,
+  normalizeGitRemote,
+} from './git-ref-guard'
 import {
   appendGitStashCreateArgs,
   GitStashCreateOptions,
@@ -13,6 +22,9 @@ import {
 } from './git-stash-guard'
 import { appendGitSequencerOptions, GitSequencerOptions } from './git-sequencer-guard'
 import { GIT_TAG_FORMAT, parseGitTagLine } from './git-tag-format'
+import { parseGitPorcelainStatusZ } from './git-status-parse'
+import { handle } from './typed-ipc'
+import type { GitSubmodule } from '../../shared/ipc-contract'
 
 const execFileAsync = promisify(execFile)
 
@@ -24,10 +36,20 @@ const execFileAsync = promisify(execFile)
  * renderer-supplied values (file paths, branch names, commit messages, refs)
  * cannot inject commands via shell metacharacters.
  */
+interface GitExecOptions {
+  timeout?: number
+  maxBuffer?: number
+  /**
+   * Return stdout untouched. Required for column-sensitive formats such as
+   * `status --porcelain`, where trimming eats the first entry's leading space.
+   */
+  raw?: boolean
+}
+
 async function runGitExec(
   cwd: unknown,
   args: string[],
-  options?: { timeout?: number; maxBuffer?: number }
+  options?: GitExecOptions
 ): Promise<string> {
   const safeCwd = await resolveGitCwd(cwd)
   const { stdout } = await execFileAsync('git', args, {
@@ -35,7 +57,7 @@ async function runGitExec(
     timeout: options?.timeout ?? 10000,
     maxBuffer: options?.maxBuffer ?? 1024 * 1024 * 5,
   })
-  return stdout.trim()
+  return options?.raw ? stdout : stdout.trim()
 }
 
 /**
@@ -46,7 +68,7 @@ async function runGitExec(
 async function runGitOrEmpty(
   cwd: unknown,
   args: string[],
-  options?: { timeout?: number; maxBuffer?: number }
+  options?: GitExecOptions
 ): Promise<string> {
   try {
     return await runGitExec(cwd, args, options)
@@ -56,7 +78,26 @@ async function runGitOrEmpty(
 }
 
 function gitErrorMessage(err: any): string {
-  return err?.stderr?.trim() || err?.message || 'Git operation failed'
+  // Some failures (e.g. "nothing to commit") are reported on stdout only.
+  return err?.stderr?.trim() || err?.stdout?.trim() || err?.message || 'Git operation failed'
+}
+
+/**
+ * Run a state-changing git command and reject with git's own diagnostic when
+ * it fails. The renderer awaits these inside try/catch and shows the message
+ * in a toast; resolving with '' on failure made every push/pull/commit look
+ * successful.
+ */
+async function runGitMutation(
+  cwd: unknown,
+  args: string[],
+  options?: GitExecOptions
+): Promise<string> {
+  try {
+    return await runGitExec(cwd, args, options)
+  } catch (err: any) {
+    throw new Error(gitErrorMessage(err))
+  }
 }
 
 interface GitLogPageOptions {
@@ -164,10 +205,12 @@ async function getGitLogPage(cwd: string, options?: GitLogPageOptions) {
 }
 
 
+const NETWORK_TIMEOUT_MS = 120_000
+
 export function registerGitHandlers() {
-  ipcMain.handle('git:status', async (_, cwd: string) => {
+  handle('git:status', async (_, cwd: string) => {
     const branch = await runGitOrEmpty(cwd, ['branch', '--show-current'])
-    const statusRaw = await runGitOrEmpty(cwd, ['status', '--porcelain'])
+    const statusRaw = await runGitOrEmpty(cwd, ['status', '--porcelain=v1', '-z'], { raw: true })
     const isRepo = branch !== '' || statusRaw !== ''
 
     if (!isRepo) {
@@ -175,43 +218,7 @@ export function registerGitHandlers() {
       if (check !== 'true') return { isRepo: false, branch: '', files: [], staged: [], unstaged: [], ahead: 0, behind: 0 }
     }
 
-    const files: { path: string; state: string }[] = []
-    const staged: { path: string; state: string }[] = []
-    const unstaged: { path: string; state: string }[] = []
-
-    statusRaw
-      .split('\n')
-      .filter(Boolean)
-      .forEach((line) => {
-        const x = line[0] // index (staging area) status
-        const y = line[1] // working tree status
-        const path = line.substring(3)
-
-        // Determine overall state for backward compat
-        let state: 'modified' | 'added' | 'deleted' | 'untracked' | 'renamed' = 'modified'
-        if (x === '?' && y === '?') state = 'untracked'
-        else if (x === 'A' || y === 'A') state = 'added'
-        else if (x === 'D' || y === 'D') state = 'deleted'
-        else if (x === 'R' || y === 'R') state = 'renamed'
-        files.push({ path, state })
-
-        // Staged: X has a non-space, non-? value
-        if (x !== ' ' && x !== '?') {
-          let sState: string = 'modified'
-          if (x === 'A') sState = 'added'
-          else if (x === 'D') sState = 'deleted'
-          else if (x === 'R') sState = 'renamed'
-          staged.push({ path, state: sState })
-        }
-
-        // Unstaged: Y has a non-space value, or untracked
-        if (y !== ' ' || (x === '?' && y === '?')) {
-          let uState: string = 'modified'
-          if (x === '?' && y === '?') uState = 'untracked'
-          else if (y === 'D') uState = 'deleted'
-          unstaged.push({ path, state: uState })
-        }
-      })
+    const { files, staged, unstaged } = parseGitPorcelainStatusZ(statusRaw)
 
     // Get ahead/behind counts
     let ahead = 0, behind = 0
@@ -227,12 +234,12 @@ export function registerGitHandlers() {
     return { isRepo: true, branch: branch || 'main', files, staged, unstaged, ahead, behind }
   })
 
-  ipcMain.handle('git:diff', async (_, cwd: string, filePath?: string) => {
+  handle('git:diff', async (_, cwd: string, filePath?: string) => {
     const args = filePath ? ['diff', '--', filePath] : ['diff']
     return await runGitOrEmpty(cwd, args)
   })
 
-  ipcMain.handle('git:log', async (_, cwd: string, count: number = 50) => {
+  handle('git:log', async (_, cwd: string, count: number = 50) => {
     // Use ASCII record/unit separators to avoid conflicts with commit message content
     const SEP = '\x1f' // unit separator
     const REC = '\x1e' // record separator
@@ -253,15 +260,15 @@ export function registerGitHandlers() {
     })
   })
 
-  ipcMain.handle('git:log-page', async (_, cwd: string, options?: GitLogPageOptions) => {
+  handle('git:log-page', async (_, cwd: string, options?: GitLogPageOptions) => {
     return getGitLogPage(cwd, options)
   })
 
-  ipcMain.handle('git:file-log', async (_, cwd: string, options?: GitLogPageOptions) => {
+  handle('git:file-log', async (_, cwd: string, options?: GitLogPageOptions) => {
     return getGitLogPage(cwd, options)
   })
 
-  ipcMain.handle('git:diff-commits', async (_, cwd: string, commitA: string, commitB: string) => {
+  handle('git:diff-commits', async (_, cwd: string, commitA: string, commitB: string) => {
     const safeA = tryNormalizeGitCommitHash(commitA)
     const safeB = tryNormalizeGitCommitHash(commitB)
     if (!safeA || !safeB) return { diff: '', filesChanged: 0 }
@@ -269,8 +276,8 @@ export function registerGitHandlers() {
     return { diff: output, filesChanged: output ? output.split('\n').filter(Boolean).length : 0 }
   })
 
-  ipcMain.handle('git:blame', async (_, cwd: string, filePath: string) => {
-    const raw = await runGitOrEmpty(cwd, ['blame', '--porcelain', filePath], { timeout: 30000, maxBuffer: 1024 * 1024 * 10 })
+  handle('git:blame', async (_, cwd: string, filePath: string) => {
+    const raw = await runGitOrEmpty(cwd, ['blame', '--porcelain', '--', normalizeGitPathspec(filePath)], { timeout: 30000, maxBuffer: 1024 * 1024 * 10 })
     if (!raw) return []
 
     const lines = raw.split('\n')
@@ -312,7 +319,7 @@ export function registerGitHandlers() {
     return result
   })
 
-  ipcMain.handle('git:show', async (_, cwd: string, hash: string) => {
+  handle('git:show', async (_, cwd: string, hash: string) => {
     const safeHash = tryNormalizeGitCommitHash(hash)
     if (!safeHash) return null
 
@@ -354,18 +361,18 @@ export function registerGitHandlers() {
     }
   })
 
-  ipcMain.handle('git:stage', async (_, cwd: string, filePath: string) => {
-    await runGitOrEmpty(cwd, ['add', filePath])
+  handle('git:stage', async (_, cwd: string, filePath: unknown) => {
+    await runGitMutation(cwd, ['add', '--', normalizeGitPathspec(filePath)])
     return true
   })
 
-  ipcMain.handle('git:unstage', async (_, cwd: string, filePath: string) => {
-    await runGitOrEmpty(cwd, ['reset', 'HEAD', filePath])
+  handle('git:unstage', async (_, cwd: string, filePath: unknown) => {
+    await runGitMutation(cwd, ['reset', '-q', 'HEAD', '--', normalizeGitPathspec(filePath)])
     return true
   })
 
-  ipcMain.handle('git:commit', async (_, cwd: string, message: string, amend = false) => {
-    // Pass the message via stdin as the argument value — no shell quoting needed.
+  handle('git:commit', async (_, cwd: string, message: string, amend = false) => {
+    // The message is a single argv entry (execFile, no shell) — no quoting needed.
     const args = ['commit']
     if (amend) {
       args.push('--amend')
@@ -377,22 +384,29 @@ export function registerGitHandlers() {
     } else {
       args.push('-m', message)
     }
-    const result = await runGitOrEmpty(cwd, args)
-    return result !== ''
-  })
-
-  ipcMain.handle('git:checkout', async (_, cwd: string, branch: string) => {
-    return await runGitOrEmpty(cwd, ['checkout', branch])
-  })
-
-  ipcMain.handle('git:discard', async (_, cwd: string, filePath: string) => {
-    await runGitOrEmpty(cwd, ['checkout', '--', filePath])
-    // Also handle untracked files
-    await runGitOrEmpty(cwd, ['clean', '-f', '--', filePath])
+    await runGitMutation(cwd, args)
     return true
   })
 
-  ipcMain.handle('git:branches', async (_, cwd: string) => {
+  handle('git:checkout', async (_, cwd: string, branch: unknown) => {
+    // The trailing `--` forces `branch` to be read as a ref. Without it a
+    // value that is not a ref but matches a file (e.g. "README.md") makes git
+    // check out that path instead, silently discarding local edits.
+    return await runGitMutation(cwd, ['checkout', normalizeGitRefspec(branch, 'branch'), '--'])
+  })
+
+  handle('git:discard', async (_, cwd: string, rawFilePath: unknown) => {
+    const filePath = normalizeGitPathspec(rawFilePath)
+    const tracked = await runGitOrEmpty(cwd, ['ls-files', '--', filePath])
+    if (tracked) {
+      await runGitMutation(cwd, ['checkout', '--', filePath])
+    } else {
+      await runGitMutation(cwd, ['clean', '-f', '--', filePath])
+    }
+    return true
+  })
+
+  handle('git:branches', async (_, cwd: string) => {
     const raw = await runGitOrEmpty(cwd, ['branch', '-a', '--format=%(refname:short)|%(HEAD)'])
     if (!raw) return []
     return raw.split('\n').filter(Boolean).map((line) => {
@@ -402,7 +416,7 @@ export function registerGitHandlers() {
   })
 
   // Return parsed diff hunks for a specific file (used for git gutter decorations)
-  ipcMain.handle('git:file-diff', async (_, cwd: string, filePath: string) => {
+  handle('git:file-diff', async (_, cwd: string, filePath: string) => {
     const raw = await runGitOrEmpty(cwd, ['diff', '-U0', '--', filePath])
     if (!raw) return []
 
@@ -433,7 +447,7 @@ export function registerGitHandlers() {
   })
 
   // Return combined unified diff (staged + unstaged) for a specific file
-  ipcMain.handle('git:diff-file', async (_, cwd: string, filePath: string) => {
+  handle('git:diff-file', async (_, cwd: string, filePath: string) => {
     // Get unstaged changes
     const unstaged = await runGitOrEmpty(cwd, ['diff', '-U0', '--', filePath])
     // Get staged (cached) changes
@@ -472,61 +486,51 @@ export function registerGitHandlers() {
     })
   })
 
-  ipcMain.handle('git:push', async (_, cwd: string, remote = 'origin', branch?: string, force = false) => {
-    const safeRemote = remote?.trim()
+  // push/pull: the remote and refspec are validated (no leading '-') AND
+  // placed after `--`. Previously a renderer-supplied remote such as
+  // `--upload-pack=<cmd>` (pull) or `--receive-pack=<cmd>` (push) followed by
+  // `.` made git execute <cmd> locally.
+  handle('git:push', async (_, cwd: string, remote: unknown = 'origin', branch?: unknown, force = false) => {
     const args = ['push']
-    if (force) {
+    if (force === true) {
       args.push('--force-with-lease')
     }
-    if (safeRemote) {
-      args.push(safeRemote)
-    }
-    if (branch) {
-      args.push(branch)
-    }
-    return await runGitOrEmpty(cwd, args)
+    args.push(...buildRemoteArgs(remote, branch))
+    return await runGitMutation(cwd, args, { timeout: NETWORK_TIMEOUT_MS })
   })
 
-  ipcMain.handle('git:pull', async (_, cwd: string, remote = 'origin', branch?: string) => {
-    const safeRemote = remote?.trim()
-    const args = ['pull']
-    if (safeRemote) {
-      args.push(safeRemote)
-    }
-    if (branch) {
-      args.push(branch)
-    }
-    return await runGitOrEmpty(cwd, args)
+  handle('git:pull', async (_, cwd: string, remote: unknown = 'origin', branch?: unknown) => {
+    return await runGitMutation(cwd, ['pull', ...buildRemoteArgs(remote, branch)], { timeout: NETWORK_TIMEOUT_MS })
   })
 
-  ipcMain.handle('git:fetch', async (_, cwd: string) => {
-    return await runGitOrEmpty(cwd, ['fetch', '--all'])
+  handle('git:fetch', async (_, cwd: string) => {
+    return await runGitMutation(cwd, ['fetch', '--all'], { timeout: NETWORK_TIMEOUT_MS })
   })
 
-  ipcMain.handle('git:stash', async (_, cwd: string) => {
-    return await runGitOrEmpty(cwd, ['stash'])
+  handle('git:stash', async (_, cwd: string) => {
+    return await runGitMutation(cwd, ['stash'])
   })
 
-  ipcMain.handle('git:stash-pop', async (_, cwd: string, rawIndex: unknown) => {
+  handle('git:stash-pop', async (_, cwd: string, rawIndex: unknown) => {
     const safeIndex = resolveGitStashIndex(rawIndex)
-    return await runGitOrEmpty(cwd, ['stash', 'pop', `stash@{${safeIndex}}`])
+    return await runGitMutation(cwd, ['stash', 'pop', `stash@{${safeIndex}}`])
   })
 
-  ipcMain.handle('git:create-branch', async (_, cwd: string, branchName: string) => {
-    return await runGitOrEmpty(cwd, ['checkout', '-b', branchName])
+  handle('git:create-branch', async (_, cwd: string, branchName: unknown) => {
+    return await runGitMutation(cwd, ['checkout', '-b', normalizeGitBranchName(branchName)])
   })
 
-  ipcMain.handle('git:stage-all', async (_, cwd: string) => {
-    await runGitOrEmpty(cwd, ['add', '-A'])
+  handle('git:stage-all', async (_, cwd: string) => {
+    await runGitMutation(cwd, ['add', '-A'])
     return true
   })
 
-  ipcMain.handle('git:unstage-all', async (_, cwd: string) => {
-    await runGitOrEmpty(cwd, ['reset', 'HEAD'])
+  handle('git:unstage-all', async (_, cwd: string) => {
+    await runGitMutation(cwd, ['reset', '-q', 'HEAD'])
     return true
   })
 
-  ipcMain.handle('git:stash-list', async (_, cwd: string) => {
+  handle('git:stash-list', async (_, cwd: string) => {
     const SEP = '\x1f'
     const raw = await runGitOrEmpty(cwd, ['stash', 'list', `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${SEP}%gd`])
     if (!raw) return []
@@ -546,12 +550,12 @@ export function registerGitHandlers() {
     })
   })
 
-  ipcMain.handle('git:stash-drop', async (_, cwd: string, rawIndex: unknown) => {
+  handle('git:stash-drop', async (_, cwd: string, rawIndex: unknown) => {
     const safeIndex = resolveGitStashIndex(rawIndex)
-    return await runGitOrEmpty(cwd, ['stash', 'drop', `stash@{${safeIndex}}`])
+    return await runGitMutation(cwd, ['stash', 'drop', `stash@{${safeIndex}}`])
   })
 
-  ipcMain.handle(
+  handle(
     'git:stash-apply',
     async (_, cwd: string, rawIndex: unknown, rawOptions: unknown) => {
       const options: GitStashApplyOptions =
@@ -567,24 +571,24 @@ export function registerGitHandlers() {
 
       const safeIndex = resolveGitStashIndex(safeIndexSource)
       const command = options.drop ? 'pop' : 'apply'
-      return await runGitOrEmpty(cwd, ['stash', command, `stash@{${safeIndex}}`])
+      return await runGitMutation(cwd, ['stash', command, `stash@{${safeIndex}}`])
   })
 
-  ipcMain.handle('git:stash-save', async (_, cwd: string, rawMessageOrOptions?: string | GitStashCreateOptions) => {
+  handle('git:stash-save', async (_, cwd: string, rawMessageOrOptions?: string | GitStashCreateOptions) => {
     const options: GitStashCreateOptions = typeof rawMessageOrOptions === 'object'
       ? rawMessageOrOptions ?? {}
       : { message: rawMessageOrOptions }
 
     const args = ['stash', 'push']
     appendGitStashCreateArgs(args, options)
-    return await runGitOrEmpty(cwd, args)
+    return await runGitMutation(cwd, args)
   })
 
-  ipcMain.handle('git:stash-clear', async (_, cwd: string) => {
-    return await runGitOrEmpty(cwd, ['stash', 'clear'])
+  handle('git:stash-clear', async (_, cwd: string) => {
+    return await runGitMutation(cwd, ['stash', 'clear'])
   })
 
-  ipcMain.handle('git:stash-show', async (_, cwd: string, rawIndex: unknown) => {
+  handle('git:stash-show', async (_, cwd: string, rawIndex: unknown) => {
     const safeIndex = resolveGitStashIndex(rawIndex)
     const raw = await runGitOrEmpty(cwd, ['stash', 'show', `stash@{${safeIndex}}`, '--name-only', '--patch', '--no-color'])
     if (!raw) return null
@@ -634,13 +638,13 @@ export function registerGitHandlers() {
     }
   })
 
-  ipcMain.handle('git:stash-branch', async (_, cwd: string, rawIndex: unknown, rawBranch: unknown) => {
+  handle('git:stash-branch', async (_, cwd: string, rawIndex: unknown, rawBranch: unknown) => {
     const safeIndex = resolveGitStashIndex(rawIndex)
     const branchName = normalizeGitBranchName(rawBranch as string | undefined)
-    return await runGitOrEmpty(cwd, ['stash', 'branch', branchName, `stash@{${safeIndex}}`])
+    return await runGitMutation(cwd, ['stash', 'branch', branchName, `stash@{${safeIndex}}`])
   })
 
-  ipcMain.handle('git:merge-status', async (_, cwd: string) => {
+  handle('git:merge-status', async (_, cwd: string) => {
     try {
       // rev-parse --verify MERGE_HEAD exits 0 and prints the hash when a merge
       // is in progress, non-zero (empty) otherwise — no gitDir path needed.
@@ -651,51 +655,37 @@ export function registerGitHandlers() {
     }
   })
 
-  ipcMain.handle('git:conflict-files', async (_, cwd: string) => {
+  handle('git:conflict-files', async (_, cwd: string) => {
     const raw = await runGitOrEmpty(cwd, ['diff', '--name-only', '--diff-filter=U'])
     if (!raw) return []
     return raw.split('\n').filter(Boolean)
   })
 
-  ipcMain.handle('git:merge-abort', async (_, cwd: string) => {
-    return await runGitOrEmpty(cwd, ['merge', '--abort'])
+  handle('git:merge-abort', async (_, cwd: string) => {
+    return await runGitMutation(cwd, ['merge', '--abort'])
   })
 
   // ── Cherry-pick ──────────────────────────────────────────────────────
 
-  ipcMain.handle('git:merge', async (_, cwd: string, branchName: string) => {
-    try {
-      const safeBranchName = normalizeGitBranchName(branchName)
-      return await runGitExec(cwd, ['merge', safeBranchName])
-    } catch (err: any) {
-      throw new Error(gitErrorMessage(err))
-    }
+  handle('git:merge', async (_, cwd: string, branchName: string) => {
+    return await runGitMutation(cwd, ['merge', normalizeGitBranchName(branchName)])
   })
 
-  ipcMain.handle('git:delete-branch', async (_, cwd: string, branchName: string) => {
-    try {
-      const safeBranchName = normalizeGitBranchName(branchName)
-      return await runGitExec(cwd, ['branch', '-d', safeBranchName])
-    } catch (err: any) {
-      throw new Error(gitErrorMessage(err))
-    }
+  handle('git:delete-branch', async (_, cwd: string, branchName: string) => {
+    return await runGitMutation(cwd, ['branch', '-d', normalizeGitBranchName(branchName)])
   })
 
-  ipcMain.handle('git:cherry-pick', async (_, cwd: string, commitHash: string, options?: GitSequencerOptions) => {
-    try {
-      const safeHash = normalizeGitCommitHash(commitHash)
-      const args = ['cherry-pick']
-      appendGitSequencerOptions(args, options)
-      args.push(safeHash)
-      return await runGitExec(cwd, args)
-    } catch (err: any) {
-      throw new Error(gitErrorMessage(err))
-    }
+  handle('git:cherry-pick', async (_, cwd: string, commitHash: string, options?: GitSequencerOptions) => {
+    const safeHash = normalizeGitCommitHash(commitHash)
+    const args = ['cherry-pick']
+    appendGitSequencerOptions(args, options)
+    args.push(safeHash)
+    return await runGitMutation(cwd, args)
   })
 
   // ── Revert ───────────────────────────────────────────────────────────
 
-  ipcMain.handle('git:revert', async (_, cwd: string, commitHash: string, options?: GitSequencerOptions) => {
+  handle('git:revert', async (_, cwd: string, commitHash: string, options?: GitSequencerOptions) => {
     try {
       const safeHash = normalizeGitCommitHash(commitHash)
       const args = ['revert']
@@ -713,7 +703,7 @@ export function registerGitHandlers() {
 
   // ── Interactive rebase status ────────────────────────────────────────
 
-  ipcMain.handle('git:rebase-status', async (_, cwd: string) => {
+  handle('git:rebase-status', async (_, cwd: string) => {
     try {
       const gitDir = await runGitExec(cwd, ['rev-parse', '--git-dir'])
       if (!gitDir) return { rebasing: false }
@@ -764,7 +754,7 @@ export function registerGitHandlers() {
 
   // ── Tags ─────────────────────────────────────────────────────────────
 
-  ipcMain.handle('git:tags', async (_, cwd: string) => {
+  handle('git:tags', async (_, cwd: string) => {
     try {
       const raw = await runGitExec(cwd, ['tag', '--sort=-creatordate', `--format=${GIT_TAG_FORMAT}`])
       if (!raw) return []
@@ -774,10 +764,11 @@ export function registerGitHandlers() {
     }
   })
 
-  ipcMain.handle('git:create-tag', async (_, cwd: string, tagName: string, message?: string, commitHash?: string, force?: boolean) => {
+  handle('git:create-tag', async (_, cwd: string, rawTagName: unknown, message?: string, commitHash?: string, force?: boolean) => {
     try {
+      const tagName = normalizeGitBranchName(rawTagName, 'tag name')
       const args = ['tag']
-      if (force) {
+      if (force === true) {
         args.push('-f')
       }
       if (message) {
@@ -786,28 +777,29 @@ export function registerGitHandlers() {
         args.push(tagName)
       }
       if (commitHash) {
-        const safeHash = tryNormalizeGitCommitHash(commitHash)
-        if (safeHash) args.push(safeHash)
+        // An invalid target used to be dropped silently, tagging HEAD instead
+        // of the commit the user picked.
+        args.push(normalizeGitCommitHash(commitHash))
       }
       await runGitExec(cwd, args)
       return { success: true }
     } catch (err: any) {
-      return { success: false, error: err.stderr?.trim() || err.message }
+      return { success: false, error: gitErrorMessage(err) }
     }
   })
 
-  ipcMain.handle('git:delete-tag', async (_, cwd: string, tagName: string) => {
+  handle('git:delete-tag', async (_, cwd: string, rawTagName: unknown) => {
     try {
-      await runGitExec(cwd, ['tag', '-d', tagName])
+      await runGitExec(cwd, ['tag', '-d', normalizeGitBranchName(rawTagName, 'tag name')])
       return { success: true }
     } catch (err: any) {
-      return { success: false, error: err.stderr?.trim() || err.message }
+      return { success: false, error: gitErrorMessage(err) }
     }
   })
 
   // ── Remote management ────────────────────────────────────────────────
 
-  ipcMain.handle('git:remotes', async (_, cwd: string) => {
+  handle('git:remotes', async (_, cwd: string) => {
     try {
       const raw = await runGitExec(cwd, ['remote', '-v'])
       if (!raw) return []
@@ -830,54 +822,61 @@ export function registerGitHandlers() {
     }
   })
 
-  ipcMain.handle('git:add-remote', async (_, cwd: string, name: string, url: string) => {
+  handle('git:add-remote', async (_, cwd: string, name: unknown, url: unknown) => {
     try {
-      await runGitExec(cwd, ['remote', 'add', name, url])
+      await runGitExec(cwd, ['remote', 'add', '--', normalizeGitBranchName(name, 'remote name'), normalizeGitRemote(url, 'remote URL')])
       return { success: true }
     } catch (err: any) {
-      return { success: false, error: err.stderr?.trim() || err.message }
+      return { success: false, error: gitErrorMessage(err) }
     }
   })
 
-  ipcMain.handle('git:remove-remote', async (_, cwd: string, name: string) => {
+  handle('git:remove-remote', async (_, cwd: string, name: unknown) => {
     try {
-      await runGitExec(cwd, ['remote', 'remove', name])
+      await runGitExec(cwd, ['remote', 'remove', '--', normalizeGitBranchName(name, 'remote name')])
       return { success: true }
     } catch (err: any) {
-      return { success: false, error: err.stderr?.trim() || err.message }
+      return { success: false, error: gitErrorMessage(err) }
     }
   })
 
   // ── Git config ───────────────────────────────────────────────────────
 
-  ipcMain.handle('git:config-get', async (_, cwd: string, key: string, scope?: 'local' | 'global' | 'system') => {
+  handle('git:config-get', async (_, cwd: string, rawKey: unknown, scope?: unknown) => {
     try {
+      const key = normalizeGitConfigKey(rawKey)
       const args = ['config']
-      if (scope) args.push(`--${scope}`)
-      args.push('--get', key)
+      if (scope === 'local' || scope === 'global' || scope === 'system') args.push(`--${scope}`)
+      args.push('--get', '--', key)
       const value = await runGitExec(cwd, args)
       return { success: true, value }
     } catch (err: any) {
       // Exit code 1 means key not found, which is not really an error
-      return { success: false, value: null, error: err.stderr?.trim() || err.message }
+      return { success: false, value: null, error: gitErrorMessage(err) }
     }
   })
 
-  ipcMain.handle('git:config-set', async (_, cwd: string, key: string, value: string, scope?: 'local' | 'global') => {
+  handle('git:config-set', async (_, cwd: string, rawKey: unknown, value: unknown, scope?: unknown) => {
     try {
+      // Arbitrary keys would let the renderer plant commands that git runs
+      // later (core.fsmonitor, core.sshCommand, alias.*, …).
+      const key = normalizeWritableGitConfigKey(rawKey)
+      if (typeof value !== 'string' || value.includes('\0')) {
+        return { success: false, error: 'Invalid config value' }
+      }
       const args = ['config']
-      if (scope) args.push(`--${scope}`)
-      args.push(key, value)
+      if (scope === 'local' || scope === 'global') args.push(`--${scope}`)
+      args.push('--', key, value)
       await runGitExec(cwd, args)
       return { success: true }
     } catch (err: any) {
-      return { success: false, error: err.stderr?.trim() || err.message }
+      return { success: false, error: gitErrorMessage(err) }
     }
   })
 
   // ── Worktree ─────────────────────────────────────────────────────────
 
-  ipcMain.handle('git:worktree-list', async (_, cwd: string) => {
+  handle('git:worktree-list', async (_, cwd: string) => {
     try {
       const raw = await runGitExec(cwd, ['worktree', 'list', '--porcelain'])
       if (!raw) return []
@@ -911,22 +910,24 @@ export function registerGitHandlers() {
 
   // ── Submodules ───────────────────────────────────────────────────────
 
-  ipcMain.handle('git:submodule-status', async (_, cwd: string) => {
+  handle('git:submodule-status', async (_, cwd: string) => {
     try {
       const raw = await runGitExec(cwd, ['submodule', 'status'])
       if (!raw) return []
 
-      return raw.split('\n').filter(Boolean).map((line) => {
+      const submodules: GitSubmodule[] = []
+      for (const line of raw.split('\n')) {
         // Format: [+-U ]<sha1> <path> [(describe)]
         const match = line.match(/^([+-U ]?)([0-9a-f]+)\s+(\S+)(?:\s+\((.+)\))?$/)
-        if (!match) return null
+        if (!match) continue
         const [, statusChar, hash, subPath, describe] = match
-        let status = 'initialized'
+        let status: GitSubmodule['status'] = 'initialized'
         if (statusChar === '-') status = 'uninitialized'
         else if (statusChar === '+') status = 'out-of-date'
         else if (statusChar === 'U') status = 'merge-conflict'
-        return { path: subPath, hash: hash.substring(0, 8), status, describe: describe || '' }
-      }).filter(Boolean)
+        submodules.push({ path: subPath, hash: hash.substring(0, 8), status, describe: describe || '' })
+      }
+      return submodules
     } catch {
       return []
     }
@@ -934,10 +935,11 @@ export function registerGitHandlers() {
 
   // ── Git ignore ───────────────────────────────────────────────────────
 
-  ipcMain.handle('git:check-ignored', async (_, cwd: string, filePaths: string[]) => {
-    if (!filePaths || filePaths.length === 0) return []
+  handle('git:check-ignored', async (_, cwd: string, filePaths: unknown) => {
+    if (!Array.isArray(filePaths) || filePaths.length === 0) return []
     try {
-      const result = await runGitExec(cwd, ['check-ignore', ...filePaths])
+      const paths = filePaths.map((filePath) => normalizeGitPathspec(filePath))
+      const result = await runGitExec(cwd, ['check-ignore', '--', ...paths])
       return result.split('\n').filter(Boolean)
     } catch {
       // Exit code 1 means no files are ignored, which is expected
@@ -947,7 +949,7 @@ export function registerGitHandlers() {
 
   // ── Commit amend ─────────────────────────────────────────────────────
 
-  ipcMain.handle('git:commit-amend', async (_, cwd: string, message?: string) => {
+  handle('git:commit-amend', async (_, cwd: string, message?: string) => {
     try {
       const args = ['commit', '--amend']
       if (message) {
@@ -958,34 +960,34 @@ export function registerGitHandlers() {
       const result = await runGitExec(cwd, args)
       return { success: true, output: result }
     } catch (err: any) {
-      return { success: false, error: err.stderr?.trim() || err.message }
+      return { success: false, error: gitErrorMessage(err) }
     }
   })
 
   // ── Reset ────────────────────────────────────────────────────────────
 
-  ipcMain.handle('git:reset', async (_, cwd: string, mode: 'soft' | 'mixed' | 'hard', ref?: string) => {
-    const validModes = ['soft', 'mixed', 'hard']
-    if (!validModes.includes(mode)) {
-      return { success: false, error: `Invalid reset mode: ${mode}` }
+  handle('git:reset', async (_, cwd: string, mode: unknown, ref?: unknown) => {
+    if (mode !== 'soft' && mode !== 'mixed' && mode !== 'hard') {
+      return { success: false, error: `Invalid reset mode: ${String(mode)}` }
     }
     try {
       const args = ['reset', `--${mode}`]
-      if (ref) {
-        // Sanitize ref: allow hex, branch names, HEAD~N, etc.
-        const safeRef = ref.replace(/[;&|`$(){}]/g, '')
-        if (safeRef) args.push(safeRef)
+      if (ref !== undefined && ref !== '') {
+        // execFile never involves a shell, so the old metacharacter stripping
+        // protected nothing; what matters is that the ref cannot be an option.
+        args.push(normalizeGitRefspec(ref, 'reset target'))
       }
+      args.push('--')
       const result = await runGitExec(cwd, args)
       return { success: true, output: result }
     } catch (err: any) {
-      return { success: false, error: err.stderr?.trim() || err.message }
+      return { success: false, error: gitErrorMessage(err) }
     }
   })
 
   // ── Clean ────────────────────────────────────────────────────────────
 
-  ipcMain.handle('git:clean', async (_, cwd: string, options?: { directories?: boolean; force?: boolean; dryRun?: boolean; ignored?: boolean }) => {
+  handle('git:clean', async (_, cwd: string, options?: { directories?: boolean; force?: boolean; dryRun?: boolean; ignored?: boolean }) => {
     try {
       const args = ['clean']
       if (options?.dryRun) {
