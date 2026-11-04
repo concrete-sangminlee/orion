@@ -1,15 +1,2 @@
-export interface OmoBridgeMessage {
-  type: 'chat' | 'agent-command' | 'cancel'
-  payload: {
-    message?: string
-    mode?: 'agent' | 'chat'
-    model?: string
-    projectPath?: string
-    files?: string[]
-  }
-}
-
-export interface OmoEvent {
-  type: 'agent-status' | 'agent-log' | 'file-edit' | 'chat-response' | 'chat-stream' | 'task-complete' | 'error' | 'ollama-status'
-  payload: unknown
-}
+// The bridge message shapes are part of the renderer ↔ main IPC contract.
+export type { OmoBridgeMessage, OmoEvent } from '../../shared/ipc-contract'
