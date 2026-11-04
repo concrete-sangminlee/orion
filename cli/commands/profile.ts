@@ -28,6 +28,7 @@ import {
   maskApiKey,
   type OrionConfig,
 } from '../utils.js';
+import { DEFAULT_MODELS, type AIProvider } from '../ai-client.js';
 import {
   commandHeader,
   statusLine,
@@ -175,8 +176,8 @@ async function listAction(): Promise<void> {
     console.log(keyValue([
       ['Provider', currentConfig.provider || 'ollama'],
       ['Model', currentConfig.model || 'default'],
-      ['Max Tokens', String(currentConfig.maxTokens || 4096)],
-      ['Temperature', String(currentConfig.temperature || 0.7)],
+      ['Max Tokens', String(currentConfig.maxTokens ?? 4096)],
+      ['Temperature', String(currentConfig.temperature ?? 0.7)],
     ]));
     console.log();
     return;
@@ -241,9 +242,7 @@ async function createAction(name: string): Promise<void> {
       type: 'input',
       name: 'model',
       message: 'Default model:',
-      default: provider === 'anthropic' ? 'claude-sonnet-4-20250514'
-        : provider === 'openai' ? 'gpt-4o'
-        : 'llama3.2',
+      default: DEFAULT_MODELS[provider as AIProvider] ?? DEFAULT_MODELS.ollama,
     },
   ]);
 
@@ -380,8 +379,8 @@ async function useAction(name: string): Promise<void> {
   console.log(keyValue([
     ['Provider', mergedConfig.provider || 'ollama'],
     ['Model', mergedConfig.model || 'default'],
-    ['Max Tokens', String(mergedConfig.maxTokens || 4096)],
-    ['Temperature', String(mergedConfig.temperature || 0.7)],
+    ['Max Tokens', String(mergedConfig.maxTokens ?? 4096)],
+    ['Temperature', String(mergedConfig.temperature ?? 0.7)],
   ]));
   console.log();
   printSuccess('Active config updated.');
@@ -539,7 +538,7 @@ async function importAction(filePath: string): Promise<void> {
     config: {
       provider: importData.config.provider || 'ollama',
       model: importData.config.model || 'llama3.2',
-      maxTokens: importData.config.maxTokens || 4096,
+      maxTokens: importData.config.maxTokens ?? 4096,
       temperature: importData.config.temperature ?? 0.7,
       anthropicApiKey: importData.config.anthropicApiKey,
       openaiApiKey: importData.config.openaiApiKey,

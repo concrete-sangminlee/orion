@@ -41,11 +41,54 @@ const PROVIDER_DISPLAY: Record<AIProvider, { name: string; color: (s: string) =>
   ollama: { name: 'Ollama', color: chalk.hex('#FFFFFF'), badge: chalk.bgWhite.black.bold(' Ollama ') },
 };
 
+// ─── Model IDs ───────────────────────────────────────────────────────────────
+
+/** Current Anthropic model IDs (aliases, no date suffix). */
+export const ANTHROPIC_MODELS = {
+  opus: 'claude-opus-5-5',
+  sonnet: 'claude-sonnet-5-5',
+  haiku: 'claude-haiku-5-5',
+  fable: 'claude-fable-5-1',
+} as const;
+
+/** Default model per provider when neither the user nor the config names one. */
+export const DEFAULT_MODELS: Record<AIProvider, string> = {
+  anthropic: ANTHROPIC_MODELS.opus,
+  openai: 'gpt-4o',
+  ollama: 'llama3.2',
+};
+
+/** Lighter model per cloud provider, used by the chat `/fast` toggle. */
+export const FAST_MODELS = {
+  anthropic: ANTHROPIC_MODELS.haiku,
+  openai: 'gpt-4o-mini',
+} as const;
+
+/**
+ * Whether an Anthropic model still accepts the sampling parameters
+ * (`temperature`, `top_p`, `top_k`). Claude 4.7 and later (Opus 4.7+,
+ * Sonnet 5+, Haiku 5+, and the Fable / Mythos lines) reject them or accept
+ * only the default value, so they must be omitted for those models. Older
+ * models (Claude 3.x, Opus/Sonnet 4.0-4.6, Haiku 4.5) still accept them.
+ */
+export function anthropicAcceptsSampling(model: string): boolean {
+  const id = model.toLowerCase();
+  if (/claude-(fable|mythos)\b/.test(id)) return false;
+  // Family-first IDs: claude-<family>-<major>[-<minor>][-<yyyymmdd>]. The minor
+  // is one or two digits so a date suffix is never mistaken for it.
+  const m = /claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(id);
+  if (!m) return true;
+  const major = Number(m[1]);
+  const minor = m[2] !== undefined ? Number(m[2]) : 0;
+  return major < 4 || (major === 4 && minor < 7);
+}
+
 const MODEL_SHORTCUTS: Record<string, { provider: AIProvider; model: string }> = {
-  'claude': { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-  'claude-opus': { provider: 'anthropic', model: 'claude-opus-4-20250514' },
-  'claude-sonnet': { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-  'claude-haiku': { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+  'claude': { provider: 'anthropic', model: DEFAULT_MODELS.anthropic },
+  'claude-opus': { provider: 'anthropic', model: ANTHROPIC_MODELS.opus },
+  'claude-sonnet': { provider: 'anthropic', model: ANTHROPIC_MODELS.sonnet },
+  'claude-haiku': { provider: 'anthropic', model: ANTHROPIC_MODELS.haiku },
+  'claude-fable': { provider: 'anthropic', model: ANTHROPIC_MODELS.fable },
   'gpt': { provider: 'openai', model: 'gpt-4o' },
   'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
   'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
@@ -140,19 +183,19 @@ export async function getAvailableProviders(): Promise<AvailableProvider[]> {
   return [
     {
       provider: 'anthropic',
-      model: config.provider === 'anthropic' && config.model ? config.model : 'claude-sonnet-4-20250514',
+      model: config.provider === 'anthropic' && config.model ? config.model : DEFAULT_MODELS.anthropic,
       available: !!anthropicKey,
       reason: anthropicKey ? undefined : 'No ANTHROPIC_API_KEY',
     },
     {
       provider: 'openai',
-      model: config.provider === 'openai' && config.model ? config.model : 'gpt-4o',
+      model: config.provider === 'openai' && config.model ? config.model : DEFAULT_MODELS.openai,
       available: !!openaiKey,
       reason: openaiKey ? undefined : 'No OPENAI_API_KEY',
     },
     {
       provider: 'ollama',
-      model: config.provider === 'ollama' && config.model ? config.model : 'llama3.2',
+      model: config.provider === 'ollama' && config.model ? config.model : DEFAULT_MODELS.ollama,
       available: ollamaUp,
       reason: ollamaUp ? undefined : 'Ollama not running',
     },
@@ -167,15 +210,16 @@ export async function resolveProviderConfig(overrideProvider?: AIProvider, overr
   const anthropicKey = process.env.ANTHROPIC_API_KEY || config.anthropicApiKey;
   const openaiKey = process.env.OPENAI_API_KEY || config.openaiApiKey;
   const ollamaHost = config.ollamaHost || 'http://localhost:11434';
-  const maxTokens = config.maxTokens || 4096;
-  const temperature = config.temperature || 0.7;
+  // `??` so an explicit 0 (e.g. temperature 0 for deterministic output) is kept.
+  const maxTokens = config.maxTokens ?? 4096;
+  const temperature = config.temperature ?? 0.7;
 
   const targetProvider = overrideProvider || config.provider;
 
   if (targetProvider === 'anthropic' && anthropicKey) {
     return {
       provider: 'anthropic',
-      model: overrideModel || config.model || 'claude-sonnet-4-20250514',
+      model: overrideModel || config.model || DEFAULT_MODELS.anthropic,
       apiKey: anthropicKey,
       maxTokens,
       temperature,
@@ -185,7 +229,7 @@ export async function resolveProviderConfig(overrideProvider?: AIProvider, overr
   if (targetProvider === 'openai' && openaiKey) {
     return {
       provider: 'openai',
-      model: overrideModel || config.model || 'gpt-4o',
+      model: overrideModel || config.model || DEFAULT_MODELS.openai,
       apiKey: openaiKey,
       maxTokens,
       temperature,
@@ -197,7 +241,7 @@ export async function resolveProviderConfig(overrideProvider?: AIProvider, overr
     if (available) {
       return {
         provider: 'ollama',
-        model: overrideModel || config.model || 'llama3.2',
+        model: overrideModel || config.model || DEFAULT_MODELS.ollama,
         baseUrl: ollamaHost,
         maxTokens,
         temperature,
@@ -207,14 +251,14 @@ export async function resolveProviderConfig(overrideProvider?: AIProvider, overr
 
   // Auto-detect: try Anthropic first (best quality), then OpenAI, then Ollama
   if (anthropicKey) {
-    return { provider: 'anthropic', model: overrideModel || 'claude-sonnet-4-20250514', apiKey: anthropicKey, maxTokens, temperature };
+    return { provider: 'anthropic', model: overrideModel || DEFAULT_MODELS.anthropic, apiKey: anthropicKey, maxTokens, temperature };
   }
   if (openaiKey) {
-    return { provider: 'openai', model: overrideModel || 'gpt-4o', apiKey: openaiKey, maxTokens, temperature };
+    return { provider: 'openai', model: overrideModel || DEFAULT_MODELS.openai, apiKey: openaiKey, maxTokens, temperature };
   }
   const ollamaUp = await isOllamaAvailable(ollamaHost);
   if (ollamaUp) {
-    return { provider: 'ollama', model: overrideModel || 'llama3.2', baseUrl: ollamaHost, maxTokens, temperature };
+    return { provider: 'ollama', model: overrideModel || DEFAULT_MODELS.ollama, baseUrl: ollamaHost, maxTokens, temperature };
   }
 
   throw new Error(
@@ -239,10 +283,11 @@ async function streamAnthropic(
 
   let fullText = '';
 
-  const stream = await client.messages.stream({
+  const stream = client.messages.stream({
     model: config.model,
     max_tokens: config.maxTokens,
-    temperature: config.temperature,
+    // Claude 4.7+ rejects sampling parameters; only forward them to older models.
+    ...(anthropicAcceptsSampling(config.model) ? { temperature: config.temperature } : {}),
     system: systemMsg?.content || '',
     messages: chatMessages,
   });

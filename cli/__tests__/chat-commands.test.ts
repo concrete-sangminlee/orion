@@ -37,8 +37,8 @@ vi.mock('../ai-client.js', () => ({
   getProviderDisplay: vi.fn().mockReturnValue({ name: 'Claude', color: id, badge: 'Claude' }),
   resolveModelShortcut: vi.fn((input: string) => {
     const shortcuts: Record<string, { provider: string; model: string }> = {
-      'claude': { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-      'claude-opus': { provider: 'anthropic', model: 'claude-opus-4-20250514' },
+      'claude': { provider: 'anthropic', model: 'claude-opus-5-5' },
+      'claude-opus': { provider: 'anthropic', model: 'claude-opus-5-5' },
       'gpt': { provider: 'openai', model: 'gpt-4o' },
       'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
       'ollama': { provider: 'ollama', model: 'llama3.2' },
@@ -47,6 +47,8 @@ vi.mock('../ai-client.js', () => ({
   }),
   listAvailableModels: vi.fn().mockReturnValue([]),
   listOllamaModels: vi.fn().mockResolvedValue([]),
+  DEFAULT_MODELS: { anthropic: 'claude-opus-5-5', openai: 'gpt-4o', ollama: 'llama3.2' },
+  FAST_MODELS: { anthropic: 'claude-haiku-5-5', openai: 'gpt-4o-mini' },
 }));
 
 vi.mock('../ui.js', () => ({
@@ -292,21 +294,29 @@ describe('chat slash command parsing', () => {
   describe('/fast command', () => {
     it('toggles to lighter model for anthropic', () => {
       expect(chatSource).toContain("case '/fast'");
-      expect(chatSource).toContain("activeModel = 'claude-haiku-4-5-20251001'");
+      expect(chatSource).toContain('activeModel = FAST_MODELS.anthropic');
     });
 
     it('toggles to lighter model for openai', () => {
-      expect(chatSource).toContain("activeModel = 'gpt-4o-mini'");
+      expect(chatSource).toContain('activeModel = FAST_MODELS.openai');
+    });
+
+    it('treats opus, sonnet and fable as full models', () => {
+      const fastSection = chatSource.slice(chatSource.indexOf("case '/fast'"));
+      expect(fastSection).toContain("['opus', 'sonnet', 'fable', '4o']");
     });
 
     it('restores full model when toggled off (anthropic)', () => {
-      expect(chatSource).toContain("activeModel = 'claude-sonnet-4-20250514'");
+      expect(chatSource).toContain('activeModel = DEFAULT_MODELS.anthropic');
     });
 
     it('restores full model when toggled off (openai)', () => {
-      // Both gpt-4o restore paths
       const fastSection = chatSource.slice(chatSource.indexOf("case '/fast'"));
-      expect(fastSection).toContain("activeModel = 'gpt-4o'");
+      expect(fastSection).toContain('activeModel = DEFAULT_MODELS.openai');
+    });
+
+    it('does not hard-code retired Claude model IDs', () => {
+      expect(chatSource).not.toMatch(/claude-(sonnet|opus)-4-2025\d{4}/);
     });
 
     it('shows fast mode ON/OFF message', () => {

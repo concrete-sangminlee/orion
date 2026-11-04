@@ -700,11 +700,19 @@ export function listChatSessions(): ChatSession[] {
 
 const KNOWN_MODELS: Record<string, string[]> = {
   anthropic: [
-    'claude-opus-4-20250514',
-    'claude-sonnet-4-20250514',
+    'claude-fable-5-1',
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'claude-haiku-5-5',
+    'claude-fable-5',
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-opus-4-8',
+    'claude-opus-4-7',
+    'claude-opus-4-6',
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5',
     'claude-haiku-4-5-20251001',
-    'claude-3-5-sonnet-20241022',
-    'claude-3-haiku-20240307',
   ],
   openai: [
     'gpt-4o',
@@ -890,11 +898,25 @@ interface CostData {
   entries: CostEntry[];
 }
 
-// Provider pricing per 1M tokens (USD)
+// Provider pricing per 1M tokens (USD). Anthropic rates are first-party API
+// list prices (Claude Haiku 5.5: prompts up to 100K tokens).
 const COST_PRICING: Record<string, { input: number; output: number }> = {
+  'claude-fable-5-1':             { input: 10.00, output: 50.00 },
+  'claude-opus-5-5':              { input: 4.00,  output: 20.00 },
+  'claude-sonnet-5-5':            { input: 2.00,  output: 10.00 },
+  'claude-haiku-5-5':             { input: 0.10,  output: 0.50 },
+  'claude-fable-5':               { input: 10.00, output: 50.00 },
+  'claude-opus-5':                { input: 5.00,  output: 25.00 },
+  'claude-sonnet-5':              { input: 2.00,  output: 10.00 },
+  'claude-opus-4-8':              { input: 5.00,  output: 25.00 },
+  'claude-opus-4-7':              { input: 5.00,  output: 25.00 },
+  'claude-opus-4-6':              { input: 5.00,  output: 25.00 },
+  'claude-sonnet-4-6':            { input: 3.00,  output: 15.00 },
+  'claude-haiku-4-5':             { input: 1.00,  output: 5.00 },
+  'claude-haiku-4-5-20251001':    { input: 1.00,  output: 5.00 },
+  // Retired models, kept so historical cost entries still price correctly
   'claude-sonnet-4-20250514':     { input: 3.00,  output: 15.00 },
   'claude-opus-4-20250514':       { input: 15.00, output: 75.00 },
-  'claude-haiku-4-5-20251001':    { input: 0.80,  output: 4.00 },
   'claude-3-5-sonnet-20241022':   { input: 3.00,  output: 15.00 },
   'claude-3-haiku-20240307':      { input: 0.25,  output: 1.25 },
   'gpt-4o':       { input: 2.50,  output: 10.00 },
@@ -917,7 +939,7 @@ const DEFAULT_COST_PRICING: Record<string, { input: number; output: number }> = 
  * Appends an entry to ~/.orion/costs.json and checks budget limits.
  *
  * @param provider  - 'anthropic' | 'openai' | 'ollama'
- * @param model     - The model name (e.g., 'claude-sonnet-4-20250514')
+ * @param model     - The model name (e.g., 'claude-opus-5-5')
  * @param inputTokens  - Estimated input token count
  * @param outputTokens - Estimated output token count
  * @param command   - The orion command that triggered this call (e.g., 'chat', 'review')
