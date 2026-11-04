@@ -271,4 +271,41 @@ describe('conversation history', () => {
     expect(lastRequest.messages[0]).toEqual({ role: 'user', content: 'm2' })
     expect(lastRequest.messages.at(-1)).toEqual({ role: 'user', content: 'm12' })
   })
+
+  it('passes the abort signal to the SDK and drops an aborted stream', async () => {
+    sdk.anthropicStream.mockImplementation((_req: unknown, opts: { signal: AbortSignal }) => ({
+      on() { return this },
+      finalMessage: () => new Promise((_resolve, reject) => {
+        opts.signal.addEventListener('abort', () => reject(new Error('Request was aborted.')))
+      }),
+    }))
+
+    const controller = new AbortController()
+    const pending = callAIStreaming('Claude Opus 5.5', 'q', ALL_KEYS, null, () => {}, { signal: controller.signal })
+    await vi.waitFor(() => expect(sdk.anthropicStream).toHaveBeenCalled())
+    expect(sdk.anthropicStream.mock.calls[0][1]).toEqual({ signal: controller.signal })
+
+    controller.abort()
+    await expect(pending).rejects.toThrow('aborted')
+    expect(getConversationHistory()).toEqual([])
+  })
+
+  it('does not commit a reply that completes after the signal aborted', async () => {
+    const controller = new AbortController()
+    sdk.openaiCreate.mockImplementation(async () => {
+      controller.abort()
+      return openaiReply('late answer')
+    })
+    await expect(callAI('GPT-6.1 Sol', 'q', ALL_KEYS, null, { signal: controller.signal })).rejects.toThrow()
+    expect(sdk.openaiCreate.mock.calls[0][1]).toEqual({ signal: controller.signal })
+    expect(getConversationHistory()).toEqual([])
+  })
+
+  it('makes no request when the signal is already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(callAI('Claude Opus 5.5', 'q', ALL_KEYS, null, { signal: controller.signal })).rejects.toThrow()
+    expect(sdk.anthropicCtor).not.toHaveBeenCalled()
+    expect(sdk.anthropicCreate).not.toHaveBeenCalled()
+  })
 })

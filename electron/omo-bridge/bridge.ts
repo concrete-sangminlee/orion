@@ -14,6 +14,9 @@ const defaultAgents: Agent[] = [
 
 let agents: Agent[] = []
 
+// Abort controllers of the turns currently being handled; a 'cancel' aborts them all.
+const inFlight = new Set<AbortController>()
+
 function emit(event: OmoEvent) {
   try { messageHandler?.(event) } catch (err) { console.error('[OMO] emit error:', err) }
 }
@@ -35,7 +38,14 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+function resetAgents() {
+  agents.forEach((a) => updateAgent(a.id, { status: a.id === 'sisyphus' ? 'active' : 'idle', currentTask: undefined, progress: undefined }))
+}
+
 async function handleWithAI(message: string, model: string, mode: string) {
+  const controller = new AbortController()
+  const { signal } = controller
+  inFlight.add(controller)
   try {
     const isAgent = mode === 'agent'
     const canCall = canRespond(model, apiKeys)
@@ -46,10 +56,12 @@ async function handleWithAI(message: string, model: string, mode: string) {
 
     if (isAgent) {
       await delay(200)
+      signal.throwIfAborted()
       updateAgent('prometheus', { status: 'working', currentTask: 'Planning...' })
       log('sisyphus', 'Delegating to Prometheus for planning', 'delegation')
       updateAgent('sisyphus', { progress: 25 })
       await delay(400)
+      signal.throwIfAborted()
       log('prometheus', 'Plan ready', 'action')
       updateAgent('prometheus', { status: 'idle', currentTask: undefined })
 
@@ -69,13 +81,15 @@ async function handleWithAI(message: string, model: string, mode: string) {
       try {
         const result = await callAIStreaming(model, message, apiKeys, messageHandler, (chunk: string) => {
           emit({ type: 'chat-stream', payload: { status: 'chunk', content: chunk } })
-        })
+        }, { signal })
         responseText = result?.content || 'Failed to get response.'
         responseModel = result?.model || model
       } catch (streamErr: any) {
+        // A cancelled turn is not retried
+        if (signal.aborted) throw streamErr
         // Fallback to non-streaming
         console.log('[OMO] Streaming failed, falling back to non-streaming:', streamErr.message)
-        const result = await callAI(model, message, apiKeys, messageHandler)
+        const result = await callAI(model, message, apiKeys, messageHandler, { signal })
         responseText = result?.content || 'Failed to get response.'
         responseModel = result?.model || model
       }
@@ -109,6 +123,7 @@ async function handleWithAI(message: string, model: string, mode: string) {
       log('sisyphus', 'Delegating to Oracle', 'delegation')
       updateAgent('sisyphus', { progress: 90 })
       await delay(300)
+      signal.throwIfAborted()
       log('oracle', 'Done', 'action')
       updateAgent('oracle', { status: 'idle', currentTask: undefined })
     }
@@ -128,13 +143,25 @@ async function handleWithAI(message: string, model: string, mode: string) {
     updateAgent('sisyphus', { status: 'active', currentTask: undefined, progress: undefined })
 
   } catch (err: any) {
+    // Cancelled: cancelInFlight() already ended the stream and reset the agents
+    if (signal.aborted) return
     console.error('[OMO] error:', err)
     chatResponse(
       `**Error:** ${err.message || err}\n\nOllama가 실행 중인지 확인해주세요 (\`ollama serve\`).`,
       'System', model,
     )
-    agents.forEach((a) => updateAgent(a.id, { status: a.id === 'sisyphus' ? 'active' : 'idle', currentTask: undefined, progress: undefined }))
+    resetAgents()
+  } finally {
+    inFlight.delete(controller)
   }
+}
+
+function cancelInFlight() {
+  for (const controller of inFlight) controller.abort()
+  inFlight.clear()
+  emit({ type: 'chat-stream', payload: { status: 'end' } })
+  resetAgents()
+  log('sisyphus', 'Request cancelled', 'info')
 }
 
 export function setApiKeys(keys: Record<string, string>) {
@@ -170,11 +197,23 @@ export function sendToOmo(message: OmoBridgeMessage): void {
   console.log('[OMO] sendToOmo:', message?.type)
   if (!messageHandler) return
 
-  const userMessage = message?.payload?.message || ''
-  const model = message?.payload?.model || 'Ollama'
-  const mode = message?.payload?.mode || 'agent'
+  switch (message?.type) {
+    case 'cancel':
+      cancelInFlight()
+      return
+    case 'chat':
+    case 'agent-command': {
+      const userMessage = message?.payload?.message || ''
+      const model = message?.payload?.model || 'Ollama'
+      const mode = message?.payload?.mode || 'agent'
 
-  handleWithAI(userMessage, model, mode)
+      handleWithAI(userMessage, model, mode)
+      return
+    }
+    default:
+      // Unknown message types are ignored
+      return
+  }
 }
 
 export function stopOmo(): void {
