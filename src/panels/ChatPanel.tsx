@@ -42,11 +42,12 @@ const capabilityMeta: Record<ModelCapability, { label: string; color: string; Ic
   vision: { label: 'Vision', color: '#e2b657', Icon: Eye },
 }
 
+// ids must match MODEL_CATALOG in electron/omo-bridge/ai-client.ts
 const apiModels: ModelDef[] = [
-  { id: 'Claude Opus', label: 'Claude', color: '#bc8cff', badge: 'Opus', capabilities: ['smart', 'code', 'reasoning'] },
-  { id: 'GPT-5.3', label: 'GPT-5', color: '#3fb950', badge: '5.3', capabilities: ['smart', 'code', 'vision'] },
-  { id: 'Kimi K2.5', label: 'Kimi', color: '#f78166', badge: 'K2.5', capabilities: ['fast', 'reasoning'] },
-  { id: 'Gemini', label: 'Gemini', color: '#58a6ff', badge: 'Pro', capabilities: ['smart', 'vision', 'code'] },
+  { id: 'Claude Opus 5.5', label: 'Claude', color: '#bc8cff', badge: 'Opus 5.5', capabilities: ['smart', 'code', 'reasoning'] },
+  { id: 'GPT-6.1 Sol', label: 'GPT', color: '#3fb950', badge: '6.1 Sol', capabilities: ['smart', 'code', 'vision'] },
+  { id: 'Kimi K3.1 Pro', label: 'Kimi', color: '#f78166', badge: 'K3.1 Pro', capabilities: ['smart', 'reasoning'] },
+  { id: 'Gemini 3.6 Flash', label: 'Gemini', color: '#58a6ff', badge: '3.6 Flash', capabilities: ['fast', 'vision', 'code'] },
 ]
 
 const nvidiaModels: ModelDef[] = [
