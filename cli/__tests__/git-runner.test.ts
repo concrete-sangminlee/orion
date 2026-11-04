@@ -8,8 +8,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const execFileSyncMock = vi.fn((): string | Buffer => '');
-const execSyncMock = vi.fn((): string | Buffer => '');
+type ExecMock = (file: string, args?: readonly string[], options?: unknown) => string | Buffer;
+const execFileSyncMock = vi.fn<ExecMock>(() => '');
+const execSyncMock = vi.fn<ExecMock>(() => '');
 
 vi.mock('child_process', () => ({
   execFileSync: execFileSyncMock,

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron'
 import electronRenderer from 'vite-plugin-electron-renderer'
@@ -9,7 +10,8 @@ const isTest = process.env.VITEST === 'true'
 
 export default defineConfig({
   test: {
-    // No extra test config needed now that electron plugins are excluded during tests
+    // Keep build outputs and agent worktrees (.claude/worktrees) out of discovery.
+    exclude: [...configDefaults.exclude, '.claude/**', 'dist/**', 'dist-cli/**', 'dist-electron/**', 'release/**'],
   },
   base: './',
   build: {
