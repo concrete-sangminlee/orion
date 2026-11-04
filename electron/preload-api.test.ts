@@ -1,0 +1,143 @@
+import { describe, expect, it, vi } from 'vitest'
+import { IPC_EVENT_CHANNELS, IPC_INVOKE_CHANNELS, IPC_SEND_CHANNELS } from '../shared/ipc-channels'
+import { createElectronApi, type IpcRendererLike } from './preload-api'
+
+type Listener = (event: unknown, ...args: unknown[]) => void
+
+function createFakeIpc() {
+  const invoked: Array<{ channel: string; args: unknown[] }> = []
+  const sent: Array<{ channel: string; args: unknown[] }> = []
+  const listeners = new Map<string, Set<Listener>>()
+
+  const ipc: IpcRendererLike = {
+    invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
+      invoked.push({ channel, args })
+      return `result:${channel}`
+    }),
+    send: vi.fn((channel: string, ...args: unknown[]) => {
+      sent.push({ channel, args })
+    }),
+    on: vi.fn((channel: string, listener: Listener) => {
+      if (!listeners.has(channel)) listeners.set(channel, new Set())
+      listeners.get(channel)!.add(listener)
+    }),
+    removeListener: vi.fn((channel: string, listener: Listener) => {
+      listeners.get(channel)?.delete(listener)
+    }),
+  }
+
+  const dispatch = (channel: string, ...args: unknown[]) => {
+    for (const listener of listeners.get(channel) ?? []) listener({ sender: 'fake-event' }, ...args)
+  }
+
+  return { ipc, invoked, sent, listeners, dispatch }
+}
+
+const sorted = (values: Iterable<string>) => [...new Set(values)].sort()
+
+describe('createElectronApi — contract coverage', () => {
+  // Drive every exposed method once and record which channel it hits. This
+  // proves the preload exposes every contract channel and nothing else.
+  const fake = createFakeIpc()
+  const api = createElectronApi(fake.ipc) as unknown as Record<string, (...args: unknown[]) => unknown>
+  const subscribed: string[] = []
+
+  for (const [name, method] of Object.entries(api)) {
+    if (/^on[A-Z]/.test(name)) {
+      const before = new Set(fake.listeners.keys())
+      method(() => {})
+      for (const channel of fake.listeners.keys()) if (!before.has(channel)) subscribed.push(channel)
+    } else {
+      void method('a', 'b', 'c', 'd', 'e')
+    }
+  }
+
+  it('invokes exactly the contract invoke channels', () => {
+    expect(sorted(fake.invoked.map((c) => c.channel))).toEqual(sorted(IPC_INVOKE_CHANNELS))
+  })
+
+  it('sends exactly the contract send channels', () => {
+    expect(sorted(fake.sent.map((c) => c.channel))).toEqual(sorted(IPC_SEND_CHANNELS))
+  })
+
+  it('subscribes to exactly the contract event channels', () => {
+    expect(sorted(subscribed)).toEqual(sorted(IPC_EVENT_CHANNELS))
+  })
+})
+
+describe('createElectronApi — argument forwarding', () => {
+  it('forwards git:create-tag options positionally in handler order', async () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    await api.gitCreateTag('/repo', 'v1.0.0', { message: 'release', hash: 'abc1234', force: true })
+    expect(fake.invoked).toEqual([
+      { channel: 'git:create-tag', args: ['/repo', 'v1.0.0', 'release', 'abc1234', true] },
+    ])
+  })
+
+  it('applies push/pull/commit defaults the main handlers expect', async () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    await api.gitPush('/repo')
+    await api.gitPull('/repo')
+    await api.gitCommit('/repo', 'msg')
+    expect(fake.invoked).toEqual([
+      { channel: 'git:push', args: ['/repo', 'origin', undefined, false] },
+      { channel: 'git:pull', args: ['/repo', 'origin', undefined] },
+      { channel: 'git:commit', args: ['/repo', 'msg', false] },
+    ])
+  })
+
+  it('defaults createFile content to an empty string', async () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    await api.createFile('/ws/new.ts')
+    expect(fake.invoked).toEqual([{ channel: 'fs:create-file', args: ['/ws/new.ts', ''] }])
+  })
+
+  it('resolves with the handler result', async () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    await expect(api.gitStatus('/repo')).resolves.toBe('result:git:status')
+  })
+
+  it('sends the chat cancel message on omo:send', () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    api.omoSend({ type: 'cancel', payload: {} })
+    expect(fake.sent).toEqual([{ channel: 'omo:send', args: [{ type: 'cancel', payload: {} }] }])
+  })
+})
+
+describe('createElectronApi — event subscriptions', () => {
+  it('strips the IPC event object and forwards all payload arguments', () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    const onData = vi.fn()
+    api.onTermData(onData)
+    fake.dispatch('term:data', 'term-1', 'hello')
+    expect(onData).toHaveBeenCalledWith('term-1', 'hello')
+  })
+
+  it('calls argument-less menu callbacks without leaking payloads', () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    const onSave = vi.fn()
+    api.onAppSave(onSave)
+    fake.dispatch('app:save', 'unexpected')
+    expect(onSave).toHaveBeenCalledWith()
+  })
+
+  it('unsubscribe removes exactly the registered listener', () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    const first = vi.fn()
+    const second = vi.fn()
+    const unsubscribeFirst = api.onAppOpenFile(first)
+    api.onAppOpenFile(second)
+    unsubscribeFirst()
+    fake.dispatch('app:open-file', '/tmp/a.ts')
+    expect(first).not.toHaveBeenCalled()
+    expect(second).toHaveBeenCalledWith('/tmp/a.ts')
+  })
+})
