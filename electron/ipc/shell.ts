@@ -1,12 +1,12 @@
-import type { IpcMain } from 'electron'
 import { shell } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import { isSafeExternalUrl } from '../../shared/url-safety'
 import { isSafeOpenPath, isSafeRevealPath } from '../../shared/path-safety'
+import { handle } from './typed-ipc'
 
-export function registerShellHandlers(ipcMain: IpcMain) {
+export function registerShellHandlers() {
   // shell:open-external - open URL in default browser
-  ipcMain.handle(IPC.SHELL_OPEN_EXTERNAL, async (_event, url: string) => {
+  handle(IPC.SHELL_OPEN_EXTERNAL, async (_event, url: string) => {
     if (!isSafeExternalUrl(url)) {
       return { success: false, error: 'Refused to open URL: protocol not in allowlist (http, https, mailto, tel)' }
     }
@@ -19,7 +19,7 @@ export function registerShellHandlers(ipcMain: IpcMain) {
   })
 
   // shell:show-item-in-folder - open file manager and select the file
-  ipcMain.handle(IPC.SHELL_SHOW_ITEM_IN_FOLDER, async (_event, filePath: string) => {
+  handle(IPC.SHELL_SHOW_ITEM_IN_FOLDER, async (_event, filePath: string) => {
     if (!isSafeRevealPath(filePath)) {
       return { success: false, error: 'Refused to reveal path: empty or contains control characters' }
     }
@@ -32,7 +32,7 @@ export function registerShellHandlers(ipcMain: IpcMain) {
   })
 
   // shell:open-path - open file with default system application
-  ipcMain.handle(IPC.SHELL_OPEN_PATH, async (_event, filePath: string) => {
+  handle(IPC.SHELL_OPEN_PATH, async (_event, filePath: string) => {
     if (!isSafeOpenPath(filePath)) {
       return { success: false, error: 'Refused to open path: executable or script extensions are blocked' }
     }

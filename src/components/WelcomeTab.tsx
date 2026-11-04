@@ -1162,7 +1162,7 @@ function RecentSection() {
                         return
                       }
                       try {
-                        const result = await (window as any).api.readFile(item.path)
+                        const result = await window.api.readFile(item.path)
                         if (result) {
                           openFile({
                             path: item.path,

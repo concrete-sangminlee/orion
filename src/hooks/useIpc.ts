@@ -40,7 +40,6 @@ export function useExternalFileWatcher() {
         // Read the new content from disk
         try {
           const result = await window.api.readFile(openFile.path)
-          if (result.error) return
 
           // If the file has unsaved modifications, flag it for user decision
           if (openFile.isModified) {

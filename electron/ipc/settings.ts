@@ -1,6 +1,6 @@
-import type { IpcMain } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { AppSettings } from '../../shared/types'
+import { handle } from './typed-ipc'
 
 let store: any = null
 
@@ -22,13 +22,13 @@ async function getStore() {
   return store
 }
 
-export function registerSettingsHandlers(ipcMain: IpcMain) {
-  ipcMain.handle(IPC.SETTINGS_GET, async () => {
+export function registerSettingsHandlers() {
+  handle(IPC.SETTINGS_GET, async () => {
     const s = await getStore()
     return s.store
   })
 
-  ipcMain.handle(IPC.SETTINGS_SET, async (_event, settings: Partial<AppSettings>) => {
+  handle(IPC.SETTINGS_SET, async (_event, settings: Partial<AppSettings>) => {
     const s = await getStore()
     for (const [key, value] of Object.entries(settings)) {
       s.set(key, value)

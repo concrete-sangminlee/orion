@@ -343,10 +343,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
   loadWorkspaceExtensions: async (rootPath: string) => {
     try {
-      // Simulated: read .orion/extensions.json via the workspace API
+      // Recommendations are persisted under `__extensions` in .orion/settings.json
+      // (see saveWorkspaceExtensions). Reading `result.extensions` never matched.
       const result = await window.api.workspaceReadSettings(rootPath)
-      if (result.extensions) {
-        set({ recommendedExtensions: result.extensions as WorkspaceExtensions })
+      const extensions = result.settings?.__extensions
+      if (extensions && Array.isArray(extensions.recommendations)) {
+        set({ recommendedExtensions: extensions as WorkspaceExtensions })
       } else {
         set({ recommendedExtensions: { recommendations: [] } })
       }
@@ -357,7 +359,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
   saveWorkspaceExtensions: async (rootPath: string, extensions: WorkspaceExtensions) => {
     try {
-      // Simulated: persist alongside workspace settings via the API
       await window.api.workspaceWriteSettings(rootPath, {
         ...get().workspaceOverrides,
         __extensions: extensions,

@@ -199,7 +199,7 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     setIsRefreshing(true)
     try {
-      const status = await (window as any).api.gitStatus(rootPath)
+      const status = await window.api.gitStatus(rootPath)
       if (status) {
         setStagedFiles(status.staged || [])
         setUnstagedFiles(status.unstaged || [])
@@ -222,7 +222,7 @@ export default function SourceControlPanel() {
   const refreshStashes = useCallback(async () => {
     if (!rootPath) return
     try {
-      const list = await (window as any).api.gitStashList(rootPath)
+      const list = await window.api.gitStashList(rootPath)
       setStashes(list || [])
     } catch {
       setStashes([])
@@ -232,10 +232,10 @@ export default function SourceControlPanel() {
   const refreshMergeStatus = useCallback(async () => {
     if (!rootPath) return
     try {
-      const status = await (window as any).api.gitMergeStatus(rootPath)
+      const status = await window.api.gitMergeStatus(rootPath)
       setIsMerging(status?.merging || false)
       if (status?.merging) {
-        const files = await (window as any).api.gitConflictFiles(rootPath)
+        const files = await window.api.gitConflictFiles(rootPath)
         setConflictFiles(files || [])
       } else {
         setConflictFiles([])
@@ -250,7 +250,7 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     setIsLoadingLog(true)
     try {
-      const entries = await (window as any).api.gitLog(rootPath, 50)
+      const entries = await window.api.gitLog(rootPath, 50)
       setLogEntries(entries || [])
     } catch (err) {
       console.error('Failed to fetch git log:', err)
@@ -303,7 +303,7 @@ export default function SourceControlPanel() {
     if (!commitMessage.trim() || !rootPath) return
     appendOutput('Git', `[commit] Committing: "${commitMessage.trim()}"`, 'info')
     try {
-      await (window as any).api.gitCommit(rootPath, commitMessage.trim())
+      await window.api.gitCommit(rootPath, commitMessage.trim())
       appendOutput('Git', `[commit] Success: "${commitMessage.trim()}"`, 'success')
       addToast({ type: 'success', message: 'Changes committed successfully' })
       setCommitMessage('')
@@ -317,7 +317,7 @@ export default function SourceControlPanel() {
   const handleStage = async (filePath: string) => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitStage(rootPath, filePath)
+      await window.api.gitStage(rootPath, filePath)
       appendOutput('Git', `[stage] Staged: ${filePath}`, 'info')
       refreshStatus()
     } catch (err: any) {
@@ -329,7 +329,7 @@ export default function SourceControlPanel() {
   const handleUnstage = async (filePath: string) => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitUnstage(rootPath, filePath)
+      await window.api.gitUnstage(rootPath, filePath)
       appendOutput('Git', `[unstage] Unstaged: ${filePath}`, 'info')
       refreshStatus()
     } catch (err: any) {
@@ -341,7 +341,7 @@ export default function SourceControlPanel() {
   const handleDiscard = async (filePath: string) => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitDiscard(rootPath, filePath)
+      await window.api.gitDiscard(rootPath, filePath)
       appendOutput('Git', `[discard] Discarded changes: ${filePath}`, 'warn')
       addToast({ type: 'info', message: `Discarded changes in ${filePath.split('/').pop()}` })
       refreshStatus()
@@ -355,7 +355,7 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     setIsDiffLoading(true)
     try {
-      const diff = await (window as any).api.gitDiff(rootPath, filePath)
+      const diff = await window.api.gitDiff(rootPath, filePath)
       setSelectedDiff({ path: filePath, diff: diff || 'No changes detected' })
     } catch {
       setSelectedDiff({ path: filePath, diff: 'Failed to load diff' })
@@ -374,7 +374,7 @@ export default function SourceControlPanel() {
     setSelectedCommit(shortHash)
     setIsLoadingDetail(true)
     try {
-      const detail = await (window as any).api.gitShow(rootPath, fullHash)
+      const detail = await window.api.gitShow(rootPath, fullHash)
       setCommitDetail(detail || null)
     } catch {
       setCommitDetail(null)
@@ -394,7 +394,7 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     appendOutput('Git', '[push] Pushing to remote...', 'info')
     try {
-      await (window as any).api.gitPush(rootPath)
+      await window.api.gitPush(rootPath)
       appendOutput('Git', '[push] Push successful', 'success')
       addToast({ type: 'success', message: 'Pushed to remote successfully' })
       refreshStatus()
@@ -408,7 +408,7 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     appendOutput('Git', '[pull] Pulling from remote...', 'info')
     try {
-      await (window as any).api.gitPull(rootPath)
+      await window.api.gitPull(rootPath)
       appendOutput('Git', '[pull] Pull successful', 'success')
       addToast({ type: 'success', message: 'Pulled from remote successfully' })
       refreshStatus()
@@ -422,7 +422,7 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     appendOutput('Git', '[fetch] Fetching from all remotes...', 'info')
     try {
-      await (window as any).api.gitFetch(rootPath)
+      await window.api.gitFetch(rootPath)
       appendOutput('Git', '[fetch] Fetch successful', 'success')
       addToast({ type: 'success', message: 'Fetched from remote' })
       refreshStatus()
@@ -435,7 +435,7 @@ export default function SourceControlPanel() {
   const fetchBranches = async () => {
     if (!rootPath) return
     try {
-      const result = await (window as any).api.gitBranches(rootPath)
+      const result = await window.api.gitBranches(rootPath)
       setBranches(result || [])
     } catch {
       setBranches([])
@@ -445,7 +445,7 @@ export default function SourceControlPanel() {
   const handleCreateBranch = async () => {
     if (!rootPath || !newBranchName.trim()) return
     try {
-      await (window as any).api.gitCreateBranch(rootPath, newBranchName.trim())
+      await window.api.gitCreateBranch(rootPath, newBranchName.trim())
       addToast({ type: 'success', message: `Created and switched to branch: ${newBranchName.trim()}` })
       appendOutput('Git', `[branch] Created: ${newBranchName.trim()}`, 'success')
       setNewBranchName('')
@@ -459,7 +459,7 @@ export default function SourceControlPanel() {
   const handleSwitchBranch = async (branchName: string) => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitCheckout(rootPath, branchName)
+      await window.api.gitCheckout(rootPath, branchName)
       addToast({ type: 'success', message: `Switched to branch: ${branchName}` })
       appendOutput('Git', `[checkout] Switched to: ${branchName}`, 'info')
       setShowBranchPicker(false)
@@ -472,7 +472,7 @@ export default function SourceControlPanel() {
   const handleStageAll = async () => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitStageAll(rootPath)
+      await window.api.gitStageAll(rootPath)
       appendOutput('Git', '[stage] Staged all changes', 'info')
       refreshStatus()
     } catch (err: any) {
@@ -483,7 +483,7 @@ export default function SourceControlPanel() {
   const handleUnstageAll = async () => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitUnstageAll(rootPath)
+      await window.api.gitUnstageAll(rootPath)
       appendOutput('Git', '[unstage] Unstaged all changes', 'info')
       refreshStatus()
     } catch (err: any) {
@@ -496,10 +496,10 @@ export default function SourceControlPanel() {
     const msg = stashMessage.trim()
     try {
       if (msg) {
-        await (window as any).api.gitStashSave(rootPath, msg)
+        await window.api.gitStashSave(rootPath, msg)
         appendOutput('Git', `[stash] Stashed with message: "${msg}"`, 'info')
       } else {
-        await (window as any).api.gitStash(rootPath)
+        await window.api.gitStash(rootPath)
         appendOutput('Git', '[stash] Stashed all changes', 'info')
       }
       addToast({ type: 'success', message: 'Changes stashed' })
@@ -516,7 +516,7 @@ export default function SourceControlPanel() {
   const handleStashApply = async (index: number) => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitStashApply(rootPath, index)
+      await window.api.gitStashApply(rootPath, index)
       appendOutput('Git', `[stash] Applied stash@{${index}}`, 'info')
       addToast({ type: 'success', message: `Applied stash@{${index}}` })
       refreshStatus()
@@ -531,7 +531,7 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     try {
       // Pop can be done by applying and dropping in one command.
-      await (window as any).api.gitStashApply(rootPath, index, { drop: true })
+      await window.api.gitStashApply(rootPath, index, { drop: true })
       appendOutput('Git', `[stash] Popped stash@{${index}}`, 'info')
       addToast({ type: 'success', message: `Popped stash@{${index}}` })
       refreshStatus()
@@ -546,7 +546,7 @@ export default function SourceControlPanel() {
   const handleStashDrop = async (index: number) => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitStashDrop(rootPath, index)
+      await window.api.gitStashDrop(rootPath, index)
       appendOutput('Git', `[stash] Dropped stash@{${index}}`, 'warn')
       addToast({ type: 'info', message: `Dropped stash@{${index}}` })
       refreshStashes()
@@ -559,7 +559,7 @@ export default function SourceControlPanel() {
   const handleMergeAbort = async () => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitMergeAbort(rootPath)
+      await window.api.gitMergeAbort(rootPath)
       appendOutput('Git', '[merge] Merge aborted', 'warn')
       addToast({ type: 'info', message: 'Merge aborted' })
       refreshStatus()
@@ -662,7 +662,7 @@ export default function SourceControlPanel() {
     const filesToStage = Array.from(selectedFileChecks)
     for (const filePath of filesToStage) {
       try {
-        await (window as any).api.gitStage(rootPath, filePath)
+        await window.api.gitStage(rootPath, filePath)
         appendOutput('Git', `[stage] Staged: ${filePath}`, 'info')
       } catch (err: any) {
         appendOutput('Git', `[stage] Failed: ${filePath}: ${err?.message}`, 'error')
@@ -689,7 +689,7 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     setLoadingInlineDiffs(prev => new Set(prev).add(filePath))
     try {
-      const diff = await (window as any).api.gitDiff(rootPath, filePath)
+      const diff = await window.api.gitDiff(rootPath, filePath)
       setInlineDiffs(prev => ({ ...prev, [filePath]: diff || 'No changes detected' }))
       setExpandedFiles(prev => new Set(prev).add(filePath))
     } catch {
@@ -708,7 +708,7 @@ export default function SourceControlPanel() {
   const handleDeleteBranch = async (branchName: string) => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitDeleteBranch(rootPath, branchName)
+      await window.api.gitDeleteBranch(rootPath, branchName)
       addToast({ type: 'success', message: `Deleted branch: ${branchName}` })
       appendOutput('Git', `[branch] Deleted: ${branchName}`, 'warn')
       setShowDeleteConfirm(null)
@@ -723,7 +723,7 @@ export default function SourceControlPanel() {
   const handleMergeBranch = async (branchName: string) => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitMerge(rootPath, branchName)
+      await window.api.gitMerge(rootPath, branchName)
       addToast({ type: 'success', message: `Merged branch: ${branchName}` })
       appendOutput('Git', `[merge] Merged: ${branchName} into ${branch}`, 'success')
       setShowMergePicker(false)
@@ -740,7 +740,7 @@ export default function SourceControlPanel() {
   const refreshRebaseStatus = useCallback(async () => {
     if (!rootPath) return
     try {
-      const status = await (window as any).api.gitRebaseStatus?.(rootPath)
+      const status = await window.api.gitRebaseStatus?.(rootPath)
       setIsRebasing(status?.rebasing || false)
     } catch {
       setIsRebasing(false)
@@ -751,7 +751,7 @@ export default function SourceControlPanel() {
   const fetchTags = useCallback(async () => {
     if (!rootPath) return
     try {
-      const result = await (window as any).api.gitTags?.(rootPath)
+      const result = await window.api.gitTags?.(rootPath)
       setTags(result || [])
     } catch {
       setTags([])
@@ -762,7 +762,7 @@ export default function SourceControlPanel() {
   const handleCherryPick = async (hash: string) => {
     if (!rootPath) return
     try {
-      await (window as any).api.gitCherryPick(rootPath, hash)
+      await window.api.gitCherryPick(rootPath, hash)
       addToast({ type: 'success', message: `Cherry-picked commit ${hash.substring(0, 7)}` })
       appendOutput('Git', `[cherry-pick] Applied: ${hash.substring(0, 7)}`, 'success')
       refreshStatus()

@@ -6,6 +6,7 @@ import { useFileStore } from '@/store/files'
 import { useThemeStore } from '@/store/theme'
 import { useRecentFilesStore } from '@/store/recentFiles'
 import FileIcon from '@/components/FileIcon'
+import { pickAndOpenFiles } from '@/utils/openFileInEditor'
 
 interface PaletteItem {
   id: string
@@ -381,7 +382,7 @@ export default function CommandPalette({ open, onClose, onOpenSettings }: Props)
     // ── File commands ──────────────────────────────────────────────────
     { id: 'new-file', label: 'File: New File', category: 'command' as const, icon: <FilePlus size={14} />, shortcut: 'Ctrl+N', action: () => { dispatch('orion:new-file'); onClose() }, group: 'File' },
     { id: 'new-window', label: 'File: New Window', category: 'command' as const, icon: <Maximize2 size={14} />, shortcut: 'Ctrl+Shift+N', action: () => { dispatch('orion:new-window'); onClose() }, group: 'File' },
-    { id: 'open-file', label: 'File: Open File', category: 'command' as const, icon: <FolderOpenDot size={14} />, shortcut: 'Ctrl+O', action: () => { window.api?.openFile?.(); onClose() }, group: 'File' },
+    { id: 'open-file', label: 'File: Open File', category: 'command' as const, icon: <FolderOpenDot size={14} />, shortcut: 'Ctrl+O', action: () => { onClose(); void pickAndOpenFiles() }, group: 'File' },
     { id: 'open-folder', label: 'File: Open Folder', category: 'command' as const, icon: <FolderOpen size={14} />, shortcut: 'Ctrl+K Ctrl+O', action: () => { dispatch('orion:open-folder'); onClose() }, group: 'File' },
     { id: 'save', label: 'File: Save', category: 'command' as const, icon: <Save size={14} />, shortcut: 'Ctrl+S', action: () => { dispatch('orion:save-file'); onClose() }, group: 'File' },
     { id: 'save-as', label: 'File: Save As...', category: 'command' as const, icon: <Save size={14} />, shortcut: 'Ctrl+Shift+S', action: () => { dispatch('orion:save-file-as'); onClose() }, group: 'File' },

@@ -1,6 +1,7 @@
 import chokidar, { type FSWatcher } from 'chokidar'
 import type { BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
+import { emit } from '../ipc/typed-ipc'
 
 let watcher: FSWatcher | null = null
 
@@ -39,7 +40,7 @@ function sendDebouncedChange(
     pendingChanges.delete(normalized)
     const win = getWindow()
     if (win && !win.isDestroyed()) {
-      win.webContents.send(IPC.FS_EXTERNAL_CHANGE, { path: normalized, type: changeType })
+      emit(win, IPC.FS_EXTERNAL_CHANGE, { path: normalized, type: changeType })
     }
   }, DEBOUNCE_MS)
 
@@ -57,19 +58,19 @@ export function startWatching(dirPath: string, getWindow: () => BrowserWindow | 
 
   watcher
     .on('add', (filePath: string) => {
-      getWindow()?.webContents.send(IPC.FS_CHANGE, 'add', filePath)
+      emit(getWindow(), IPC.FS_CHANGE, 'add', filePath)
       sendDebouncedChange(filePath, 'add', getWindow)
     })
     .on('change', (filePath: string) => {
-      getWindow()?.webContents.send(IPC.FS_CHANGE, 'change', filePath)
+      emit(getWindow(), IPC.FS_CHANGE, 'change', filePath)
       sendDebouncedChange(filePath, 'change', getWindow)
     })
     .on('unlink', (filePath: string) => {
-      getWindow()?.webContents.send(IPC.FS_CHANGE, 'unlink', filePath)
+      emit(getWindow(), IPC.FS_CHANGE, 'unlink', filePath)
       sendDebouncedChange(filePath, 'delete', getWindow)
     })
-    .on('addDir', (filePath: string) => getWindow()?.webContents.send(IPC.FS_CHANGE, 'addDir', filePath))
-    .on('unlinkDir', (filePath: string) => getWindow()?.webContents.send(IPC.FS_CHANGE, 'unlinkDir', filePath))
+    .on('addDir', (filePath: string) => emit(getWindow(), IPC.FS_CHANGE, 'addDir', filePath))
+    .on('unlinkDir', (filePath: string) => emit(getWindow(), IPC.FS_CHANGE, 'unlinkDir', filePath))
 }
 
 export function stopWatching() {

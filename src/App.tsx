@@ -18,6 +18,7 @@ import StatusBar from './components/StatusBar'
 import CommandPalette from '@/components/CommandPalette'
 import ToastContainer from '@/components/Toast'
 import { writeFileChecked } from '@/utils/ipcResult'
+import { openFileInEditor } from '@/utils/openFileInEditor'
 import FileExplorer from './panels/FileExplorer'
 import BottomPanel from './panels/BottomPanel'
 import {
@@ -573,6 +574,16 @@ export default function App() {
     })
     return () => { unsub?.() }
   }, [openWorkspacePath])
+
+  // Files opened from the native File > Open File menu, an OS file
+  // association, or the command line. Nothing subscribed to this before, so
+  // those files never reached the editor.
+  useEffect(() => {
+    const unsub = window.api?.onAppOpenFile?.((filePath) => {
+      void openFileInEditor(filePath)
+    })
+    return () => { unsub?.() }
+  }, [])
 
   // Listen for custom events from menu bar / commands
   useEffect(() => {
