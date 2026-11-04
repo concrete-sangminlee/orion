@@ -37,8 +37,8 @@ function showCurrentConfig(): void {
     ['Anthropic Key', config.anthropicApiKey ? palette.green(maskApiKey(config.anthropicApiKey)) : palette.dim('not set')],
     ['OpenAI Key', config.openaiApiKey ? palette.green(maskApiKey(config.openaiApiKey)) : palette.dim('not set')],
     ['Ollama Host', config.ollamaHost || 'http://localhost:11434'],
-    ['Max Tokens', String(config.maxTokens || 4096)],
-    ['Temperature', String(config.temperature || 0.7)],
+    ['Max Tokens', String(config.maxTokens ?? 4096)],
+    ['Temperature', String(config.temperature ?? 0.7)],
   ]));
   console.log();
 }
@@ -152,7 +152,7 @@ export async function configCommand(): Promise<void> {
           {
             type: 'input',
             name: 'model',
-            message: 'Enter model name (e.g., claude-sonnet-4-20250514, gpt-4o, llama3):',
+            message: 'Enter model name (e.g., claude-opus-5-5, gpt-4o, llama3):',
             default: config.model,
             validate: (input: string) => {
               if (!input.trim()) return 'Model name cannot be empty.';
@@ -203,7 +203,7 @@ export async function configCommand(): Promise<void> {
             type: 'number',
             name: 'tokens',
             message: 'Enter max tokens (256-32768):',
-            default: config.maxTokens || 4096,
+            default: config.maxTokens ?? 4096,
             validate: (val: number) => (val >= 256 && val <= 32768) || 'Must be between 256 and 32768.',
           },
         ]);
@@ -219,7 +219,7 @@ export async function configCommand(): Promise<void> {
             type: 'number',
             name: 'temp',
             message: 'Enter temperature (0.0-2.0):',
-            default: config.temperature || 0.7,
+            default: config.temperature ?? 0.7,
             validate: (val: number) => (val >= 0 && val <= 2) || 'Must be between 0.0 and 2.0.',
           },
         ]);

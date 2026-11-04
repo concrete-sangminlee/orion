@@ -28,10 +28,11 @@ vi.mock('openai', () => ({ default: vi.fn() }));
 type AIProvider = 'anthropic' | 'openai' | 'ollama';
 
 const MODEL_SHORTCUTS: Record<string, { provider: AIProvider; model: string }> = {
-  'claude': { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-  'claude-opus': { provider: 'anthropic', model: 'claude-opus-4-20250514' },
-  'claude-sonnet': { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-  'claude-haiku': { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+  'claude': { provider: 'anthropic', model: 'claude-opus-5-5' },
+  'claude-opus': { provider: 'anthropic', model: 'claude-opus-5-5' },
+  'claude-sonnet': { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+  'claude-haiku': { provider: 'anthropic', model: 'claude-haiku-5-5' },
+  'claude-fable': { provider: 'anthropic', model: 'claude-fable-5-1' },
   'gpt': { provider: 'openai', model: 'gpt-4o' },
   'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
   'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
@@ -109,10 +110,11 @@ function setActiveCommand(command: string): void {
 describe('MODEL_SHORTCUTS (exhaustive)', () => {
   // Anthropic models
   it.each([
-    ['claude', 'anthropic', 'claude-sonnet-4-20250514'],
-    ['claude-opus', 'anthropic', 'claude-opus-4-20250514'],
-    ['claude-sonnet', 'anthropic', 'claude-sonnet-4-20250514'],
-    ['claude-haiku', 'anthropic', 'claude-haiku-4-5-20251001'],
+    ['claude', 'anthropic', 'claude-opus-5-5'],
+    ['claude-opus', 'anthropic', 'claude-opus-5-5'],
+    ['claude-sonnet', 'anthropic', 'claude-sonnet-5-5'],
+    ['claude-haiku', 'anthropic', 'claude-haiku-5-5'],
+    ['claude-fable', 'anthropic', 'claude-fable-5-1'],
   ])('resolves "%s" to provider=%s model=%s', (key, provider, model) => {
     expect(MODEL_SHORTCUTS[key]).toEqual({ provider, model });
   });
@@ -158,8 +160,8 @@ describe('MODEL_SHORTCUTS (exhaustive)', () => {
     expect(MODEL_SHORTCUTS[key]).toEqual({ provider, model });
   });
 
-  it('has exactly 33 shortcut keys', () => {
-    expect(Object.keys(MODEL_SHORTCUTS).length).toBe(33);
+  it('has exactly 34 shortcut keys', () => {
+    expect(Object.keys(MODEL_SHORTCUTS).length).toBe(34);
   });
 });
 
@@ -217,7 +219,7 @@ describe('resolveModelShortcut (extended)', () => {
 
   it('handles mixed case with whitespace', () => {
     const result = resolveModelShortcut('  Claude-Opus  ');
-    expect(result).toEqual({ provider: 'anthropic', model: 'claude-opus-4-20250514' });
+    expect(result).toEqual({ provider: 'anthropic', model: 'claude-opus-5-5' });
   });
 
   it('resolves every shortcut key correctly via resolveModelShortcut', () => {

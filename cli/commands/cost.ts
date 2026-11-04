@@ -37,12 +37,26 @@ import { getPipelineOptions, jsonOutput } from '../pipeline.js';
 
 const COSTS_FILE = path.join(os.homedir(), '.orion', 'costs.json');
 
-// Pricing per 1M tokens (USD) as of 2025
+// Pricing per 1M tokens (USD). Anthropic: first-party API list prices as of
+// Oct 2026 (Claude Haiku 5.5: prompts up to 100K tokens).
 export const PROVIDER_PRICING: Record<string, { input: number; output: number; label: string }> = {
-  // Anthropic
+  // Anthropic (current)
+  'claude-fable-5-1':             { input: 10.00, output: 50.00, label: 'Claude Fable 5.1' },
+  'claude-opus-5-5':              { input: 4.00,  output: 20.00, label: 'Claude Opus 5.5' },
+  'claude-sonnet-5-5':            { input: 2.00,  output: 10.00, label: 'Claude Sonnet 5.5' },
+  'claude-haiku-5-5':             { input: 0.10,  output: 0.50,  label: 'Claude Haiku 5.5' },
+  'claude-fable-5':               { input: 10.00, output: 50.00, label: 'Claude Fable 5' },
+  'claude-opus-5':                { input: 5.00,  output: 25.00, label: 'Claude Opus 5' },
+  'claude-sonnet-5':              { input: 2.00,  output: 10.00, label: 'Claude Sonnet 5' },
+  'claude-opus-4-8':              { input: 5.00,  output: 25.00, label: 'Claude Opus 4.8' },
+  'claude-opus-4-7':              { input: 5.00,  output: 25.00, label: 'Claude Opus 4.7' },
+  'claude-opus-4-6':              { input: 5.00,  output: 25.00, label: 'Claude Opus 4.6' },
+  'claude-sonnet-4-6':            { input: 3.00,  output: 15.00, label: 'Claude Sonnet 4.6' },
+  'claude-haiku-4-5':             { input: 1.00,  output: 5.00,  label: 'Claude Haiku 4.5' },
+  'claude-haiku-4-5-20251001':    { input: 1.00,  output: 5.00,  label: 'Claude Haiku 4.5' },
+  // Anthropic (retired; kept so historical cost entries keep their labels)
   'claude-sonnet-4-20250514':     { input: 3.00,  output: 15.00, label: 'Claude Sonnet 4' },
   'claude-opus-4-20250514':       { input: 15.00, output: 75.00, label: 'Claude Opus 4' },
-  'claude-haiku-4-5-20251001':    { input: 0.80,  output: 4.00,  label: 'Claude Haiku 4.5' },
   'claude-3-5-sonnet-20241022':   { input: 3.00,  output: 15.00, label: 'Claude 3.5 Sonnet' },
   'claude-3-haiku-20240307':      { input: 0.25,  output: 1.25,  label: 'Claude 3 Haiku' },
   // OpenAI

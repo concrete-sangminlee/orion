@@ -28,10 +28,11 @@ vi.mock('openai', () => ({ default: vi.fn() }));
 type AIProvider = 'anthropic' | 'openai' | 'ollama';
 
 const MODEL_SHORTCUTS: Record<string, { provider: AIProvider; model: string }> = {
-  'claude': { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-  'claude-opus': { provider: 'anthropic', model: 'claude-opus-4-20250514' },
-  'claude-sonnet': { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-  'claude-haiku': { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+  'claude': { provider: 'anthropic', model: 'claude-opus-5-5' },
+  'claude-opus': { provider: 'anthropic', model: 'claude-opus-5-5' },
+  'claude-sonnet': { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+  'claude-haiku': { provider: 'anthropic', model: 'claude-haiku-5-5' },
+  'claude-fable': { provider: 'anthropic', model: 'claude-fable-5-1' },
   'gpt': { provider: 'openai', model: 'gpt-4o' },
   'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
   'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
@@ -89,19 +90,19 @@ function getProviderDisplay(provider: AIProvider) {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('resolveModelShortcut', () => {
-  it('resolves "claude" to anthropic claude-sonnet-4', () => {
+  it('resolves "claude" to anthropic claude-opus-5-5', () => {
     const result = resolveModelShortcut('claude');
-    expect(result).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
+    expect(result).toEqual({ provider: 'anthropic', model: 'claude-opus-5-5' });
   });
 
-  it('resolves "claude-opus" to anthropic claude-opus-4', () => {
+  it('resolves "claude-opus" to anthropic claude-opus-5-5', () => {
     const result = resolveModelShortcut('claude-opus');
-    expect(result).toEqual({ provider: 'anthropic', model: 'claude-opus-4-20250514' });
+    expect(result).toEqual({ provider: 'anthropic', model: 'claude-opus-5-5' });
   });
 
-  it('resolves "claude-haiku" to anthropic claude-haiku', () => {
+  it('resolves "claude-haiku" to anthropic claude-haiku-5-5', () => {
     const result = resolveModelShortcut('claude-haiku');
-    expect(result).toEqual({ provider: 'anthropic', model: 'claude-haiku-4-5-20251001' });
+    expect(result).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });
   });
 
   it('resolves "gpt" to openai gpt-4o', () => {
@@ -146,7 +147,7 @@ describe('resolveModelShortcut', () => {
 
   it('is case-insensitive', () => {
     const result = resolveModelShortcut('CLAUDE');
-    expect(result).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
+    expect(result).toEqual({ provider: 'anthropic', model: 'claude-opus-5-5' });
   });
 
   it('trims whitespace', () => {
@@ -186,6 +187,7 @@ describe('listAvailableModels', () => {
     expect(models).toContain('claude-opus');
     expect(models).toContain('claude-sonnet');
     expect(models).toContain('claude-haiku');
+    expect(models).toContain('claude-fable');
   });
 
   it('includes all openai shortcuts', () => {

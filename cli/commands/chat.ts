@@ -18,6 +18,8 @@ import {
   resolveModelShortcut,
   listAvailableModels,
   listOllamaModels,
+  DEFAULT_MODELS,
+  FAST_MODELS,
   type AIMessage,
   type AIProvider,
 } from '../ai-client.js';
@@ -421,7 +423,7 @@ ${colors.label('General:')}
   ${colors.command('/exit')}          Exit the chat session (auto-saves)
 
 ${colors.label('Model Shortcuts:')}
-  ${chalk.dim('claude, claude-opus, claude-sonnet, claude-haiku')}
+  ${chalk.dim('claude, claude-opus, claude-sonnet, claude-haiku, claude-fable')}
   ${chalk.dim('gpt, gpt-4o, gpt-4o-mini, o3, o3-mini, codex')}
   ${chalk.dim('ollama, llama')}
 `;
@@ -952,16 +954,16 @@ ${colors.label('Model Shortcuts:')}
 
       case '/fast': {
         // Toggle to a cheaper/faster model
-        if (activeModel.includes('sonnet') || activeModel.includes('4o')) {
+        if (['opus', 'sonnet', 'fable', '4o'].some(name => activeModel.includes(name))) {
           // Switch to lighter model
           const prevModel = activeModel;
-          if (activeProvider === 'anthropic') activeModel = 'claude-haiku-4-5-20251001';
-          else if (activeProvider === 'openai') activeModel = 'gpt-4o-mini';
+          if (activeProvider === 'anthropic') activeModel = FAST_MODELS.anthropic;
+          else if (activeProvider === 'openai') activeModel = FAST_MODELS.openai;
           console.log(`  Fast mode ON: ${prevModel} → ${activeModel}`);
         } else {
           // Switch back to full model
-          if (activeProvider === 'anthropic') activeModel = 'claude-sonnet-4-20250514';
-          else if (activeProvider === 'openai') activeModel = 'gpt-4o';
+          if (activeProvider === 'anthropic') activeModel = DEFAULT_MODELS.anthropic;
+          else if (activeProvider === 'openai') activeModel = DEFAULT_MODELS.openai;
           console.log(`  Fast mode OFF: restored to ${activeModel}`);
         }
         prompt();
