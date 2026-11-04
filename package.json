@@ -52,6 +52,7 @@
     "typecheck:renderer": "tsc --noEmit",
     "typecheck:electron": "tsc -p tsconfig.node.json --noEmit",
     "typecheck:cli": "tsc -p cli/tsconfig.json --noEmit",
+    "audit:reachability": "node scripts/audit-reachability.mjs",
     "test": "vitest",
     "electron:dev": "vite build && electron .",
     "icons": "electron-icon-builder --input=public/icon.png --output=build --flatten",

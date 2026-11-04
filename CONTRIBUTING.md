@@ -7,6 +7,7 @@ Thank you for your interest in contributing to Orion! This guide will help you g
 - [Development Environment Setup](#development-environment-setup)
 - [Project Structure](#project-structure)
 - [Adding a New CLI Command](#adding-a-new-cli-command)
+- [Adding an IPC Channel (Desktop IDE)](#adding-an-ipc-channel-desktop-ide)
 - [Code Style Guidelines](#code-style-guidelines)
 - [Testing Requirements](#testing-requirements)
 - [Pull Request Process](#pull-request-process)
@@ -39,9 +40,10 @@ Thank you for your interest in contributing to Orion! This guide will help you g
    npm run cli:build
    ```
 
-5. **Run the tests:**
+5. **Run the checks:**
    ```bash
-   npm run test:cli
+   npm run typecheck   # renderer, electron, and CLI projects
+   npm test -- --run   # all test suites
    ```
 
 6. **Start the development server** (for the Electron IDE):
@@ -71,6 +73,33 @@ orion/
   dist-electron/    # Built Electron output (generated)
   tests/            # Test files
 ```
+
+## Adding an IPC Channel (Desktop IDE)
+
+Every renderer ↔ main-process channel is declared once in
+[`shared/ipc-contract.ts`](shared/ipc-contract.ts). The compiler then checks
+the main handler, the preload method, and every renderer call against it.
+
+1. **Declare it** in `IpcInvokeContract` (request/response), `IpcSendContract`
+   (fire-and-forget), or `IpcEventContract` (main → renderer push), and add it
+   to the matching `IPC_*_CHANNELS` list in `shared/ipc-channels.ts` — the
+   compiler rejects the list until it matches the contract exactly.
+2. **Implement it** in `electron/ipc/*.ts` with `handle()` / `listen()` /
+   `emit()` from `electron/ipc/typed-ipc.ts` — never raw `ipcMain` or
+   `webContents.send`. Treat every argument as untrusted: declare it `unknown`
+   in the handler and validate it (see the `*-guard.ts` modules).
+3. **Expose it** in `electron/preload-api.ts`. `window.api` in the renderer is
+   typed from that object, so do not edit `src/types/electron.d.ts`.
+4. **Use it** through `window.api` only. `window.electron`,
+   `window.electronAPI`, and `(window as any).api` are rejected by
+   `src/__tests__/ipc-bridge-usage.test.ts` for any module the app can load.
+
+`electron/preload-api.test.ts` and `electron/ipc/ipc-registration.test.ts`
+fail if a channel is declared but not exposed, registered, or emitted.
+
+`npm run audit:reachability` lists renderer modules that `src/main.tsx` never
+imports. Code there is type-checked but never ships, so wire a module into
+the app before fixing or extending it.
 
 ## Adding a New CLI Command
 
