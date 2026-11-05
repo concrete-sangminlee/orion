@@ -12,7 +12,8 @@ import { registerFileOperationHandlers } from './ipc/file-operations'
 import { registerClipboardHandlers } from './ipc/clipboard'
 import { registerShellHandlers } from './ipc/shell'
 import { registerTaskHandlers } from './ipc/tasks'
-import { handle, listen, emit } from './ipc/typed-ipc'
+import { configureIpcTrust, handle, listen, emit } from './ipc/typed-ipc'
+import { decideNavigation, type AppOrigin } from './security/app-origin'
 import { grantFileAccess } from './workspace/granted-files'
 
 // --- Constants ---
@@ -670,16 +671,29 @@ function createWindow(filesToOpen?: string[]): BrowserWindow {
     openFilesInWindow(win, filesToOpen)
   }
 
-  // Security: prevent navigation away from the app
+  // Security: the preload exposes window.api to whatever page this window
+  // shows, so it must never leave the app. Links go to the OS only through
+  // the same protocol allowlist as the shell:open-external channel; file:
+  // URLs and custom schemes (which openExternal hands to OS protocol
+  // handlers) are dropped.
+  const routeNavigation = (url: string): boolean => {
+    const decision = decideNavigation(url, APP_ORIGIN)
+    if (decision === 'open-external') void shell.openExternal(url)
+    else if (decision === 'deny') console.warn('[Security] Blocked navigation to', url)
+    return decision === 'allow'
+  }
+
   win.webContents.on('will-navigate', (event, url) => {
-    if (process.env.VITE_DEV_SERVER_URL && url.startsWith(process.env.VITE_DEV_SERVER_URL)) return
-    event.preventDefault()
-    void shell.openExternal(url)
+    if (!routeNavigation(url)) event.preventDefault()
   })
 
-  // Security: prevent new window creation — open in default browser
+  win.webContents.on('will-redirect', (event, url) => {
+    if (!routeNavigation(url)) event.preventDefault()
+  })
+
+  // New windows are never created; allowlisted links open in the OS browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    routeNavigation(url)
     return { action: 'deny' }
   })
 
@@ -736,7 +750,15 @@ function createWindow(filesToOpen?: string[]): BrowserWindow {
   return win
 }
 
+// Where the app's own pages live: the dev server in development, the bundled
+// renderer directory in production. Used for navigation and IPC sender checks.
+const APP_ORIGIN: AppOrigin = {
+  devServerUrl: process.env.VITE_DEV_SERVER_URL || undefined,
+  rendererRoot: path.join(MAIN_DIR, '../dist'),
+}
+
 function registerIpcHandlers() {
+  configureIpcTrust(APP_ORIGIN)
   registerFilesystemHandlers(() => mainWindow)
   registerTerminalHandlers(() => mainWindow)
   registerSettingsHandlers()
