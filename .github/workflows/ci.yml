@@ -44,3 +44,27 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run cli:build
+
+  e2e:
+    # Launches the built desktop app and checks it really starts: a window
+    # opens, the preload bridge works, React renders, IPC round-trips, and
+    # navigation stays inside the app. Unit tests run in Node and missed
+    # startup crashes that only exist in the Electron runtime.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
+      - run: xvfb-run -a npm run test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-smoke
+          path: e2e-artifacts/
+          if-no-files-found: ignore

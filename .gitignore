@@ -41,3 +41,4 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+e2e-artifacts/
