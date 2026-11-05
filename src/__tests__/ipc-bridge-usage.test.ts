@@ -13,12 +13,20 @@
  */
 import path from 'node:path'
 import fs from 'node:fs'
-import { build } from 'esbuild'
+import { builtinModules } from 'node:module'
+import { build, type Metafile } from 'esbuild'
 import { describe, expect, it } from 'vitest'
 
 const ROOT = path.resolve(__dirname, '../..')
 
-async function reachableRendererModules(): Promise<string[]> {
+let graph: Promise<Metafile> | null = null
+
+function rendererGraph(): Promise<Metafile> {
+  graph ??= buildRendererGraph()
+  return graph
+}
+
+async function buildRendererGraph(): Promise<Metafile> {
   const result = await build({
     entryPoints: [path.join(ROOT, 'src/main.tsx')],
     bundle: true,
@@ -33,7 +41,12 @@ async function reachableRendererModules(): Promise<string[]> {
     alias: { '@': path.join(ROOT, 'src'), '@shared': path.join(ROOT, 'shared') },
     loader: { '.css': 'empty', '.svg': 'empty', '.png': 'empty' },
   })
-  return Object.keys(result.metafile.inputs)
+  return result.metafile
+}
+
+async function reachableRendererModules(): Promise<string[]> {
+  const metafile = await rendererGraph()
+  return Object.keys(metafile.inputs)
     .map((input) => path.resolve(ROOT, input))
     .filter((file) => /\.(ts|tsx)$/.test(file) && !file.includes(`${path.sep}node_modules${path.sep}`))
 }
@@ -85,6 +98,26 @@ describe('renderer IPC bridge usage', () => {
         const stillViolates = FORBIDDEN.some(({ pattern }) => source.split('\n').some((line) => pattern.test(line.replace(/\/\/.*$/, ''))))
         expect({ gap, reachable: reachable.has(gap), stillViolates }).toEqual({ gap, reachable: true, stillViolates: true })
       }
+    },
+    30_000,
+  )
+
+  it(
+    'modules reachable from src/main.tsx import no Node built-ins (the renderer has no Node)',
+    async () => {
+      // Regression: src/utils/ipcResult.ts imported node:path. Unit tests run
+      // in Node and passed, but the packaged renderer crashed at startup with
+      // "require is not defined" and rendered nothing.
+      const builtins = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]))
+      const metafile = await rendererGraph()
+      const offenders: string[] = []
+      for (const [input, { imports }] of Object.entries(metafile.inputs)) {
+        if (input.includes('node_modules')) continue
+        for (const imported of imports) {
+          if (builtins.has(imported.path)) offenders.push(`${input} imports ${imported.path}`)
+        }
+      }
+      expect(offenders).toEqual([])
     },
     30_000,
   )

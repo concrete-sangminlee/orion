@@ -1,6 +1,7 @@
-import { app, BrowserWindow, dialog, Menu, screen, globalShortcut } from 'electron'
+import { app, BrowserWindow, dialog, Menu, screen, globalShortcut, shell } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import { fileURLToPath } from 'url'
 import { registerFilesystemHandlers } from './ipc/filesystem'
 import { registerTerminalHandlers } from './ipc/terminal'
 import { registerSettingsHandlers } from './ipc/settings'
@@ -15,6 +16,12 @@ import { handle, listen, emit } from './ipc/typed-ipc'
 import { grantFileAccess } from './workspace/granted-files'
 
 // --- Constants ---
+
+// The main bundle is an ES module (package.json "type": "module"), where
+// __dirname does not exist. Using it crashed createWindow() with
+// "ReferenceError: __dirname is not defined", so no window ever opened.
+const MAIN_DIR = path.dirname(fileURLToPath(import.meta.url))
+
 const isMac = process.platform === 'darwin'
 const isWindows = process.platform === 'win32'
 
@@ -555,10 +562,7 @@ function buildAppMenu(): Menu {
       },
       {
         label: 'Documentation',
-        click: () => {
-          const { shell } = require('electron')
-          shell.openExternal('https://github.com/orion-ide/orion')
-        },
+        click: () => void shell.openExternal('https://github.com/concrete-sangminlee/orion#readme'),
       },
       {
         label: 'Release Notes',
@@ -573,10 +577,7 @@ function buildAppMenu(): Menu {
       { type: 'separator' },
       {
         label: 'Report Issue...',
-        click: () => {
-          const { shell } = require('electron')
-          shell.openExternal('https://github.com/orion-ide/orion/issues')
-        },
+        click: () => void shell.openExternal('https://github.com/concrete-sangminlee/orion/issues'),
       },
       { type: 'separator' },
       {
@@ -628,7 +629,7 @@ function createWindow(filesToOpen?: string[]): BrowserWindow {
     backgroundColor: '#0d1117',
     show: false, // Prevent flash — show after ready-to-show
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(MAIN_DIR, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false, // Required for preload script
@@ -656,7 +657,7 @@ function createWindow(filesToOpen?: string[]): BrowserWindow {
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL)
   } else {
-    win.loadFile(path.join(__dirname, '../dist/index.html'))
+    win.loadFile(path.join(MAIN_DIR, '../dist/index.html'))
   }
 
   // Open DevTools in development
@@ -673,12 +674,12 @@ function createWindow(filesToOpen?: string[]): BrowserWindow {
   win.webContents.on('will-navigate', (event, url) => {
     if (process.env.VITE_DEV_SERVER_URL && url.startsWith(process.env.VITE_DEV_SERVER_URL)) return
     event.preventDefault()
-    require('electron').shell.openExternal(url)
+    void shell.openExternal(url)
   })
 
   // Security: prevent new window creation — open in default browser
   win.webContents.setWindowOpenHandler(({ url }) => {
-    require('electron').shell.openExternal(url)
+    void shell.openExternal(url)
     return { action: 'deny' }
   })
 

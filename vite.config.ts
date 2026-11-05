@@ -2,7 +2,6 @@ import { defineConfig } from 'vite'
 import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron'
-import electronRenderer from 'vite-plugin-electron-renderer'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
@@ -124,7 +123,9 @@ export default defineConfig({
           },
         },
       ]),
-      electronRenderer(),
+      // No vite-plugin-electron-renderer: the renderer runs with
+      // nodeIntegration disabled, and that plugin rewrote Node built-in
+      // imports into require() calls that crash it at startup.
     ] : []),
   ],
   resolve: {

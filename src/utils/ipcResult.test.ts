@@ -1,6 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { assertIpcSuccess, writeFileChecked } from './ipcResult'
-import path from 'node:path'
+import { assertIpcSuccess, normalizeQueueKey, writeFileChecked } from './ipcResult'
 
 describe('ipcResult helpers', () => {
   beforeEach(() => {
@@ -84,7 +83,8 @@ describe('ipcResult helpers', () => {
       return Promise.resolve({ success: true })
     })
 
-    const writeA = writeFileChecked(path.join('project', '..', 'file.ts'), 'first', 'save')
+    // A raw (non-normalized) spelling: path.join would already collapse it.
+    const writeA = writeFileChecked('project/../file.ts', 'first', 'save')
     const writeB = writeFileChecked('file.ts', 'second', 'save')
 
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -96,7 +96,7 @@ describe('ipcResult helpers', () => {
 
     expect(apiWrite).toHaveBeenCalledTimes(2)
     await writeB
-    expect(apiWrite).toHaveBeenNthCalledWith(1, path.join('project', '..', 'file.ts'), 'first')
+    expect(apiWrite).toHaveBeenNthCalledWith(1, 'project/../file.ts', 'first')
     expect(apiWrite).toHaveBeenNthCalledWith(2, 'file.ts', 'second')
   })
 
@@ -128,3 +128,21 @@ describe('ipcResult helpers', () => {
     await second
   })
 })
+
+describe('normalizeQueueKey', () => {
+  it.each([
+    ['/ws/src/a.ts', '/ws/src/a.ts'],
+    ['/ws/./src//a.ts', '/ws/src/a.ts'],
+    ['/ws/lib/../src/a.ts', '/ws/src/a.ts'],
+    ['/../ws/a.ts', '/ws/a.ts'],
+    ['C:\\ws\\src\\a.ts', 'c:/ws/src/a.ts'],
+    ['c:/ws/src/a.ts', 'c:/ws/src/a.ts'],
+    ['\\\\server\\share\\a.ts', '//server/share/a.ts'],
+    ['project/../file.ts', 'file.ts'],
+    ['../file.ts', '../file.ts'],
+    ['./', '.'],
+  ])('%s -> %s', (input, expected) => {
+    expect(normalizeQueueKey(input)).toBe(expected)
+  })
+})
+
