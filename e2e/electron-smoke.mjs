@@ -14,6 +14,7 @@
  */
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron } from 'playwright-core'
@@ -46,9 +47,12 @@ delete env.VITE_DEV_SERVER_URL
 delete env.NODE_OPTIONS
 delete env.ELECTRON_RUN_AS_NODE
 
+// Isolated profile: the test writes settings and an API key file.
+const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-e2e-'))
+
 const app = await _electron.launch({
   executablePath: require('electron'),
-  args: [ROOT, '--no-sandbox', '--disable-gpu'],
+  args: [ROOT, '--no-sandbox', '--disable-gpu', `--user-data-dir=${userDataDir}`],
   env,
   timeout: 60_000,
 })
@@ -97,6 +101,24 @@ try {
   check(!opened.some((url) => url.startsWith('file:')), 'file: navigation was not handed to the OS')
   check(opened.includes('https://example.com/docs'), 'https navigation was routed to shell.openExternal')
 
+  // API keys: stored encrypted by the main process, never readable back.
+  const userData = await app.evaluate(({ app }) => app.getPath('userData'))
+  check(path.resolve(userData) === path.resolve(userDataDir), `isolated user data directory (${userData})`)
+  const secret = 'sk-ant-api03-E2E-SMOKE-not-a-real-key'
+  const saved = await win.evaluate((key) => window.api.omoSetApiKeys({ anthropic: key }), secret)
+  check(saved.success && saved.configured?.anthropic === true, 'omo:set-api-keys stores a key and reports it configured')
+  const status = await win.evaluate(() => window.api.omoGetApiKeyStatus())
+  check(status.configured.anthropic === true && !JSON.stringify(status).includes(secret), 'omo:get-api-key-status reports configured without returning the key')
+  const keyFile = path.join(userData, 'api-keys.json')
+  if (saved.persisted) {
+    const onDisk = fs.readFileSync(keyFile, 'utf8')
+    check(!onDisk.includes(secret), 'api-keys.json does not contain the plaintext key')
+  } else {
+    check(!fs.existsSync(keyFile), 'without OS encryption no key file is written')
+  }
+  const removed = await win.evaluate(() => window.api.omoSetApiKeys({ anthropic: null }))
+  check(removed.success && removed.configured?.anthropic === false, 'a key can be removed')
+
   check(pageErrors.length === 0, `no uncaught renderer errors${pageErrors.length ? `: ${pageErrors.join(' | ')}` : ''}`)
   const mainErrors = mainLog.join('').split('\n').filter((line) => /Uncaught exception|Unhandled rejection/.test(line))
   check(mainErrors.length === 0, `no uncaught main-process errors${mainErrors.length ? `: ${mainErrors.join(' | ')}` : ''}`)
@@ -110,6 +132,7 @@ try {
     fs.writeFileSync(path.join(ARTIFACTS, 'main-process.log'), mainLog.join(''))
   }
   await app.close().catch(() => {})
+  fs.rmSync(userDataDir, { recursive: true, force: true })
 }
 
 if (failures.length) {

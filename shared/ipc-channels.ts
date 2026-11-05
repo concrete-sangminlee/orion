@@ -269,6 +269,7 @@ export const IPC_INVOKE_CHANNELS = channelList({
   'omo:start': true,
   'omo:stop': true,
   'omo:set-api-keys': true,
+  'omo:get-api-key-status': true,
   'omo:set-prompts': true,
   'task:run': true,
   'task:kill': true,

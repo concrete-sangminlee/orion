@@ -29,6 +29,7 @@ import type {
   FileSearchOptions,
   OmoBridgeMessage,
   OmoPrompts,
+  ApiKeyPatch,
   TaskRunArgs,
   TerminalShellOptions,
   AppSettings,
@@ -230,7 +231,8 @@ export function createElectronApi(ipc: IpcRendererLike) {
     omoStart: () => invoke('omo:start'),
     omoStop: () => invoke('omo:stop'),
     omoSend: (message: OmoBridgeMessage) => send('omo:send', message),
-    omoSetApiKeys: (keys: Record<string, string>) => invoke('omo:set-api-keys', keys),
+    omoSetApiKeys: (keys: ApiKeyPatch) => invoke('omo:set-api-keys', keys),
+    omoGetApiKeyStatus: () => invoke('omo:get-api-key-status'),
     omoSetPrompts: (prompts: OmoPrompts) => invoke('omo:set-prompts', prompts),
     onOmoMessage: (callback: (...args: IpcEventArgs<'omo:message'>) => void) => subscribe('omo:message', callback),
 

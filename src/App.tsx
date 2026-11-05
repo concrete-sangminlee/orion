@@ -19,6 +19,7 @@ import CommandPalette from '@/components/CommandPalette'
 import ToastContainer from '@/components/Toast'
 import { writeFileChecked } from '@/utils/ipcResult'
 import { openFileInEditor } from '@/utils/openFileInEditor'
+import { migrateLegacyApiKeys } from '@/utils/apiKeys'
 import FileExplorer from './panels/FileExplorer'
 import BottomPanel from './panels/BottomPanel'
 import {
@@ -498,14 +499,16 @@ export default function App() {
   useOmo()
   useRecoveryCheck()
 
-  // Load saved API keys on startup
+  // API keys are stored encrypted by the main process, which loads them
+  // itself. Older versions kept them in plaintext localStorage: hand those
+  // over once and delete the plaintext copy when the main process persisted
+  // them (it keeps them in memory only when OS encryption is unavailable).
+  useEffect(() => {
+    void migrateLegacyApiKeys()
+  }, [])
+
   useEffect(() => {
     try {
-      const stored = localStorage.getItem('orion-api-keys')
-      if (stored) {
-        const keys = JSON.parse(stored)
-        window.api?.omoSetApiKeys(keys)
-      }
       const storedPrompts = localStorage.getItem('orion-prompts')
       if (storedPrompts) {
         const prompts = JSON.parse(storedPrompts)
