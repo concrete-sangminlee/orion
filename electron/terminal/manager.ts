@@ -1,4 +1,5 @@
 import os from 'os'
+import { createRequire } from 'module'
 import path from 'path'
 import { getProjectPath } from '../workspace/project-path'
 
@@ -22,6 +23,10 @@ function detectShell(): string {
   }
   return process.env.SHELL || '/bin/bash'
 }
+
+// node-pty is a native CommonJS addon kept external to the ES-module main
+// bundle, where a bare `require` is not defined.
+const require = createRequire(import.meta.url)
 
 function loadNodePty() {
   try {
