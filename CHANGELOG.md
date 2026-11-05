@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **API keys are encrypted at rest and no longer live in the renderer.** They were stored in plaintext `localStorage` and resent to the main process on every start. The main process now keeps them encrypted with Electron `safeStorage` (OS keychain) in `<userData>/api-keys.json` (mode 0600, atomic writes), or only in memory when OS encryption is unavailable. The renderer can set or remove keys but only reads back which providers are configured. Existing plaintext keys are migrated once and then deleted.
+- App windows can no longer navigate away from the app: `will-navigate`, `will-redirect`, and `window.open` previously handed **any** URL to `shell.openExternal`, bypassing the `shell:open-external` protocol allowlist (so `file:///…/x.exe` or `ms-cxh:` links reached OS handlers). Only `http`/`https`/`mailto`/`tel` now leave the app. The development-mode check also compared with `startsWith` (accepting `http://localhost:5173.attacker.example`); origins are now compared exactly.
+- Every IPC handler now refuses messages whose sender frame is not showing the app (bundled `dist/` in production, the dev-server origin in development). The check lives in the typed `handle()`/`listen()` helpers, so it covers all channels.
 - `git:pull` / `git:push` passed the renderer-supplied remote straight to git, so `remote: '--upload-pack=<cmd>'` with `branch: '.'` executed `<cmd>` locally (reproduced against a real git in `electron/ipc/git-option-injection.test.ts`). Remotes and refspecs are now validated (no leading `-`, no whitespace, no `ext::`/`fd::` transports) and placed after `--`. `--` alone is not sufficient for `pull`, which re-invokes `fetch` without it.
 - `git:config-set` accepted any key, including ones that make git execute programs (`core.fsmonitor`, `core.sshCommand`, `alias.*`, `filter.*`, `credential.helper`, …). Writes are limited to an allowlist of identity/workflow keys.
 - `git:checkout`, `git:create-branch`, tag, remote, `git:reset`, `git:stage`, `git:unstage`, `git:blame`, and `git:check-ignored` validate refs and pass pathspecs after `--`.
@@ -41,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `customCSS` passed to `MarkdownPreview` is now sanitized before injection into both the live preview and the exported HTML. `@import` directives, `</style>` breakout attempts, `expression(...)` (legacy IE), and any `url(...)` that isn't a `data:` URI are stripped — closes CSS-based exfiltration via attribute-selector tricks and external resource fetches.
 
 ### Fixed
+- **The desktop app never opened a usable window.** The ES-module main bundle used `__dirname` (and `require`), so `createWindow()` threw `ReferenceError: __dirname is not defined`; and the renderer imported `node:path`, which `vite-plugin-electron-renderer` rewrote into a `require()` that crashed it at load with nodeIntegration disabled. Both are fixed, the plugin is removed, and a test now fails if any module the app loads imports a Node built-in.
+- The integrated terminal could not load in packaged builds: `node-pty` was a devDependency, which electron-builder does not ship. It is now an optional dependency.
+- Help › Documentation / Report Issue and the electron-builder publish target pointed at repositories that do not exist.
 - **Source Control reported success for failed operations.** Git mutations (commit, push, pull, fetch, checkout, stage, stash, …) swallowed errors and resolved `''`/`true`; they now reject with git's diagnostic, which the panel already shows as a toast.
 - `git:status` trimmed porcelain output, so the first entry lost its leading space: ` M src/a.ts` was listed as *staged* with path `rc/a.ts`. Status now parses untrimmed `--porcelain=v1 -z` output (renames and paths with spaces handled).
 - `git:checkout` of a name that is not a ref but matches a file silently discarded that file's local edits; it now fails with "invalid reference".
@@ -58,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `orion search`: same regex hot-loop fix — dropped the `g` flag and removed the per-iteration `lastIndex` resets that were papering over its stateful semantics.
 
 ### Added
+- `npm run test:e2e` launches the built desktop app (Playwright's Electron driver) and checks that a window opens, `window.api` works, React renders, IPC round-trips, navigation stays in the app, and API keys are stored without exposing them. A new CI job runs it under Xvfb.
 - `shared/ipc-contract.ts`: single typed contract for every IPC channel. The main process registers handlers through typed `handle()`/`listen()`/`emit()`, the preload builds `window.api` from an electron-free factory, and the renderer's `window.api` type is derived from it, so channel/argument/payload drift is a compile error.
 - IPC integrity tests: the preload exposes exactly the contract, the main process registers each channel exactly once, every event is emitted, and no module reachable from the app entry point uses `window.electron`, `window.electronAPI`, or `(window as any).api`.
 - `npm run audit:reachability` reports renderer modules the app never imports (currently 142 of 219 files under `src/`).

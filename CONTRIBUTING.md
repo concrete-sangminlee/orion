@@ -44,6 +44,7 @@ Thank you for your interest in contributing to Orion! This guide will help you g
    ```bash
    npm run typecheck   # renderer, electron, and CLI projects
    npm test -- --run   # all test suites
+   npm run build && npm run test:e2e   # launch the built desktop app (Linux without a display: xvfb-run -a npm run test:e2e)
    ```
 
 6. **Start the development server** (for the Electron IDE):
