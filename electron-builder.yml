@@ -26,8 +26,8 @@ toolsets:
 # ---------------------------
 publish:
   provider: github
-  owner: orion-ide
-  repo: orion-ide
+  owner: concrete-sangminlee
+  repo: orion
   releaseType: release
 
 # ---------------------------
