@@ -333,6 +333,24 @@ export interface OmoEvent {
   payload: unknown
 }
 
+/** Providers whose API keys the main process stores (encrypted). */
+export type ApiKeyProvider = 'anthropic' | 'openai' | 'kimi' | 'gemini' | 'nvidia' | 'custom'
+
+/** `string` sets or replaces a key, `null` removes it; omitted providers stay as they are. */
+export type ApiKeyPatch = Partial<Record<ApiKeyProvider, string | null>>
+
+/** What the renderer may learn about stored keys: never the keys themselves. */
+export interface ApiKeyStatus {
+  configured: Record<ApiKeyProvider, boolean>
+  /** False when the OS keychain is unavailable; keys then last for this session only. */
+  encryptionAvailable: boolean
+}
+
+export interface ApiKeyUpdateResult extends OperationResult, Partial<ApiKeyStatus> {
+  /** False when the keys were kept in memory only. */
+  persisted?: boolean
+}
+
 export interface OmoPrompts {
   systemPrompt?: string
   userPromptTemplate?: string
@@ -459,7 +477,8 @@ export interface IpcInvokeContract {
   // AI assistant
   'omo:start': () => void
   'omo:stop': () => void
-  'omo:set-api-keys': (keys: Record<string, string>) => OperationResult
+  'omo:set-api-keys': (keys: ApiKeyPatch) => ApiKeyUpdateResult
+  'omo:get-api-key-status': () => ApiKeyStatus
   'omo:set-prompts': (prompts: OmoPrompts) => OperationResult
 
   // Tasks

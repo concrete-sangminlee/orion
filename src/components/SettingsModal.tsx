@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { X, Check, Eye, EyeOff, Sparkles, Code, Palette, Plus, Trash2, Terminal, Keyboard, Settings, User, Download, Upload, Pencil, Copy, FileText, Info, RotateCcw, ZoomIn } from 'lucide-react'
 import { useThemeStore } from '@/store/theme'
 import { useWorkspaceStore, DEFAULT_WORKSPACE_SETTINGS } from '@/store/workspace'
@@ -6,6 +6,7 @@ import { useFileStore } from '@/store/files'
 import { useProfileStore } from '@/store/profiles'
 import { useSettingsStore } from '@/store/settings'
 import type { WorkspaceSettings } from '@shared/types'
+import type { ApiKeyPatch, ApiKeyStatus } from '@shared/ipc-contract'
 
 interface Props {
   open: boolean
@@ -306,6 +307,21 @@ export default function SettingsModal({ open, onClose }: Props) {
     anthropic: '', openai: '', nvidia: '', kimi: '', gemini: '',
   })
   const [showKey, setShowKey] = useState<Record<string, boolean>>({})
+  // Keys are write-only from the renderer: the main process stores them
+  // encrypted and only reports which providers are configured.
+  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null)
+  const refreshKeyStatus = useCallback(async () => {
+    try {
+      setKeyStatus(await window.api.omoGetApiKeyStatus())
+    } catch {
+      setKeyStatus(null)
+    }
+  }, [])
+  const removeApiKey = async (provider: string) => {
+    await window.api.omoSetApiKeys({ [provider]: null } as ApiKeyPatch)
+    setKeys((prev) => ({ ...prev, [provider]: '' }))
+    await refreshKeyStatus()
+  }
   const [systemPrompt, setSystemPrompt] = useState('')
   const [userTemplate, setUserTemplate] = useState('')
   const [saved, setSaved] = useState(false)
@@ -377,8 +393,7 @@ export default function SettingsModal({ open, onClose }: Props) {
   useEffect(() => {
     if (open) {
       try {
-        const storedKeys = localStorage.getItem('orion-api-keys')
-        if (storedKeys) setKeys(JSON.parse(storedKeys))
+        void refreshKeyStatus()
         const storedPrompts = localStorage.getItem('orion-prompts')
         if (storedPrompts) {
           const p = JSON.parse(storedPrompts)
@@ -430,8 +445,13 @@ export default function SettingsModal({ open, onClose }: Props) {
   }, [wsSettings, open])
 
   const handleSave = async () => {
-    localStorage.setItem('orion-api-keys', JSON.stringify(keys))
-    await window.api?.omoSetApiKeys(keys)
+    // Send only keys the user typed; blank inputs leave stored keys alone.
+    const enteredKeys = Object.fromEntries(Object.entries(keys).filter(([, value]) => value.trim())) as ApiKeyPatch
+    if (Object.keys(enteredKeys).length > 0) {
+      const result = await window.api?.omoSetApiKeys(enteredKeys)
+      if (result?.success) setKeys((prev) => Object.fromEntries(Object.keys(prev).map((provider) => [provider, ''])))
+      await refreshKeyStatus()
+    }
 
     const prompts = {
       systemPrompt: systemPrompt || '',
@@ -1335,9 +1355,17 @@ if (a === b && c >= d) {
 
                 <SectionHeader title="API Keys" />
                 <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 8 }}>
-                  Enter your API keys to enable AI responses. Keys are stored locally and never sent to Orion servers.
+                  Enter your API keys to enable AI responses. Keys are encrypted with your operating system&apos;s keychain,
+                  are never shown again after saving, and are never sent to Orion servers.
                 </p>
-                {providers.map(({ key, label, placeholder, color }) => (
+                {keyStatus && !keyStatus.encryptionAvailable && (
+                  <p style={{ fontSize: 12, color: 'var(--accent-orange, #d29922)', lineHeight: 1.5, marginBottom: 8 }}>
+                    OS encryption is unavailable, so keys are kept only until Orion quits.
+                  </p>
+                )}
+                {providers.map(({ key, label, placeholder, color }) => {
+                  const saved = Boolean(keyStatus?.configured[key as keyof ApiKeyStatus['configured']])
+                  return (
                   <div key={key} style={{ marginBottom: 12 }}>
                     <label style={{
                       display: 'flex', alignItems: 'center', gap: 6,
@@ -1346,10 +1374,11 @@ if (a === b && c >= d) {
                     }}>
                       <span style={{
                         width: 8, height: 8, borderRadius: '50%',
-                        background: keys[key] ? color : 'var(--text-muted)',
+                        background: keys[key] || saved ? color : 'var(--text-muted)',
                       }} />
                       {label}
-                      {keys[key] && <Check size={12} style={{ color: 'var(--accent-green)', marginLeft: 4 }} />}
+                      {saved && <Check size={12} style={{ color: 'var(--accent-green)', marginLeft: 4 }} />}
+                      {saved && <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>saved</span>}
                     </label>
                     <div style={{
                       display: 'flex', alignItems: 'center',
@@ -1361,7 +1390,9 @@ if (a === b && c >= d) {
                         type={showKey[key] ? 'text' : 'password'}
                         value={keys[key] || ''}
                         onChange={(e) => setKeys({ ...keys, [key]: e.target.value })}
-                        placeholder={placeholder}
+                        placeholder={saved ? 'Saved — paste a new key to replace it' : placeholder}
+                        autoComplete="off"
+                        spellCheck={false}
                         style={{
                           flex: 1, padding: '8px 12px',
                           background: 'transparent', border: 'none', outline: 'none',
@@ -1375,9 +1406,20 @@ if (a === b && c >= d) {
                       >
                         {showKey[key] ? <EyeOff size={13} /> : <Eye size={13} />}
                       </button>
+                      {saved && (
+                        <button
+                          onClick={() => void removeApiKey(key)}
+                          title={`Remove saved ${label} key`}
+                          aria-label={`Remove saved ${label} key`}
+                          style={{ padding: '8px 10px', color: 'var(--text-muted)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             )}
 
