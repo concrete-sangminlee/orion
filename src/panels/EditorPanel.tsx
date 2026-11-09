@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
+import { disposeModelsExcept, modelPathFor } from '@/monaco/setup' // bundled Monaco + workers; must run before an Editor mounts
 import Editor, { DiffEditor as MonacoDiffEditorComponent, type Monaco } from '@monaco-editor/react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import { useEditorStore } from '@/store/editor'
@@ -290,6 +291,12 @@ export default function EditorPanel() {
   const [splitMode, setSplitMode] = useState<'single' | 'horizontal' | 'vertical'>('single')
   const [splitFilePath, setSplitFilePath] = useState<string | null>(null)
   const splitFile = splitFilePath ? openFiles.find((f) => f.path === splitFilePath) : null
+
+  // Release the Monaco models of files that are no longer open.
+  const openFilePathsKey = openFiles.map((f) => f.path).join('\0')
+  useEffect(() => {
+    disposeModelsExcept(openFilePathsKey ? openFilePathsKey.split('\0') : [])
+  }, [openFilePathsKey])
   // Editor group management: track files in each group
   const [group1Files, setGroup1Files] = useState<string[]>([])
   const [group2Files, setGroup2Files] = useState<string[]>([])
@@ -3279,6 +3286,11 @@ export default function EditorPanel() {
                     <>
                       <div style={markdownPreview && activeFile?.language === 'markdown' ? { flex: 1, overflow: 'hidden', position: 'relative' } : { flex: 1, minHeight: 0 }}>
                       <Editor
+                        // One model per file. Without a path every file shared a
+                        // single model, so Ctrl+Z after switching tabs restored the
+                        // previous file's text into the current one (and saving
+                        // wrote it to the wrong file).
+                        path={modelPathFor(activeFile.path)}
                         theme={currentMonacoTheme}
                         language={activeFile.language}
                         value={activeFile.content}
@@ -3576,6 +3588,7 @@ export default function EditorPanel() {
                       </div>
                       <div style={{ flex: 1 }}>
                         <Editor
+                          path={modelPathFor(splitFile.path)}
                           theme={currentMonacoTheme}
                           language={splitFile.language}
                           value={splitFile.content}
