@@ -33,7 +33,7 @@ const check = (condition, message) => {
   }
 }
 
-for (const built of ['dist-electron/main.js', 'dist-electron/preload.js', 'dist/index.html']) {
+for (const built of ['dist-electron/main.js', 'dist-electron/preload.cjs', 'dist/index.html']) {
   if (!fs.existsSync(path.join(ROOT, built))) {
     console.error(`Missing ${built} — run \`npm run build\` first.`)
     process.exit(1)
@@ -49,6 +49,11 @@ delete env.ELECTRON_RUN_AS_NODE
 
 // Isolated profile: the test writes settings and an API key file.
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-e2e-'))
+const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-e2e-ws-'))
+const sampleFile = path.join(workspaceDir, 'greeting.ts')
+fs.writeFileSync(sampleFile, 'export const greeting: string = "hello from orion"\n')
+const secondFile = path.join(workspaceDir, 'farewell.ts')
+fs.writeFileSync(secondFile, 'export const farewell = "bye"\n')
 
 const app = await _electron.launch({
   executablePath: require('electron'),
@@ -64,6 +69,21 @@ try {
   console.log('Electron smoke test')
   win = await app.firstWindow({ timeout: 30_000 })
   win.on('pageerror', (error) => pageErrors.push(error.message))
+  // Everything the renderer runs must come from the app bundle. Only the
+  // local Ollama endpoint may be contacted over the network.
+  const remoteRequests = []
+  win.on('request', (request) => {
+    const url = request.url()
+    if (/^https?:/i.test(url) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(url)) remoteRequests.push(url)
+  })
+  // Content-Security-Policy violations are reported on the console.
+  const cspViolations = []
+  win.on('console', (message) => {
+    const text = message.text()
+    if (/Content Security Policy|Refused to (load|execute|apply|connect|create|evaluate)/i.test(text)) cspViolations.push(text.slice(0, 200))
+  })
+  // Reload so the listeners above also see the initial page load.
+  await win.reload()
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => (document.getElementById('root')?.children.length ?? 0) > 0, null, { timeout: 30_000 })
 
@@ -73,11 +93,48 @@ try {
     methods: window.api ? Object.keys(window.api).length : 0,
   }))
   check(state.url.startsWith('file:') && state.url.endsWith('/dist/index.html'), `window shows the bundled renderer (${state.url})`)
+  const csp = await win.evaluate(() => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') ?? '')
+  check(/script-src 'self'(;|$)/.test(csp) && !csp.includes('unsafe-eval'), "Content-Security-Policy forbids remote, inline and eval'd scripts")
+  const webPreferences = await app.evaluate(({ BrowserWindow }) => {
+    const prefs = BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences()
+    return { sandbox: prefs?.sandbox, contextIsolation: prefs?.contextIsolation, nodeIntegration: prefs?.nodeIntegration }
+  })
+  check(
+    webPreferences.sandbox === true && webPreferences.contextIsolation === true && webPreferences.nodeIntegration === false,
+    `renderer is sandboxed and context-isolated (${JSON.stringify(webPreferences)})`,
+  )
   check(state.api === 'object' && state.methods > 100, `preload exposes window.api (${state.methods} methods)`)
   check(true, 'React rendered into #root')
 
   const info = await win.evaluate(() => window.api.appGetInfo())
   check(info.version === pkg.version, `IPC round-trip app:get-info returns ${info.version}`)
+
+  // Editor: open a workspace file the way the OS/menu does and wait for Monaco.
+  await win.evaluate((dir) => window.api.openWorkspace(dir), workspaceDir)
+  const openFile = (filePath) =>
+    app.evaluate(({ BrowserWindow }, file) => {
+      BrowserWindow.getAllWindows()[0].webContents.send('app:open-file', file)
+    }, filePath)
+  // Monaco renders spaces as U+00A0.
+  const editorText = async () =>
+    (await win.locator('.monaco-editor .view-lines').first().innerText()).replace(/\u00a0/g, ' ')
+  await openFile(sampleFile)
+  await win.waitForSelector('.monaco-editor .view-lines', { timeout: 30_000 })
+  await win.waitForFunction(() => document.querySelector('.monaco-editor .view-lines')?.textContent?.includes('hello'), null, { timeout: 15_000 })
+  check((await editorText()).includes('hello from orion'), 'opening a file shows it in the Monaco editor')
+
+  // Undo must stay inside the file: with one shared model, Ctrl+Z after
+  // switching tabs restored the previous file's text into the current one.
+  await openFile(secondFile)
+  await win.waitForFunction(() => document.querySelector('.monaco-editor .view-lines')?.textContent?.includes('farewell'), null, { timeout: 15_000 })
+  await win.locator('.monaco-editor .view-lines').first().click()
+  await win.keyboard.press('Control+z')
+  await win.waitForTimeout(500)
+  // Read the model, not the DOM: view-lines can be mid-render right after a key press.
+  const afterUndo = await win.evaluate(() => window.monaco?.editor.getEditors().map((editor) => editor.getValue()).join('\n') ?? '')
+  check(afterUndo.includes('farewell') && !afterUndo.includes('hello from orion'), 'undo after switching files does not bring back the other file')
+  const workerUrls = win.workers().map((worker) => worker.url())
+  check(workerUrls.length > 0 && workerUrls.every((url) => url.startsWith('file:')), `Monaco workers come from the bundle (${workerUrls.length})`)
 
   // Navigation guard: a file: URL must neither load in the window nor be
   // handed to the OS; an https link must go to shell.openExternal only.
@@ -119,6 +176,8 @@ try {
   const removed = await win.evaluate(() => window.api.omoSetApiKeys({ anthropic: null }))
   check(removed.success && removed.configured?.anthropic === false, 'a key can be removed')
 
+  check(cspViolations.length === 0, `no Content-Security-Policy violations${cspViolations.length ? `: ${cspViolations.slice(0, 3).join(' | ')}` : ''}`)
+  check(remoteRequests.length === 0, `renderer loaded nothing from the network${remoteRequests.length ? `: ${[...new Set(remoteRequests)].slice(0, 3).join(', ')}` : ''}`)
   check(pageErrors.length === 0, `no uncaught renderer errors${pageErrors.length ? `: ${pageErrors.join(' | ')}` : ''}`)
   const mainErrors = mainLog.join('').split('\n').filter((line) => /Uncaught exception|Unhandled rejection/.test(line))
   check(mainErrors.length === 0, `no uncaught main-process errors${mainErrors.length ? `: ${mainErrors.join(' | ')}` : ''}`)
@@ -133,6 +192,7 @@ try {
   }
   await app.close().catch(() => {})
   fs.rmSync(userDataDir, { recursive: true, force: true })
+  fs.rmSync(workspaceDir, { recursive: true, force: true })
 }
 
 if (failures.length) {

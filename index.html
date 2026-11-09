@@ -37,13 +37,7 @@
       }
       @keyframes _spin { to { transform: rotate(360deg); } }
     </style>
-    <script>
-      // Restore theme before first paint to prevent flash
-      try {
-        const t = localStorage.getItem('orion-theme');
-        if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
-      } catch(e) {}
-    </script>
+    <script src="./theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
+import '@/monaco/setup' // bundled Monaco + workers; must run before an Editor mounts
 import { DiffEditor as MonacoDiffEditor, type Monaco } from '@monaco-editor/react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import { useThemeStore } from '@/store/theme'

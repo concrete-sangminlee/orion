@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
+import { buildContentSecurityPolicy } from './shared/csp'
 
 const isTest = process.env.VITEST === 'true'
 
@@ -101,6 +102,16 @@ export default defineConfig({
         return html.replace(/ crossorigin/g, '')
       },
     },
+    // Production-only CSP (see shared/csp.ts); the dev server needs inline
+    // scripts for HMR.
+    {
+      name: 'orion-content-security-policy',
+      apply: 'build',
+      transformIndexHtml(html: string) {
+        const meta = `<meta http-equiv="Content-Security-Policy" content="${buildContentSecurityPolicy()}" />`
+        return html.replace(/<meta charset="UTF-8" \/>/i, (charset) => `${charset}\n    ${meta}`)
+      },
+    },
     // Exclude electron plugins during vitest runs - their Node built-in shims
     // use require() which is not available in vitest's ESM environment
     ...(!isTest ? [
@@ -120,6 +131,18 @@ export default defineConfig({
           entry: 'electron/preload.ts',
           onstart(args: { reload: () => void }) {
             args.reload()
+          },
+          // Sandboxed preloads must be CommonJS. The plugin's lib mode would
+          // emit an ES module (package.json "type": "module") and its array
+          // options merge rather than replace, so build this entry directly.
+          vite: {
+            build: {
+              lib: false,
+              rollupOptions: {
+                input: 'electron/preload.ts',
+                output: { format: 'cjs', entryFileNames: 'preload.cjs', inlineDynamicImports: true },
+              },
+            },
           },
         },
       ]),
