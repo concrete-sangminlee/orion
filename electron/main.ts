@@ -630,10 +630,12 @@ function createWindow(filesToOpen?: string[]): BrowserWindow {
     backgroundColor: '#0d1117',
     show: false, // Prevent flash — show after ready-to-show
     webPreferences: {
-      preload: path.join(MAIN_DIR, 'preload.js'),
+      preload: path.join(MAIN_DIR, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false, // Required for preload script
+      // The preload is a self-contained CommonJS bundle that only uses
+      // contextBridge/ipcRenderer, so the renderer can run fully sandboxed.
+      sandbox: true,
       webSecurity: !process.env.VITE_DEV_SERVER_URL, // Strict in prod, relaxed in dev
       backgroundThrottling: false, // Keep terminals responsive when in background
       spellcheck: true,

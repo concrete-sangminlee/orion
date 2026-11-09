@@ -132,6 +132,18 @@ export default defineConfig({
           onstart(args: { reload: () => void }) {
             args.reload()
           },
+          // Sandboxed preloads must be CommonJS. The plugin's lib mode would
+          // emit an ES module (package.json "type": "module") and its array
+          // options merge rather than replace, so build this entry directly.
+          vite: {
+            build: {
+              lib: false,
+              rollupOptions: {
+                input: 'electron/preload.ts',
+                output: { format: 'cjs', entryFileNames: 'preload.cjs', inlineDynamicImports: true },
+              },
+            },
+          },
         },
       ]),
       // No vite-plugin-electron-renderer: the renderer runs with

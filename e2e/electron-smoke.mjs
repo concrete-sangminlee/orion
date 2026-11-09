@@ -33,7 +33,7 @@ const check = (condition, message) => {
   }
 }
 
-for (const built of ['dist-electron/main.js', 'dist-electron/preload.js', 'dist/index.html']) {
+for (const built of ['dist-electron/main.js', 'dist-electron/preload.cjs', 'dist/index.html']) {
   if (!fs.existsSync(path.join(ROOT, built))) {
     console.error(`Missing ${built} — run \`npm run build\` first.`)
     process.exit(1)
@@ -95,6 +95,14 @@ try {
   check(state.url.startsWith('file:') && state.url.endsWith('/dist/index.html'), `window shows the bundled renderer (${state.url})`)
   const csp = await win.evaluate(() => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') ?? '')
   check(/script-src 'self'(;|$)/.test(csp) && !csp.includes('unsafe-eval'), "Content-Security-Policy forbids remote, inline and eval'd scripts")
+  const webPreferences = await app.evaluate(({ BrowserWindow }) => {
+    const prefs = BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences()
+    return { sandbox: prefs?.sandbox, contextIsolation: prefs?.contextIsolation, nodeIntegration: prefs?.nodeIntegration }
+  })
+  check(
+    webPreferences.sandbox === true && webPreferences.contextIsolation === true && webPreferences.nodeIntegration === false,
+    `renderer is sandboxed and context-isolated (${JSON.stringify(webPreferences)})`,
+  )
   check(state.api === 'object' && state.methods > 100, `preload exposes window.api (${state.methods} methods)`)
   check(true, 'React rendered into #root')
 
