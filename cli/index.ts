@@ -16,6 +16,7 @@ import chalk from 'chalk';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { printBanner, colors, printError, printInfo } from './utils.js';
+import { suggestCommands } from './suggest.js';
 import { setPipelineOptions } from './pipeline.js';
 import { errorDisplay, palette } from './ui.js';
 
@@ -1303,9 +1304,14 @@ program
     }
   });
 
-// ─── Default Action (no command) ─────────────────────────────────────────────
+// ─── Quick Reference (no command) ────────────────────────────────────────────
+//
+// Shown for a bare `orion`. This is deliberately not a root `.action()`: with
+// a root action, commander parses an unknown word as an argument to the root
+// command ("error: too many arguments") and never emits 'command:*', so user
+// aliases, plugin commands and typo suggestions below could never run.
 
-program.action(() => {
+function showQuickReference(): void {
   printBanner();
 
   // ─── Categorized Quick Reference ────────────────────────────────────────
@@ -1572,7 +1578,7 @@ program.action(() => {
   console.log();
   console.log(palette.dim('  Run orion <command> --help for more info on a command.'));
   console.log();
-});
+}
 
 // ─── Alias Resolution for Unknown Commands ──────────────────────────────────
 
@@ -1615,6 +1621,10 @@ program.on('command:*', async (operands: string[]) => {
   // No alias or plugin found - show error with suggestion
   console.log();
   printError(`Unknown command: ${colors.command(unknownCmd)}`);
+  const suggestions = suggestCommands(unknownCmd, program.commands.flatMap((command) => [command.name(), ...command.aliases()]));
+  if (suggestions.length > 0) {
+    printInfo(`Did you mean ${suggestions.map((name) => colors.command(`orion ${name}`)).join(' or ')}?`);
+  }
   printInfo(`Run ${colors.command('orion --help')} for a list of commands.`);
   printInfo(`Or create an alias: ${colors.command(`orion alias set ${unknownCmd} "<command>"`)}`);
   console.log();
@@ -1623,7 +1633,9 @@ program.on('command:*', async (operands: string[]) => {
 
 // ─── Parse & Run ─────────────────────────────────────────────────────────────
 
-program.parseAsync(process.argv).then(() => {
+const run = process.argv.length <= 2 ? Promise.resolve(showQuickReference()) : program.parseAsync(process.argv);
+
+run.then(() => {
   // Non-blocking version check after command execution
   checkForUpdates().catch(() => {
     // Silently ignore version check failures
