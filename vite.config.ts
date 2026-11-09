@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
+import { buildContentSecurityPolicy } from './shared/csp'
 
 const isTest = process.env.VITEST === 'true'
 
@@ -99,6 +100,16 @@ export default defineConfig({
       name: 'remove-crossorigin',
       transformIndexHtml(html: string) {
         return html.replace(/ crossorigin/g, '')
+      },
+    },
+    // Production-only CSP (see shared/csp.ts); the dev server needs inline
+    // scripts for HMR.
+    {
+      name: 'orion-content-security-policy',
+      apply: 'build',
+      transformIndexHtml(html: string) {
+        const meta = `<meta http-equiv="Content-Security-Policy" content="${buildContentSecurityPolicy()}" />`
+        return html.replace(/<meta charset="UTF-8" \/>/i, (charset) => `${charset}\n    ${meta}`)
       },
     },
     // Exclude electron plugins during vitest runs - their Node built-in shims

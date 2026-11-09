@@ -76,6 +76,12 @@ try {
     const url = request.url()
     if (/^https?:/i.test(url) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(url)) remoteRequests.push(url)
   })
+  // Content-Security-Policy violations are reported on the console.
+  const cspViolations = []
+  win.on('console', (message) => {
+    const text = message.text()
+    if (/Content Security Policy|Refused to (load|execute|apply|connect|create|evaluate)/i.test(text)) cspViolations.push(text.slice(0, 200))
+  })
   // Reload so the listeners above also see the initial page load.
   await win.reload()
   await win.waitForLoadState('domcontentloaded')
@@ -87,6 +93,8 @@ try {
     methods: window.api ? Object.keys(window.api).length : 0,
   }))
   check(state.url.startsWith('file:') && state.url.endsWith('/dist/index.html'), `window shows the bundled renderer (${state.url})`)
+  const csp = await win.evaluate(() => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') ?? '')
+  check(/script-src 'self'(;|$)/.test(csp) && !csp.includes('unsafe-eval'), "Content-Security-Policy forbids remote, inline and eval'd scripts")
   check(state.api === 'object' && state.methods > 100, `preload exposes window.api (${state.methods} methods)`)
   check(true, 'React rendered into #root')
 
@@ -160,6 +168,7 @@ try {
   const removed = await win.evaluate(() => window.api.omoSetApiKeys({ anthropic: null }))
   check(removed.success && removed.configured?.anthropic === false, 'a key can be removed')
 
+  check(cspViolations.length === 0, `no Content-Security-Policy violations${cspViolations.length ? `: ${cspViolations.slice(0, 3).join(' | ')}` : ''}`)
   check(remoteRequests.length === 0, `renderer loaded nothing from the network${remoteRequests.length ? `: ${[...new Set(remoteRequests)].slice(0, 3).join(', ')}` : ''}`)
   check(pageErrors.length === 0, `no uncaught renderer errors${pageErrors.length ? `: ${pageErrors.join(' | ')}` : ''}`)
   const mainErrors = mainLog.join('').split('\n').filter((line) => /Uncaught exception|Unhandled rejection/.test(line))
