@@ -110,7 +110,11 @@ try {
   check(info.version === pkg.version, `IPC round-trip app:get-info returns ${info.version}`)
 
   // Editor: open a workspace file the way the OS/menu does and wait for Monaco.
-  await win.evaluate((dir) => window.api.openWorkspace(dir), workspaceDir)
+  // Open the folder the way the File menu does, so the workspace watcher runs.
+  await app.evaluate(({ BrowserWindow }, dir) => {
+    BrowserWindow.getAllWindows()[0].webContents.send('app:open-folder', dir)
+  }, workspaceDir)
+  await win.waitForFunction(() => document.body.innerText.includes('greeting.ts'), null, { timeout: 15_000 })
   const openFile = (filePath) =>
     app.evaluate(({ BrowserWindow }, file) => {
       BrowserWindow.getAllWindows()[0].webContents.send('app:open-file', file)
@@ -133,6 +137,39 @@ try {
   // Read the model, not the DOM: view-lines can be mid-render right after a key press.
   const afterUndo = await win.evaluate(() => window.monaco?.editor.getEditors().map((editor) => editor.getValue()).join('\n') ?? '')
   check(afterUndo.includes('farewell') && !afterUndo.includes('hello from orion'), 'undo after switching files does not bring back the other file')
+
+  // Saving and external changes (farewell.ts is the active editor).
+  const dialogs = []
+  win.on('dialog', (dialog) => {
+    dialogs.push(dialog.message())
+    void dialog.dismiss()
+  })
+  const modelValue = () => win.evaluate(() => window.monaco.editor.getEditors()[0].getValue())
+  const typeAtEnd = async (text) => {
+    await win.locator('.monaco-editor .view-lines').first().click()
+    await win.keyboard.press('Control+End')
+    await win.keyboard.type(text)
+  }
+  const disk = () => fs.readFileSync(secondFile, 'utf8')
+
+  await typeAtEnd('// typed\n')
+  await win.waitForTimeout(2000)
+  check(disk().includes('// typed'), 'auto-save writes edits to disk')
+
+  // An external change right after our own save must still reach the editor.
+  fs.writeFileSync(secondFile, 'export const farewell = "changed outside"\n')
+  await win.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue().includes('changed outside'), null, { timeout: 10_000 }).catch(() => {})
+  check((await modelValue()).includes('changed outside'), 'an external change shortly after a save reloads the clean editor')
+
+  // With unsaved edits, an external change must not be overwritten.
+  await typeAtEnd('// unsaved\n')
+  fs.writeFileSync(secondFile, 'export const farewell = "edited elsewhere"\n')
+  await win.waitForTimeout(2500)
+  check(disk().includes('edited elsewhere'), 'auto-save does not overwrite a file that changed on disk')
+  check((await win.locator('text=changed on disk').count()) > 0, 'the editor flags the conflict')
+  await win.keyboard.press('Control+s')
+  await win.waitForTimeout(800)
+  check(dialogs.length > 0 && disk().includes('edited elsewhere'), 'Ctrl+S asks before overwriting it (declined here)')
   const workerUrls = win.workers().map((worker) => worker.url())
   check(workerUrls.length > 0 && workerUrls.every((url) => url.startsWith('file:')), `Monaco workers come from the bundle (${workerUrls.length})`)
 

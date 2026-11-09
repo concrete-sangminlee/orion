@@ -2,6 +2,21 @@
 import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { getRecoveryEntries, useAutoSave } from './useAutoSave'
+import { useEditorStore } from '@/store/editor'
+
+/** Auto-save runs for files open in the editor with unsaved changes. */
+function openModifiedFiles(...paths: string[]) {
+  useEditorStore.setState({
+    openFiles: paths.map((path) => ({
+      path,
+      name: path.split('/').pop() ?? path,
+      content: '',
+      language: 'typescript',
+      isModified: true,
+      aiModified: false,
+    })),
+  })
+}
 
 describe('useAutoSave', () => {
   beforeEach(() => {
@@ -10,6 +25,7 @@ describe('useAutoSave', () => {
     ;(globalThis as unknown as { api: { writeFile: ReturnType<typeof vi.fn> } }).api = {
       writeFile: vi.fn().mockResolvedValue({ success: true }),
     }
+    openModifiedFiles('/workspace/a.ts', '/workspace/b.ts')
   })
 
   afterEach(() => {
@@ -36,6 +52,26 @@ describe('useAutoSave', () => {
     expect(apiWrite).toHaveBeenCalledTimes(2)
     expect(apiWrite).toHaveBeenNthCalledWith(1, '/workspace/a.ts', 'A')
     expect(apiWrite).toHaveBeenNthCalledWith(2, '/workspace/b.ts', 'B')
+  })
+
+  it('does not overwrite a file that changed on disk after the save was scheduled', async () => {
+    const { result } = renderHook(() => useAutoSave())
+    const apiWrite = (globalThis as unknown as { api: { writeFile: ReturnType<typeof vi.fn> } }).api.writeFile
+
+    act(() => {
+      result.current.scheduleAutoSave('/workspace/a.ts', 'local edit')
+      result.current.scheduleAutoSave('/workspace/b.ts', 'other edit')
+      // The watcher reports an external change to a.ts before the timer fires.
+      useEditorStore.getState().markExternalChange('/workspace/a.ts')
+      useEditorStore.getState().markDeletedOnDisk('/workspace/b.ts')
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+      await Promise.resolve()
+    })
+
+    expect(apiWrite).not.toHaveBeenCalled()
   })
 
   it('debounces repeated changes for the same file', async () => {

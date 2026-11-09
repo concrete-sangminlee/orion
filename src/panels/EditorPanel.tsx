@@ -31,6 +31,7 @@ import { useFileStore } from '@/store/files'
 import { useWorkspaceStore } from '@/store/workspace'
 import { useFileHistoryStore } from '@/store/fileHistory'
 import { writeFileChecked } from '@/utils/ipcResult'
+import { confirmOverwriteIfChangedOnDisk } from '@/utils/saveGuards'
 import TimelinePanel from '@/components/TimelinePanel'
 import FileIcon, { FolderIcon } from '@/components/FileIcon'
 import { registerCodeActionProviders } from '@/providers/codeActions'
@@ -2156,6 +2157,7 @@ export default function EditorPanel() {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault()
         if (activeFile) {
+          if (!confirmOverwriteIfChangedOnDisk(activeFile)) return
           setSaving(true)
           try {
             useFileHistoryStore.getState().addSnapshot(activeFile.path, activeFile.content, 'Saved')
@@ -2487,6 +2489,7 @@ export default function EditorPanel() {
       'orion:save-file': async () => {
         const af = activeFileRef.current
         if (af) {
+          if (!confirmOverwriteIfChangedOnDisk(af)) return
           setSaving(true)
 
           // Format on save

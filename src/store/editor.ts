@@ -374,8 +374,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       persistRecoverySnapshots(newSnapshots)
 
       return {
+        // The disk now holds this buffer, so any conflict flag is resolved.
         openFiles: state.openFiles.map((f) =>
-          f.path === path ? { ...f, isModified: false } : f
+          f.path === path ? { ...f, isModified: false, hasExternalChange: false, isDeletedOnDisk: false } : f
         ),
         unsavedSnapshots: newSnapshots,
       }
