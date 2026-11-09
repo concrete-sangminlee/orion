@@ -4,7 +4,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import { IPC } from '../../shared/ipc-channels'
 import { readFileContent, writeFileContent, deleteItem, renameItem, buildFileTree, detectLanguage } from '../filesystem/operations'
-import { startWatching, stopWatching, markRecentWrite } from '../filesystem/watcher'
+import { startWatching, stopWatching, recordOwnWrite } from '../filesystem/watcher'
 import { setProjectPath } from '../workspace/project-path'
 import { resolveActiveWorkspacePath, resolveWorkspaceRootPath, WorkspacePathAccessError } from './workspace-path-guard'
 import { isGrantedFile } from '../workspace/granted-files'
@@ -42,7 +42,7 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
         return { success: false, error: 'Invalid file content: expected a string' }
       }
       const safeFilePath = await resolveEditableFilePath(filePath)
-      markRecentWrite(safeFilePath)
+      recordOwnWrite(safeFilePath, content)
       await writeFileContent(safeFilePath, content)
       return { success: true }
     } catch (err: any) {
