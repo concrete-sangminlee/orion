@@ -5,6 +5,7 @@ import { useProblemsStore, getProblemsForFile } from '@/store/problems'
 import { clearRecovery } from '@/hooks/useAutoSave'
 import { X, ChevronLeft, ChevronRight, Pin, MoreHorizontal, Copy, FolderOpen, ArrowRightLeft, Columns, Rows } from 'lucide-react'
 import { writeFileChecked } from '@/utils/ipcResult'
+import { confirmOverwriteIfChangedOnDisk } from '@/utils/saveGuards'
 
 // ─── CSS Variables & Keyframes (injected once) ─────────────────────────────
 
@@ -886,6 +887,8 @@ export default function TabBar() {
     async (filePath: string) => {
       const file = openFiles.find((f) => f.path === filePath)
       if (file) {
+        // Declining keeps the tab open so the user can compare or reload.
+        if (!confirmOverwriteIfChangedOnDisk(file)) return
         try {
           await writeFileChecked(filePath, file.content, `Save ${file.name}`)
           markSaved(filePath)

@@ -3,6 +3,7 @@ import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
 import { useFileHistoryStore } from '@/store/fileHistory'
 import { writeFileChecked } from '@/utils/ipcResult'
+import { canAutoSave } from '@/utils/saveGuards'
 
 // ── Types ──────────────────────────────────────────────
 export type AutoSaveMode = 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange'
@@ -181,10 +182,16 @@ function emitAutoSaved() {
 
 // ── Perform save for a single file ──────────────────
 async function performSave(filePath: string, content: string) {
+  // Re-check at fire time: the file may have changed on disk since the save
+  // was scheduled. Overwriting it then would silently discard that version.
+  if (!canAutoSave(useEditorStore.getState().openFiles.find((f) => f.path === filePath))) return
   try {
     // Take auto-save snapshot (throttled to 5 min intervals in the store)
     useFileHistoryStore.getState().addSnapshot(filePath, content, 'Auto-saved')
     await writeFileChecked(filePath, content, 'Auto-save')
+    // Edits typed while the write was in flight are still unsaved.
+    const current = useEditorStore.getState().openFiles.find((f) => f.path === filePath)
+    if (current && current.content !== content) return
     useEditorStore.getState().markSaved(filePath)
     clearRecovery(filePath)
     emitAutoSaved()
@@ -196,7 +203,7 @@ async function performSave(filePath: string, content: string) {
 /** Save all modified files. */
 async function saveAllModified() {
   const { openFiles, markSaved } = useEditorStore.getState()
-  const modified = openFiles.filter((f) => f.isModified)
+  const modified = openFiles.filter((f) => canAutoSave(f))
   if (modified.length === 0) return
 
   let savedCount = 0

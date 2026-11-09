@@ -18,6 +18,7 @@ import StatusBar from './components/StatusBar'
 import CommandPalette from '@/components/CommandPalette'
 import ToastContainer from '@/components/Toast'
 import { writeFileChecked } from '@/utils/ipcResult'
+import { confirmOverwriteIfChangedOnDisk } from '@/utils/saveGuards'
 import { openFileInEditor } from '@/utils/openFileInEditor'
 import { migrateLegacyApiKeys } from '@/utils/apiKeys'
 import FileExplorer from './panels/FileExplorer'
@@ -631,6 +632,7 @@ export default function App() {
           let failedCount = 0
 
           for (const file of modified) {
+            if (!confirmOverwriteIfChangedOnDisk(file)) continue
             try {
               await writeFileChecked(file.path, file.content, `Save ${file.name}`)
               markSaved(file.path)
@@ -695,6 +697,7 @@ export default function App() {
           let failedCount = 0
 
           for (const file of modified) {
+            if (!confirmOverwriteIfChangedOnDisk(file)) continue
             try {
               await writeFileChecked(file.path, file.content, `Save ${file.name}`)
               markSaved(file.path)
