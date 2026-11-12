@@ -41,12 +41,16 @@ describe.runIf(hasGit())('git IPC handlers against a real repository', () => {
   beforeAll(() => {
     // The handlers spawn git with process.env: give commits an identity and
     // keep the developer's own config out of the way.
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'orion-git-handlers-')))
+    // An empty file, not os.devNull: git on Windows cannot open '\\.\nul' as
+    // a config file and fails every command.
+    const emptyConfig = path.join(root, 'gitconfig')
+    fs.writeFileSync(emptyConfig, '')
     Object.assign(process.env, {
       GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com',
       GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com',
-      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: '0',
+      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: emptyConfig, GIT_TERMINAL_PROMPT: '0',
     })
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'orion-git-handlers-')))
     remote = path.join(root, 'remote.git')
     work = path.join(root, 'work')
     git(['init', '-q', '--bare', remote], root)
