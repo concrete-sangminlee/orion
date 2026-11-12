@@ -90,7 +90,7 @@ export async function editCommand(filePath: string, options?: EditCommandOptions
 
     const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Edit generated');
 
-    await askAI(fullSystemPrompt, userMessage, callbacks);
+    await askAI(fullSystemPrompt, userMessage, callbacks, { requireComplete: true });
 
     let modifiedContent = getResponse().trim();
 
@@ -102,6 +102,10 @@ export async function editCommand(filePath: string, options?: EditCommandOptions
         lines.pop();
       }
       modifiedContent = lines.join('\n');
+    }
+
+    if (!modifiedContent.trim()) {
+      throw new Error('The AI returned an empty file. Nothing was written.');
     }
 
     // Show diff

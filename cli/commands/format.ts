@@ -245,7 +245,8 @@ async function aiFormatFile(filePath: string, style?: string): Promise<string> {
   const spinner = startSpinner(`AI formatting ${path.basename(filePath)}...`);
   const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Formatted');
 
-  await askAI(fullPrompt, userMessage, callbacks);
+  // The reply replaces the whole file, so a truncated one must not be used.
+  await askAI(fullPrompt, userMessage, callbacks, { requireComplete: true });
 
   let formatted = getResponse().trim();
 
@@ -257,6 +258,10 @@ async function aiFormatFile(filePath: string, style?: string): Promise<string> {
       lines.pop();
     }
     formatted = lines.join('\n');
+  }
+
+  if (!formatted.trim()) {
+    throw new Error('The AI returned an empty file. Nothing was written.');
   }
 
   return formatted;

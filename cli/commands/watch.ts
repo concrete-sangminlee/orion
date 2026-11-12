@@ -7,6 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
+import type { FSWatcher } from 'chokidar';
 import { askAI, type AIStreamCallbacks } from '../ai-client.js';
 import {
   colors,
@@ -22,6 +23,7 @@ import {
   fileExists,
   getCurrentDirectoryContext,
   loadProjectContext,
+  matchGlob,
 } from '../utils.js';
 import { renderMarkdown } from '../markdown.js';
 import { commandHeader, divider, statusLine, palette } from '../ui.js';
@@ -58,6 +60,76 @@ Focus on the high-level impact. Keep it to 2-3 sentences.`,
 The user wants to know about changes to this file.
 Provide a brief, helpful response about the file content.`,
 };
+
+// ─── Pattern Matching ────────────────────────────────────────────────────────
+
+const WILDCARD = /[*?]/;
+
+/** The leading segments of a `/`-separated glob that contain no wildcard. */
+export function globBase(pattern: string): string {
+  const segments = pattern.split('/');
+  const firstWild = segments.findIndex(s => WILDCARD.test(s));
+  if (firstWild === -1) return pattern;
+  const base = segments.slice(0, firstWild).join('/');
+  return base || (pattern.startsWith('/') ? '/' : '.');
+}
+
+export interface WatchTarget {
+  /** The directory (or literal path) handed to chokidar. */
+  base: string;
+  /** Whether an event path (as chokidar reports it, relative to cwd) matches the pattern. */
+  matches: (filePath: string) => boolean;
+  /** chokidar `ignored` callback: true for paths with an ignored segment below cwd. */
+  ignored: (filePath: string) => boolean;
+}
+
+/**
+ * chokidar 4 removed glob support: a glob is watched as a literal path and
+ * string `ignored` entries must equal the path. So watch the pattern's static
+ * base directory and do the glob and ignore matching here.
+ */
+export function resolveWatchTarget(pattern: string, ignorePatterns: string[], cwd: string): WatchTarget {
+  const normalized = pattern.replace(/\\/g, '/').replace(/^(\.\/)+/, '') || '.';
+  const isGlob = WILDCARD.test(normalized);
+  const toPosix = (p: string) => p.replace(/\\/g, '/');
+  const relative = (p: string) => toPosix(path.relative(cwd, path.resolve(cwd, p)));
+
+  return {
+    base: isGlob ? globBase(normalized) : normalized,
+    // A literal path is watched as is, so everything reported is under it.
+    matches: (filePath) => !isGlob || matchGlob(
+      normalized,
+      path.isAbsolute(normalized) ? toPosix(path.resolve(cwd, filePath)) : relative(filePath),
+    ),
+    ignored: (filePath) => relative(filePath).split('/').some(segment =>
+      ignorePatterns.some(ignore => matchGlob(ignore, segment))),
+  };
+}
+
+/** Watch `target` and call `onFile` for each added or changed file that matches. */
+export function watchMatchingFiles(
+  watch: typeof import('chokidar').watch,
+  target: WatchTarget,
+  cwd: string,
+  onFile: (filePath: string, event: 'add' | 'change') => void,
+): FSWatcher {
+  const watcher = watch(target.base, {
+    ignored: target.ignored,
+    persistent: true,
+    ignoreInitial: true,
+    cwd,
+    awaitWriteFinish: {
+      stabilityThreshold: 200,
+      pollInterval: 100,
+    },
+  });
+  for (const event of ['add', 'change'] as const) {
+    watcher.on(event, (filePath: string) => {
+      if (target.matches(filePath)) onFile(filePath, event);
+    });
+  }
+  return watcher;
+}
 
 // ─── Status Display ──────────────────────────────────────────────────────────
 
@@ -186,8 +258,15 @@ export async function watchCommand(pattern: string, options: WatchOptions = {}):
   printInfo(`Press ${colors.command('Ctrl+C')} to stop watching.`);
   console.log();
 
+  const cwd = process.cwd();
+  const target = resolveWatchTarget(pattern, ignorePatterns, cwd);
+  if (!fs.existsSync(path.resolve(cwd, target.base))) {
+    printError(`Nothing to watch: ${target.base} does not exist.`);
+    process.exit(1);
+  }
+
   // Dynamically import chokidar
-  let chokidar: any;
+  let chokidar: typeof import('chokidar');
   try {
     chokidar = await import('chokidar');
   } catch {
@@ -199,27 +278,11 @@ export async function watchCommand(pattern: string, options: WatchOptions = {}):
   // Debounce tracking
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let actionCount = 0;
-  let lastChangedFile = '';
-
-  // Build ignore list for chokidar
-  const ignored = ignorePatterns.map(p => `**/${p}/**`);
-
-  // Create watcher
-  const watcher = chokidar.watch(pattern, {
-    ignored,
-    persistent: true,
-    ignoreInitial: true,
-    cwd: process.cwd(),
-    awaitWriteFinish: {
-      stabilityThreshold: 200,
-      pollInterval: 100,
-    },
-  });
 
   // Print initial status
   printWatchStatus(pattern, action);
 
-  watcher.on('change', (filePath: string) => {
+  const watcher = watchMatchingFiles(chokidar.watch, target, cwd, (filePath, event) => {
     // Clear existing debounce for this file
     if (debounceTimers.has(filePath)) {
       clearTimeout(debounceTimers.get(filePath)!);
@@ -228,9 +291,12 @@ export async function watchCommand(pattern: string, options: WatchOptions = {}):
     // Set new debounce timer
     debounceTimers.set(filePath, setTimeout(async () => {
       debounceTimers.delete(filePath);
-      lastChangedFile = filePath;
       actionCount++;
 
+      if (event === 'add') {
+        console.log();
+        printInfo(`New file detected: ${colors.file(filePath)}`);
+      }
       await handleFileChange(filePath, action, context, projectContext);
 
       // Restore status line
@@ -238,27 +304,8 @@ export async function watchCommand(pattern: string, options: WatchOptions = {}):
     }, debounceMs));
   });
 
-  watcher.on('add', (filePath: string) => {
-    // Only trigger for new files if pattern matches
-    if (debounceTimers.has(filePath)) {
-      clearTimeout(debounceTimers.get(filePath)!);
-    }
-
-    debounceTimers.set(filePath, setTimeout(async () => {
-      debounceTimers.delete(filePath);
-      lastChangedFile = filePath;
-      actionCount++;
-
-      console.log();
-      printInfo(`New file detected: ${colors.file(filePath)}`);
-      await handleFileChange(filePath, action, context, projectContext);
-
-      printWatchStatus(pattern, action, path.basename(filePath), actionCount);
-    }, debounceMs));
-  });
-
-  watcher.on('error', (error: Error) => {
-    printError(`Watcher error: ${error.message}`);
+  watcher.on('error', (error: unknown) => {
+    printError(`Watcher error: ${error instanceof Error ? error.message : String(error)}`);
   });
 
   // Keep the process alive

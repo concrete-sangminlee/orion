@@ -142,59 +142,69 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
     }
   })
 
-  handle(IPC.FS_SEARCH, async (_event, rootPath: string, query: string, options?: { caseSensitive?: boolean; regex?: boolean }) => {
-    const results: { file: string; line: number; content: string }[] = []
+  // Lists matching lines, which Replace in Files then edits by line number.
+  // The line pattern, line splitting, listed text and path filters must stay
+  // identical to src/utils/searchReplace.ts (the renderer cannot share this
+  // module), or a replace would change lines other than the listed ones.
+  handle(IPC.FS_SEARCH, async (_event, rootPath: unknown, query: unknown, options?: unknown) => {
+    const matches: { file: string; line: number; content: string }[] = []
+    let truncated = false
     const ignore = new Set(['node_modules', '.git', 'dist', 'dist-electron', '.next', '__pycache__', '.venv'])
     const maxResults = 200
 
-    if (!query) return results
+    if (typeof query !== 'string' || !query) return { matches, truncated }
+    const opts = parseSearchOptions(options)
 
     let safeRootPath: string
     try {
       safeRootPath = await resolveActiveWorkspacePath(rootPath, 'search root')
     } catch (err: any) {
       console.warn('Refused fs:search root:', err.message)
-      return results
+      return { matches, truncated }
     }
 
-    // Construct the search pattern once, outside the recursion. The previous
-    // implementation rebuilt it for every file (and used the `g` flag with
-    // `.test()`, which leaks `lastIndex` between calls and forced a manual
-    // reset). `.test()` doesn't need `g`, so drop it — that removes both the
-    // foot-gun and ~200 allocations per scan on a medium repo.
-    const flags = options?.caseSensitive ? '' : 'i'
-    const pattern = options?.regex
-      ? new RegExp(query, flags)
-      : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags)
+    // Built once; `.test()` without the `g` flag keeps no state between lines.
+    let source = opts.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (opts.wholeWord) source = `\\b(?:${source})\\b`
+    const pattern = new RegExp(source, opts.caseSensitive ? '' : 'i')
+    const include = opts.include.map(searchPathGlob).filter((m) => m !== null)
+    const exclude = opts.exclude.map(searchPathGlob).filter((m) => m !== null)
+    const excluded = (relPath: string) => exclude.some((matches) => matches(relPath))
 
     async function searchDir(dir: string) {
-      if (results.length >= maxResults) return
       try {
         const entries = await fs.readdir(dir, { withFileTypes: true })
         for (const entry of entries) {
-          if (results.length >= maxResults) return
+          if (truncated) return
           if (ignore.has(entry.name) || entry.name.startsWith('.')) continue
           const fullPath = path.join(dir, entry.name)
+          const relPath = path.relative(safeRootPath, fullPath).split(path.sep).join('/')
+          // Filters apply before the limit: filtering the first 200 hits
+          // afterwards found nothing when they all came from other files.
+          if (excluded(relPath)) continue
           if (entry.isDirectory()) {
             await searchDir(fullPath)
-          } else {
-            try {
-              const content = await fs.readFile(fullPath, 'utf-8')
-              const lines = content.split('\n')
-              for (let i = 0; i < lines.length; i++) {
-                if (pattern.test(lines[i])) {
-                  results.push({ file: fullPath, line: i + 1, content: lines[i].trim().substring(0, 200) })
-                  if (results.length >= maxResults) return
-                }
-              }
-            } catch {}
+            continue
           }
+          if (include.length > 0 && !include.some((matches) => matches(relPath))) continue
+          if (opts.extensions.length > 0 && !opts.extensions.some((ext) => entry.name.endsWith(ext))) continue
+          try {
+            const lines = (await fs.readFile(fullPath, 'utf-8')).split(/\r?\n/)
+            for (let i = 0; i < lines.length; i++) {
+              if (!pattern.test(lines[i])) continue
+              if (matches.length >= maxResults) {
+                truncated = true
+                return
+              }
+              matches.push({ file: fullPath, line: i + 1, content: lines[i].trim().substring(0, 200) })
+            }
+          } catch {}
         }
       } catch {}
     }
 
     await searchDir(safeRootPath)
-    return results
+    return { matches, truncated }
   })
 
   // Trash – attempt shell.trashItem first, fall back to rm
@@ -343,4 +353,74 @@ async function copyDir(src: string, dest: string) {
       await fs.copyFile(srcChild, destChild)
     }
   }
+}
+
+// ─── fs:search helpers ───────────────────────────────────────────────────────
+
+interface SearchOptions {
+  caseSensitive: boolean
+  regex: boolean
+  wholeWord: boolean
+  include: string[]
+  exclude: string[]
+  extensions: string[]
+}
+
+/** fs:search options as sent by the renderer, which can send anything. */
+function parseSearchOptions(options: unknown): SearchOptions {
+  if (options !== undefined && (typeof options !== 'object' || options === null)) {
+    throw new Error('Invalid search options')
+  }
+  const raw = (options ?? {}) as Record<string, unknown>
+  const flag = (key: string): boolean => {
+    const value = raw[key]
+    if (value === undefined) return false
+    if (typeof value !== 'boolean') throw new Error(`Invalid search option ${key}`)
+    return value
+  }
+  const list = (key: string): string[] => {
+    const value = raw[key]
+    if (value === undefined) return []
+    if (!Array.isArray(value) || value.length > 100 || !value.every((s) => typeof s === 'string' && s.length <= 1000)) {
+      throw new Error(`Invalid search option ${key}`)
+    }
+    return value
+  }
+  return {
+    caseSensitive: flag('caseSensitive'),
+    regex: flag('regex'),
+    wholeWord: flag('wholeWord'),
+    include: list('include'),
+    exclude: list('exclude'),
+    extensions: list('extensions'),
+  }
+}
+
+const SEARCH_GLOB_TOKENS = new Map([
+  ['**/', '(?:.*/)?'],
+  ['**', '.*'],
+  ['*', '[^/]*'],
+  ['?', '[^/]'],
+])
+
+/**
+ * One include/exclude pattern. Without a slash it matches any single path
+ * segment (`*.ts`, `node_modules`); with one it matches from the workspace
+ * root, and a matched folder covers everything inside it (`src/**`, `./lib`).
+ */
+function searchPathGlob(pattern: string): ((relPath: string) => boolean) | null {
+  let glob = pattern.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  const anchored = glob.includes('/')
+  glob = glob.replace(/^\.?\//, '')
+  if (!glob) return null
+  const source = glob
+    .split(/(\*\*\/|\*\*|\*|\?)/)
+    .map((part) => SEARCH_GLOB_TOKENS.get(part) ?? part.replace(/[.+^${}()|[\]\\]/g, '\\$&'))
+    .join('')
+  if (!anchored) {
+    const segment = new RegExp(`^${source}$`)
+    return (relPath) => relPath.split('/').some((name) => segment.test(name))
+  }
+  const fromRoot = new RegExp(`^${source}(?:/|$)`)
+  return (relPath) => fromRoot.test(relPath)
 }

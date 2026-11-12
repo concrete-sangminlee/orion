@@ -11,6 +11,8 @@
  * us to overwrite arbitrary files.
  */
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 // Stub out everything the command module pulls in at import time. We're only
@@ -82,6 +84,31 @@ describe('isWithinProjectRoot', () => {
     const { isWithinProjectRoot } = await import('../commands/run.js');
     expect(isWithinProjectRoot('src/../README.md', ROOT)).toBe(true);
     expect(isWithinProjectRoot('./a/../b/file.ts', ROOT)).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('rejects writes through a symlink that leads out of the project', async () => {
+    const { isWithinProjectRoot } = await import('../commands/run.js');
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'orion-symlink-')));
+    try {
+      const project = path.join(tmp, 'project');
+      const outside = path.join(tmp, 'outside');
+      fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, 'secret.txt'), 'x');
+      fs.symlinkSync(outside, path.join(project, 'linked-dir'));
+      fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(project, 'linked-file.txt'));
+
+      expect(isWithinProjectRoot('linked-dir/new.txt', project)).toBe(false);
+      expect(isWithinProjectRoot('linked-dir/deep/new.txt', project)).toBe(false);
+      expect(isWithinProjectRoot('linked-file.txt', project)).toBe(false);
+      // Ordinary paths, existing or not, are still allowed, also when the
+      // project is reached through a symlink itself.
+      expect(isWithinProjectRoot('src/new/file.ts', project)).toBe(true);
+      fs.symlinkSync(project, path.join(tmp, 'project-link'));
+      expect(isWithinProjectRoot('src/new/file.ts', path.join(tmp, 'project-link'))).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

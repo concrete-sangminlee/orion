@@ -24,6 +24,21 @@ export interface AIStreamCallbacks {
 
 export type AIProvider = 'anthropic' | 'openai' | 'ollama';
 
+export interface AIRequestOptions {
+  /**
+   * Reject a reply the provider cut off at the output-token limit. Commands
+   * that save the reply as a whole file set this so a truncated file is never
+   * written over the original.
+   */
+  requireComplete?: boolean;
+}
+
+/** What a provider stream produced, and whether it stopped at max tokens. */
+interface StreamResult {
+  text: string;
+  truncated: boolean;
+}
+
 interface ProviderConfig {
   provider: AIProvider;
   model: string;
@@ -273,7 +288,7 @@ async function streamAnthropic(
   messages: AIMessage[],
   config: ProviderConfig,
   callbacks: AIStreamCallbacks
-): Promise<string> {
+): Promise<StreamResult> {
   const client = new Anthropic({ apiKey: config.apiKey });
 
   const systemMsg = messages.find(m => m.role === 'system');
@@ -282,6 +297,7 @@ async function streamAnthropic(
     .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
   let fullText = '';
+  let truncated = false;
 
   const stream = client.messages.stream({
     model: config.model,
@@ -297,11 +313,12 @@ async function streamAnthropic(
       const token = event.delta.text;
       fullText += token;
       callbacks.onToken?.(token);
+    } else if (event.type === 'message_delta' && event.delta.stop_reason === 'max_tokens') {
+      truncated = true;
     }
   }
 
-  callbacks.onComplete?.(fullText);
-  return fullText;
+  return { text: fullText, truncated };
 }
 
 // ─── Stream via OpenAI ───────────────────────────────────────────────────────
@@ -310,10 +327,11 @@ async function streamOpenAI(
   messages: AIMessage[],
   config: ProviderConfig,
   callbacks: AIStreamCallbacks
-): Promise<string> {
+): Promise<StreamResult> {
   const client = new OpenAI({ apiKey: config.apiKey });
 
   let fullText = '';
+  let truncated = false;
 
   const stream = await client.chat.completions.create({
     model: config.model,
@@ -324,15 +342,16 @@ async function streamOpenAI(
   });
 
   for await (const chunk of stream) {
-    const token = chunk.choices[0]?.delta?.content || '';
+    const choice = chunk.choices[0];
+    const token = choice?.delta?.content || '';
     if (token) {
       fullText += token;
       callbacks.onToken?.(token);
     }
+    if (choice?.finish_reason === 'length') truncated = true;
   }
 
-  callbacks.onComplete?.(fullText);
-  return fullText;
+  return { text: fullText, truncated };
 }
 
 // ─── Stream via Ollama ───────────────────────────────────────────────────────
@@ -341,9 +360,10 @@ async function streamOllama(
   messages: AIMessage[],
   config: ProviderConfig,
   callbacks: AIStreamCallbacks
-): Promise<string> {
+): Promise<StreamResult> {
   const baseUrl = config.baseUrl || 'http://localhost:11434';
   let fullText = '';
+  let truncated = false;
 
   try {
     const response = await fetch(`${baseUrl}/api/chat`, {
@@ -362,21 +382,31 @@ async function streamOllama(
     const reader = response.body?.getReader();
     if (!reader) throw new Error('No body');
 
+    const handleLine = (line: string) => {
+      try {
+        const data = JSON.parse(line);
+        if (data.message?.content) {
+          fullText += data.message.content;
+          callbacks.onToken?.(data.message.content);
+        }
+        if (data.done_reason === 'length') truncated = true;
+      } catch { /* skip */ }
+    };
+
+    // A network read can end mid-line; keep the partial line for the next
+    // read, or its tokens (or the final done_reason) would be lost.
     const decoder = new TextDecoder();
+    let pending = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
-        try {
-          const data = JSON.parse(line);
-          if (data.message?.content) {
-            fullText += data.message.content;
-            callbacks.onToken?.(data.message.content);
-          }
-        } catch { /* skip */ }
-      }
+      pending += decoder.decode(value, { stream: true });
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() ?? '';
+      lines.filter(Boolean).forEach(handleLine);
     }
+    pending += decoder.decode();
+    if (pending.trim()) handleLine(pending);
   } catch {
     const response = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
@@ -391,13 +421,13 @@ async function streamOllama(
 
     if (!response.ok) throw new Error(`Ollama error: ${response.status} ${response.statusText}`);
 
-    const data = await response.json() as { message?: { content?: string } };
+    const data = await response.json() as { message?: { content?: string }; done_reason?: string };
     fullText = data.message?.content || '';
+    truncated = data.done_reason === 'length';
     callbacks.onToken?.(fullText);
   }
 
-  callbacks.onComplete?.(fullText);
-  return fullText;
+  return { text: fullText, truncated };
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -415,7 +445,8 @@ export async function streamChat(
   messages: AIMessage[],
   callbacks: AIStreamCallbacks = {},
   overrideProvider?: AIProvider,
-  overrideModel?: string
+  overrideModel?: string,
+  options: AIRequestOptions = {}
 ): Promise<string> {
   const config = await resolveProviderConfig(overrideProvider, overrideModel);
 
@@ -424,7 +455,7 @@ export async function streamChat(
   const inputTokens = estimateTokens(inputText);
 
   try {
-    let result: string;
+    let result: StreamResult;
     switch (config.provider) {
       case 'anthropic':
         result = await streamAnthropic(messages, config, callbacks);
@@ -439,11 +470,19 @@ export async function streamChat(
         throw new Error(`Unknown provider: ${config.provider}`);
     }
 
-    // Track cost after successful completion
-    const outputTokens = estimateTokens(result);
+    // The tokens were spent even if the reply is rejected below.
+    const outputTokens = estimateTokens(result.text);
     trackCost(config.provider, config.model, inputTokens, outputTokens, _activeCommand);
 
-    return result;
+    if (result.truncated && options.requireComplete) {
+      throw new Error(
+        `The AI response hit the ${config.maxTokens}-token output limit and is incomplete, so it was not used. ` +
+        'Raise "Max Tokens" with `orion config`, or work on a smaller file.'
+      );
+    }
+
+    callbacks.onComplete?.(result.text);
+    return result.text;
   } catch (err: any) {
     callbacks.onError?.(err);
     throw err;
@@ -453,13 +492,14 @@ export async function streamChat(
 export async function askAI(
   systemPrompt: string,
   userMessage: string,
-  callbacks: AIStreamCallbacks = {}
+  callbacks: AIStreamCallbacks = {},
+  options: AIRequestOptions = {}
 ): Promise<string> {
   const messages: AIMessage[] = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userMessage },
   ];
-  return streamChat(messages, callbacks);
+  return streamChat(messages, callbacks, undefined, undefined, options);
 }
 
 export async function getProviderInfo(overrideProvider?: AIProvider): Promise<{ provider: AIProvider; model: string }> {

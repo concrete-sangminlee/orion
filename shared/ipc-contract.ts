@@ -84,12 +84,24 @@ export interface ReadFileResult {
 export interface FileSearchOptions {
   caseSensitive?: boolean
   regex?: boolean
+  wholeWord?: boolean
+  /** Workspace-relative path globs, applied before the result limit. */
+  include?: string[]
+  exclude?: string[]
+  /** File name endings such as `.ts`. */
+  extensions?: string[]
 }
 
 export interface FileSearchMatch {
   file: string
   line: number
   content: string
+}
+
+export interface FileSearchResult {
+  matches: FileSearchMatch[]
+  /** More lines matched than the result limit lets through. */
+  truncated: boolean
 }
 
 export type FsChangeKind = 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir'
@@ -401,7 +413,7 @@ export interface IpcInvokeContract {
   'fs:open-file-dialog': () => string[]
   'fs:create-file': (filePath: string, content?: string) => OperationResult
   'fs:create-dir': (dirPath: string) => OperationResult
-  'fs:search': (rootPath: string, query: string, options?: FileSearchOptions) => FileSearchMatch[]
+  'fs:search': (rootPath: string, query: string, options?: FileSearchOptions) => FileSearchResult
   'fs:trash': (itemPath: string) => OperationResult
   'fs:copy-path': (itemPath: string) => OperationResult
   'fs:duplicate': (srcPath: string) => OperationResultWithPath

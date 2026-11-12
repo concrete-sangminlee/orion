@@ -1,15 +1,21 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { Search, ChevronRight, FileText, Loader2, Replace, X, ChevronsUpDown, ChevronsDownUp, ListFilter, AlignJustify, FileOutput, History, Copy, FolderOpen, Undo2, Eye, ArrowDown, ArrowUp } from 'lucide-react'
+import type { FileSearchMatch } from '@shared/ipc-contract'
+import { modelPathFor, monaco } from '@/monaco/setup'
 import { useEditorStore } from '@/store/editor'
 import { useFileStore } from '@/store/files'
 import { useToastStore } from '@/store/toast'
-import { writeFileChecked } from '@/utils/ipcResult'
-
-interface SearchMatch {
-  file: string
-  line: number
-  content: string
-}
+import { ipcErrorMessage, writeFileChecked } from '@/utils/ipcResult'
+import { openFileInEditor } from '@/utils/openFileInEditor'
+import {
+  buildSearchPattern,
+  replaceListedLines,
+  replaceMatches,
+  searchOpenBuffers,
+  splitPatterns,
+  type ListedLine,
+  type SearchFlags,
+} from '@/utils/searchReplace'
 
 interface MatchEntry {
   line: number
@@ -24,10 +30,59 @@ interface GroupedResult {
   dismissed?: boolean
 }
 
-interface UndoEntry {
+/** What produced the listed results; replacing uses exactly this, not the current inputs. */
+interface SearchSpec {
+  query: string
+  flags: SearchFlags
+  /** 'buffers' when "Open Only" listed the open editors' unsaved text. */
+  source: 'disk' | 'buffers'
+  truncated: boolean
+}
+
+/** One file changed by a replace, with the text it wrote, so undo can tell whether it was changed since. */
+interface ReplacedFile {
   filePath: string
-  originalContent: string
-  timestamp: number
+  before: string
+  after: string
+  inBuffer: boolean
+}
+
+type UndoEntry = ReplacedFile[]
+
+function baseName(filePath: string): string {
+  return filePath.replace(/\\/g, '/').split('/').pop() || filePath
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n !== 1 ? 's' : ''}`
+}
+
+/** Up to three "name (reason)" entries, for a toast. */
+function describeSkipped(skipped: string[]): string {
+  const shown = skipped.slice(0, 3).join(', ')
+  return skipped.length > 3 ? `${shown} and ${skipped.length - 3} more` : shown
+}
+
+/**
+ * Put the cursor on `line` in the editor showing `filePath`. A tab that was
+ * just opened or switched to shows up in Monaco only after the editor panel
+ * re-renders (which also restores the file's saved scroll position), so this
+ * waits up to about a second of frames for it.
+ */
+function revealLineInEditor(filePath: string, line: number) {
+  const uri = modelPathFor(filePath)
+  let frames = 0
+  const attempt = () => {
+    const editor = monaco.editor.getEditors().find((e) => e.getModel()?.uri.toString() === uri)
+    if (editor) {
+      editor.revealLineInCenter(line)
+      editor.setPosition({ lineNumber: line, column: 1 })
+      editor.focus()
+    } else if (++frames < 60) {
+      requestAnimationFrame(attempt)
+    }
+  }
+  attempt()
 }
 
 const SEARCH_HISTORY_KEY = 'orion-search-history'
@@ -106,6 +161,8 @@ const chipBtnBase: React.CSSProperties = {
 export default function SearchPanel() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<GroupedResult[]>([])
+  const [searchSpec, setSearchSpec] = useState<SearchSpec | null>(null)
+  const [searchError, setSearchError] = useState<string | null>(null)
   const [searching, setSearching] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [caseSensitive, setCaseSensitive] = useState(false)
@@ -176,7 +233,7 @@ export default function SearchPanel() {
           setActiveMatchIndex(prev => {
             const next = prev <= 0 ? flatMatches.length - 1 : prev - 1
             const m = flatMatches[next]
-            if (m) openResult(m.filePath, m.fileName, m.line)
+            if (m) openResult(m.filePath, m.line)
             return next
           })
         } else {
@@ -184,7 +241,7 @@ export default function SearchPanel() {
           setActiveMatchIndex(prev => {
             const next = prev >= flatMatches.length - 1 ? 0 : prev + 1
             const m = flatMatches[next]
-            if (m) openResult(m.filePath, m.fileName, m.line)
+            if (m) openResult(m.filePath, m.line)
             return next
           })
         }
@@ -193,17 +250,6 @@ export default function SearchPanel() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [flatMatches])
-
-  const buildRegex = useCallback((flags?: string) => {
-    let pattern: string
-    if (useRegex) {
-      pattern = query
-    } else {
-      pattern = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    }
-    if (wholeWord) pattern = `\\b${pattern}\\b`
-    return new RegExp(pattern, flags ?? (caseSensitive ? 'g' : 'gi'))
-  }, [query, useRegex, wholeWord, caseSensitive])
 
   const handleSearch = useCallback(async () => {
     if (!query.trim() || !rootPath) return
@@ -217,76 +263,38 @@ export default function SearchPanel() {
       return updated
     })
 
+    const flags: SearchFlags = { caseSensitive, regex: useRegex, wholeWord }
+    const filters = { include: splitPatterns(includePattern), exclude: splitPatterns(excludePattern), extensions: [...selectedChips] }
     try {
-      let raw: SearchMatch[]
-
+      let matches: FileSearchMatch[]
+      let truncated = false
       if (searchOpenOnly) {
-        // Search only in currently open editor files
-        const { openFiles } = useEditorStore.getState()
-        raw = []
-        const searchRegex = buildRegex()
-        for (const file of openFiles) {
-          if (!file.content) continue
-          const lines = file.content.split('\n')
-          for (let i = 0; i < lines.length; i++) {
-            searchRegex.lastIndex = 0
-            if (searchRegex.test(lines[i])) {
-              raw.push({ file: file.path, line: i + 1, content: lines[i] })
-            }
-          }
-        }
+        matches = searchOpenBuffers(useEditorStore.getState().openFiles, rootPath, query, flags, filters)
       } else {
-        raw = await window.api.searchFiles(rootPath, query, { caseSensitive, regex: useRegex })
+        // Filters go to the main process so they apply before its result limit.
+        ;({ matches, truncated } = await window.api.searchFiles(rootPath, query, { ...flags, ...filters }))
       }
 
       // Group by file
       const grouped = new Map<string, GroupedResult>()
-      for (const match of raw) {
-        const fileName = match.file.replace(/\\/g, '/').split('/').pop() || match.file
+      for (const match of matches) {
         if (!grouped.has(match.file)) {
-          grouped.set(match.file, { filePath: match.file, fileName, matches: [] })
+          grouped.set(match.file, { filePath: match.file, fileName: baseName(match.file), matches: [] })
         }
         grouped.get(match.file)!.matches.push({ line: match.line, text: match.content })
       }
-      let filteredResults = Array.from(grouped.values())
-
-      // Apply file type chip filters
-      if (selectedChips.size > 0) {
-        filteredResults = filteredResults.filter(r => {
-          return Array.from(selectedChips).some(ext => r.filePath.endsWith(ext))
-        })
-      }
-
-      // Apply include/exclude filters
-      if (includePattern.trim()) {
-        const patterns = includePattern.split(',').map(p => p.trim()).filter(Boolean)
-        filteredResults = filteredResults.filter(r => {
-          return patterns.some(p => {
-            if (p.startsWith('*.')) {
-              return r.filePath.endsWith(p.substring(1))
-            }
-            return r.filePath.includes(p)
-          })
-        })
-      }
-      if (excludePattern.trim()) {
-        const patterns = excludePattern.split(',').map(p => p.trim()).filter(Boolean)
-        filteredResults = filteredResults.filter(r => {
-          return !patterns.some(p => {
-            if (p.startsWith('*.')) {
-              return r.filePath.endsWith(p.substring(1))
-            }
-            return r.filePath.includes(p)
-          })
-        })
-      }
-      setResults(filteredResults)
-      setExpanded(new Set(filteredResults.map((r) => r.filePath)))
-    } catch {
+      const groupedResults = Array.from(grouped.values())
+      setResults(groupedResults)
+      setSearchSpec({ query, flags, source: searchOpenOnly ? 'buffers' : 'disk', truncated })
+      setSearchError(null)
+      setExpanded(new Set(groupedResults.map((r) => r.filePath)))
+    } catch (err) {
       setResults([])
+      setSearchSpec(null)
+      setSearchError(ipcErrorMessage(err))
     }
     setSearching(false)
-  }, [query, caseSensitive, useRegex, rootPath, includePattern, excludePattern, searchOpenOnly, selectedChips, buildRegex])
+  }, [query, caseSensitive, useRegex, wholeWord, rootPath, includePattern, excludePattern, searchOpenOnly, selectedChips])
 
   handleSearchRef.current = handleSearch
 
@@ -300,20 +308,13 @@ export default function SearchPanel() {
     }
   }
 
-  const openResult = async (filePath: string, fileName: string, _line?: number) => {
-    try {
-      const result = await window.api?.readFile(filePath)
-      if (result) {
-        openFile({
-          path: filePath,
-          name: fileName,
-          content: result.content,
-          language: result.language || 'plaintext',
-          isModified: false,
-          aiModified: false,
-        })
-      }
-    } catch {}
+  /** Show the file (an open tab as it is, unsaved edits included) and put the cursor on `line`. */
+  const openResult = async (filePath: string, line?: number): Promise<boolean> => {
+    const editor = useEditorStore.getState()
+    if (editor.openFiles.some((f) => f.path === filePath)) editor.setActiveFile(filePath)
+    else if (!(await openFileInEditor(filePath))) return false
+    if (line) revealLineInEditor(filePath, line)
+    return true
   }
 
   const toggleExpand = (path: string) => {
@@ -324,159 +325,117 @@ export default function SearchPanel() {
     })
   }
 
-  // Push to undo stack before writing
-  const pushUndo = async (filePath: string) => {
-    try {
-      const fileData = await window.api.readFile(filePath)
-      if (fileData?.content) {
-        setUndoStack(prev => [...prev, { filePath, originalContent: fileData.content, timestamp: Date.now() }])
-      }
-    } catch {}
+  const findOpenTab = (filePath: string) => useEditorStore.getState().openFiles.find((f) => f.path === filePath)
+
+  /** The disk now holds `content`: a clean tab shows it, a tab edited meanwhile keeps its edits and is flagged. */
+  const syncTabWithDisk = (filePath: string, content: string) => {
+    const tab = findOpenTab(filePath)
+    if (!tab) return
+    if (tab.isModified) useEditorStore.getState().markExternalChange(filePath)
+    else useEditorStore.getState().reloadFileContent(filePath, content)
   }
 
-  const handleUndoLast = async () => {
-    if (undoStack.length === 0) return
-    const last = undoStack[undoStack.length - 1]
-    try {
-      await writeFileChecked(last.filePath, last.originalContent, 'Undo replace')
-      const { openFiles, updateFileContent } = useEditorStore.getState()
-      const openF = openFiles.find(f => f.path === last.filePath)
-      if (openF) {
-        updateFileContent(last.filePath, last.originalContent)
-      }
-      setUndoStack(prev => prev.slice(0, -1))
-      const fileName = last.filePath.replace(/\\/g, '/').split('/').pop() || last.filePath
-      addToast({ type: 'success', message: `Reverted replacement in ${fileName}` })
-      handleSearch()
-    } catch (err: any) {
-      addToast({ type: 'error', message: `Failed to undo: ${err?.message}` })
+  /**
+   * Replace the listed matches of one file. Returns what changed, or why
+   * nothing did. Results listed from disk are replaced in the file just read,
+   * never over a tab with unsaved edits; "Open Only" results came from the
+   * buffers, so those are edited in place and saved like any other edit.
+   */
+  const replaceInOneFile = async (filePath: string, listed: ListedLine[], spec: SearchSpec): Promise<(ReplacedFile & { count: number }) | string> => {
+    const tab = findOpenTab(filePath)
+    if (spec.source === 'buffers') {
+      if (!tab) return 'no longer open'
+      const out = replaceListedLines(tab.content, listed, spec.query, spec.flags, replaceQuery)
+      if (!out.ok) return out.reason
+      useEditorStore.getState().updateFileContent(filePath, out.content)
+      return { filePath, before: tab.content, after: out.content, inBuffer: true, count: out.count }
     }
+    if (tab?.isModified || tab?.hasExternalChange) return 'unsaved or conflicting changes in the editor'
+    const { content: before, binary } = await window.api.readFile(filePath)
+    // Images are read without their text, so their listed lines can never be checked.
+    if (binary) return 'not a text file'
+    const out = replaceListedLines(before, listed, spec.query, spec.flags, replaceQuery)
+    if (!out.ok) return out.reason
+    await writeFileChecked(filePath, out.content, `Replace in ${baseName(filePath)}`)
+    syncTabWithDisk(filePath, out.content)
+    return { filePath, before, after: out.content, inBuffer: false, count: out.count }
   }
 
-  const handleReplaceAll = async () => {
-    if (!replaceQuery && replaceQuery !== '') return
-    if (!query.trim()) return
-
-    let totalReplacements = 0
-    let failedWrites = 0
-    const { openFiles, updateFileContent } = useEditorStore.getState()
-
-    for (const result of results) {
-      if (result.dismissed) continue
+  /** Replace exactly the matches the list shows (dismissed ones excluded), by the rules that listed them. */
+  const replaceListed = async (targets: GroupedResult[]) => {
+    const spec = searchSpec
+    if (!spec) return
+    const replaced: ReplacedFile[] = []
+    const skipped: string[] = []
+    let count = 0
+    for (const target of targets) {
+      const listed = target.dismissed ? [] : target.matches.filter((m) => !m.dismissed)
+      if (listed.length === 0) continue
       try {
-        await pushUndo(result.filePath)
-        const fileData = await window.api.readFile(result.filePath)
-        if (!fileData?.content) continue
-
-        const regex = buildRegex()
-        const matches = fileData.content.match(regex)
-        if (!matches) continue
-
-        const newContent = fileData.content.replace(regex, replaceQuery)
-        await writeFileChecked(result.filePath, newContent, `Replace in ${result.fileName}`)
-        totalReplacements += matches.length
-
-        const openF = openFiles.find(f => f.path === result.filePath)
-        if (openF) {
-          updateFileContent(result.filePath, newContent)
+        const outcome = await replaceInOneFile(target.filePath, listed, spec)
+        if (typeof outcome === 'string') {
+          skipped.push(`${target.fileName} (${outcome})`)
+        } else {
+          count += outcome.count
+          replaced.push(outcome)
         }
-      } catch (err: any) {
-        addToast({ type: 'error', message: `Failed to replace in ${result.fileName}: ${err?.message}` })
-        failedWrites++
+      } catch (err) {
+        skipped.push(`${target.fileName} (${ipcErrorMessage(err)})`)
       }
     }
+    if (replaced.length > 0) setUndoStack((prev) => [...prev, replaced])
 
-    if (failedWrites > 0) {
-      addToast({
-        type: failedWrites === results.length ? 'error' : 'warning',
-        message: `Replaced ${totalReplacements} occurrence${totalReplacements !== 1 ? 's' : ''} across ${results.length} file${results.length !== 1 ? 's' : ''}`,
-      })
-    } else {
-      addToast({
-        type: 'success',
-        message: `Replaced ${totalReplacements} occurrence${totalReplacements !== 1 ? 's' : ''} across ${results.length} file${results.length !== 1 ? 's' : ''}`,
-      })
-    }
-
+    const where = spec.source === 'buffers' ? `${plural(replaced.length, 'open editor')}, not saved yet` : plural(replaced.length, 'file')
+    const parts = [count > 0 ? `Replaced ${plural(count, 'occurrence')} in ${where}.` : 'Nothing was replaced.']
+    if (skipped.length > 0) parts.push(`Skipped ${describeSkipped(skipped)}.`)
+    if (spec.truncated && count > 0) parts.push('More matches exist than the list shows; search again to replace those.')
+    addToast({
+      type: count === 0 ? (skipped.length > 0 ? 'error' : 'warning') : skipped.length > 0 || spec.truncated ? 'warning' : 'success',
+      message: parts.join(' '),
+    })
     handleSearch()
   }
 
-  const handleReplaceInFile = async (filePath: string, fileName: string) => {
-    if (!replaceQuery && replaceQuery !== '') return
-    if (!query.trim()) return
-
-    const { openFiles, updateFileContent } = useEditorStore.getState()
-
-    try {
-      await pushUndo(filePath)
-      const fileData = await window.api.readFile(filePath)
-      if (!fileData?.content) return
-
-      const regex = buildRegex()
-      const matches = fileData.content.match(regex)
-      if (!matches) return
-
-      const newContent = fileData.content.replace(regex, replaceQuery)
-      await writeFileChecked(filePath, newContent, `Replace in ${fileName}`)
-
-      const openF = openFiles.find(f => f.path === filePath)
-      if (openF) {
-        updateFileContent(filePath, newContent)
+  /** Revert the last replace in every file that still holds exactly what it wrote. */
+  const handleUndoLast = async () => {
+    const last = undoStack[undoStack.length - 1]
+    if (!last) return
+    setUndoStack((prev) => prev.slice(0, -1))
+    const notReverted: string[] = []
+    for (const file of last) {
+      const name = baseName(file.filePath)
+      try {
+        const tab = findOpenTab(file.filePath)
+        if (file.inBuffer) {
+          if (!tab) { notReverted.push(`${name} (no longer open)`); continue }
+          if (tab.content !== file.after) { notReverted.push(`${name} (edited since)`); continue }
+          useEditorStore.getState().updateFileContent(file.filePath, file.before)
+          continue
+        }
+        if (tab?.isModified || tab?.hasExternalChange) { notReverted.push(`${name} (unsaved changes in the editor)`); continue }
+        const { content } = await window.api.readFile(file.filePath)
+        if (content !== file.after) { notReverted.push(`${name} (changed since)`); continue }
+        await writeFileChecked(file.filePath, file.before, 'Undo replace')
+        syncTabWithDisk(file.filePath, file.before)
+      } catch (err) {
+        notReverted.push(`${name} (${ipcErrorMessage(err)})`)
       }
-
-      addToast({ type: 'success', message: `Replaced ${matches.length} occurrence${matches.length !== 1 ? 's' : ''} in ${fileName}` })
-      handleSearch()
-    } catch (err: any) {
-      addToast({ type: 'error', message: `Failed to replace: ${err?.message}` })
     }
+    const reverted = last.length - notReverted.length
+    addToast(notReverted.length === 0
+      ? { type: 'success', message: `Reverted the replacement in ${plural(reverted, 'file')}` }
+      : { type: reverted > 0 ? 'warning' : 'error', message: `Reverted ${plural(reverted, 'file')}. Left as they are: ${describeSkipped(notReverted)}.` })
+    handleSearch()
   }
 
-  const handleReplaceSingle = async (filePath: string, fileName: string, line: number, _matchText: string) => {
-    if (!replaceQuery && replaceQuery !== '') return
-    if (!query.trim()) return
-
-    const { openFiles, updateFileContent } = useEditorStore.getState()
-
-    try {
-      await pushUndo(filePath)
-      const fileData = await window.api.readFile(filePath)
-      if (!fileData?.content) return
-
-      const lines = fileData.content.split('\n')
-      const lineIndex = line - 1
-      if (lineIndex < 0 || lineIndex >= lines.length) return
-
-      let pattern: string
-      if (useRegex) {
-        pattern = query
-      } else {
-        pattern = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      }
-      if (wholeWord) pattern = `\\b${pattern}\\b`
-      const regex = new RegExp(pattern, caseSensitive ? '' : 'i')
-
-      lines[lineIndex] = lines[lineIndex].replace(regex, replaceQuery)
-      const newContent = lines.join('\n')
-      await writeFileChecked(filePath, newContent, `Replace in ${fileName}`)
-
-      const openF = openFiles.find(f => f.path === filePath)
-      if (openF) {
-        updateFileContent(filePath, newContent)
-      }
-
-      addToast({ type: 'success', message: `Replaced 1 occurrence in ${fileName}` })
-      handleSearch()
-    } catch (err: any) {
-      addToast({ type: 'error', message: `Failed to replace: ${err?.message}` })
-    }
-  }
+  const handleReplaceAll = () => replaceListed(results)
 
   const activeResults = useMemo(() => results.filter(r => !r.dismissed), [results])
   const totalMatches = useMemo(() => activeResults.reduce((sum, r) => sum + r.matches.filter(m => !m.dismissed).length, 0), [activeResults])
 
   const collapseAll = () => setExpanded(new Set())
   const expandAll = () => setExpanded(new Set(results.map(r => r.filePath)))
-  const clearResults = () => { setResults([]); setQuery(''); setUndoStack([]) }
+  const clearResults = () => { setResults([]); setSearchSpec(null); setQuery(''); setUndoStack([]) }
 
   // Dismiss a single match
   const dismissMatch = (resultIdx: number, matchIdx: number) => {
@@ -495,12 +454,21 @@ export default function SearchPanel() {
     ))
   }
 
+  // Highlighted with the pattern that listed the results, which is also the one replacing uses.
+  const listedPattern = useMemo(() => {
+    if (!searchSpec) return null
+    try {
+      return buildSearchPattern(searchSpec.query, searchSpec.flags, true)
+    } catch {
+      return null
+    }
+  }, [searchSpec])
+
   // Highlight matching text in search results
   const highlightMatch = (text: string) => {
-    if (!query.trim()) return text
+    if (!listedPattern) return text
     try {
-      const regex = buildRegex()
-      regex.lastIndex = 0
+      const regex = listedPattern
       const captureRegex = new RegExp(`(${regex.source})`, regex.flags)
       const parts = text.split(captureRegex)
       return parts.map((part, i) => {
@@ -521,16 +489,15 @@ export default function SearchPanel() {
 
   // Preview replacement inline
   const highlightReplace = (text: string) => {
-    if (!query.trim() || !previewReplace || !showReplace) return highlightMatch(text)
+    if (!listedPattern || !searchSpec || !previewReplace || !showReplace) return highlightMatch(text)
     try {
-      const regex = buildRegex()
-      regex.lastIndex = 0
+      const regex = listedPattern
       const captureRegex = new RegExp(`(${regex.source})`, regex.flags)
       const parts = text.split(captureRegex)
       return parts.map((part, i) => {
         captureRegex.lastIndex = 0
         if (captureRegex.test(part)) {
-          const replaced = part.replace(new RegExp(regex.source, regex.flags), replaceQuery)
+          const replaced = replaceMatches(part, new RegExp(regex.source, regex.flags), replaceQuery, !searchSpec.flags.regex)
           return (
             <span key={i}>
               <span style={{
@@ -604,10 +571,12 @@ export default function SearchPanel() {
 
   // Open all matching files
   const openAllMatchingFiles = useCallback(async () => {
+    let opened = 0
     for (const result of activeResults) {
-      await openResult(result.filePath, result.fileName)
+      if (await openResult(result.filePath)) opened++
     }
-    addToast({ type: 'success', message: `Opened ${activeResults.length} file${activeResults.length !== 1 ? 's' : ''}` })
+    // Files that could not be opened already got their own error toast.
+    if (opened > 0) addToast({ type: 'success', message: `Opened ${plural(opened, 'file')}` })
   }, [activeResults, addToast])
 
   // Open results in editor as text document
@@ -935,8 +904,14 @@ export default function SearchPanel() {
         )}
 
         {!searching && results.length === 0 && query && (
-          <div style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center', fontSize: 12 }}>
-            No results found
+          <div style={{ padding: 16, color: searchError ? 'var(--accent-red, #ef4444)' : 'var(--text-muted)', textAlign: 'center', fontSize: 12 }}>
+            {searchError ? `Search failed: ${searchError}` : 'No results found'}
+          </div>
+        )}
+
+        {!searching && searchSpec?.truncated && results.length > 0 && (
+          <div style={{ padding: '4px 12px', fontSize: 11, color: 'var(--accent-orange, #f59e0b)', borderBottom: '1px solid var(--border)' }}>
+            Only the first matching lines are listed. Narrow the search or the file filters to see the rest.
           </div>
         )}
 
@@ -964,7 +939,7 @@ export default function SearchPanel() {
                 setActiveMatchIndex(prev => {
                   const next = prev >= flatMatches.length - 1 ? 0 : prev + 1
                   const m = flatMatches[next]
-                  if (m) openResult(m.filePath, m.fileName, m.line)
+                  if (m) openResult(m.filePath, m.line)
                   return next
                 })
               }} title="Next Match (F4)" style={iconBtnStyle}>
@@ -974,7 +949,7 @@ export default function SearchPanel() {
                 setActiveMatchIndex(prev => {
                   const next = prev <= 0 ? flatMatches.length - 1 : prev - 1
                   const m = flatMatches[next]
-                  if (m) openResult(m.filePath, m.fileName, m.line)
+                  if (m) openResult(m.filePath, m.line)
                   return next
                 })
               }} title="Previous Match (Shift+F4)" style={iconBtnStyle}>
@@ -1045,7 +1020,7 @@ export default function SearchPanel() {
                 </span>
                 {showReplace && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleReplaceInFile(result.filePath, result.fileName) }}
+                    onClick={(e) => { e.stopPropagation(); replaceListed([result]) }}
                     title="Replace all in this file"
                     style={{ ...iconBtnStyle, marginRight: 2 }}
                   >
@@ -1111,15 +1086,15 @@ export default function SearchPanel() {
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
-                            openResult(result.filePath, result.fileName, match.line)
+                            openResult(result.filePath, match.line)
                           }
                         }}
                         tabIndex={0}
                       >
                         {showReplace && (
                           <button
-                            onClick={(e) => { e.stopPropagation(); handleReplaceSingle(result.filePath, result.fileName, match.line, match.text) }}
-                            title="Replace this match"
+                            onClick={(e) => { e.stopPropagation(); replaceListed([{ ...result, matches: [match] }]) }}
+                            title="Replace the matches on this line"
                             style={{ ...iconBtnStyle, flexShrink: 0, marginRight: 4 }}
                           >
                             <Replace size={10} />
@@ -1127,7 +1102,7 @@ export default function SearchPanel() {
                         )}
                         <div
                           onClick={() => {
-                            openResult(result.filePath, result.fileName, match.line)
+                            openResult(result.filePath, match.line)
                             setActiveMatchIndex(flatIdx)
                           }}
                           style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}

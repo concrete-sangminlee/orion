@@ -173,7 +173,6 @@ async function showCheckpointList(): Promise<void> {
   if (checkpoints.length === 0) {
     console.log();
     printInfo('No checkpoints found.');
-    printInfo('Checkpoints are created automatically before multi-file operations like `orion plan --execute` and `orion agent`.');
     console.log();
     return;
   }

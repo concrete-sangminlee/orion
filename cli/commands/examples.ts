@@ -185,7 +185,6 @@ const EXAMPLES_DB: CommandExamples[] = [
     category: 'Generate',
     examples: [
       { command: 'orion plan "Add user authentication with JWT"', description: 'Plan a feature implementation' },
-      { command: 'orion plan --execute "Add dark mode support"', description: 'Plan and execute immediately' },
       { command: 'orion plan "Migrate database from MySQL to PostgreSQL"', description: 'Plan a migration' },
     ],
   },

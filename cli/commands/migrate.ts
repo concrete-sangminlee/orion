@@ -206,7 +206,7 @@ export async function migrateCommand(filePath: string, options: MigrateCommandOp
 
     const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Migration complete');
 
-    await askAI(fullSystemPrompt, userMessage, callbacks);
+    await askAI(fullSystemPrompt, userMessage, callbacks, { requireComplete: true });
 
     const fullResponse = getResponse();
 
@@ -239,6 +239,10 @@ export async function migrateCommand(filePath: string, options: MigrateCommandOp
         lines.pop();
       }
       migratedContent = lines.join('\n');
+    }
+
+    if (!migratedContent.trim()) {
+      throw new Error('The AI returned an empty file. Nothing was written.');
     }
 
     // Show migration notes

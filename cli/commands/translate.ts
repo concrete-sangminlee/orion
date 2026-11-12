@@ -112,7 +112,8 @@ async function translateFile(filePath: string, options: TranslateOptions): Promi
   const { callbacks, getResponse } = createSilentStreamHandler(spinner, `Translation to ${langLabel} complete`);
 
   try {
-    await askAI(systemPrompt, userMessage, callbacks);
+    // With --apply the reply replaces the whole file, so a truncated one must not be used.
+    await askAI(systemPrompt, userMessage, callbacks, { requireComplete: true });
   } catch (err: any) {
     printCommandError(err, 'translate', 'Run `orion config` to check your AI provider settings.');
     process.exit(1);

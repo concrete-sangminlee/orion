@@ -3,9 +3,9 @@
  * Install, uninstall, and manage Orion-powered git hooks.
  *
  * Supported hooks:
- *   pre-commit  - Runs `orion review --staged` on staged files
+ *   pre-commit  - Runs `orion diff --staged` on staged changes (advisory)
  *   commit-msg  - Validates commit message format with AI
- *   pre-push    - Runs `orion security` scan on changed files
+ *   pre-push    - Runs an `orion security` scan (advisory)
  *
  * Usage:
  *   orion hooks install                # Install all Orion git hooks
@@ -37,28 +37,26 @@ interface HookDefinition {
   script: string;
 }
 
+// The pre-commit and pre-push hooks are advisory: `orion diff` and
+// `orion security` exit 0 whatever they find, so a non-zero status only means
+// the CLI itself failed (no AI provider, not installed) and must not block git.
 const HOOK_DEFINITIONS: HookDefinition[] = [
   {
     name: 'pre-commit',
-    description: 'Run AI review on staged files before committing',
+    description: 'Show an AI review of staged changes before committing (advisory)',
     script: `#!/bin/sh
 ${ORION_MARKER}
 # Orion pre-commit hook
-# Runs a lightweight AI review on staged files.
+# Shows an AI review of the staged changes. Advisory: never blocks the commit.
 
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
 if [ -z "$STAGED_FILES" ]; then
   exit 0
 fi
 
-echo "Orion: reviewing staged files..."
-orion review --staged
-EXIT_CODE=$?
-
-if [ $EXIT_CODE -ne 0 ]; then
-  echo "Orion pre-commit review found issues. Commit aborted."
-  echo "Use git commit --no-verify to skip this check."
-  exit 1
+echo "Orion: reviewing staged changes..."
+if ! orion diff --staged; then
+  echo "Orion: the review could not run (see above). Committing anyway."
 fi
 
 exit 0
@@ -106,11 +104,12 @@ exit 0
   },
   {
     name: 'pre-push',
-    description: 'Run security scan on changed files before pushing',
+    description: 'Show a security scan before pushing (advisory)',
     script: `#!/bin/sh
 ${ORION_MARKER}
 # Orion pre-push hook
-# Runs a security scan on files changed since the remote tracking branch.
+# Shows a security scan when files changed since the remote tracking branch.
+# Advisory: never blocks the push.
 
 REMOTE="$1"
 
@@ -129,13 +128,8 @@ if [ -z "$CHANGED_FILES" ]; then
 fi
 
 echo "Orion: running security scan before push..."
-orion security
-EXIT_CODE=$?
-
-if [ $EXIT_CODE -ne 0 ]; then
-  echo "Orion security scan found potential issues."
-  echo "Review the findings above. Use git push --no-verify to skip this check."
-  exit 1
+if ! orion security; then
+  echo "Orion: the security scan could not run (see above). Pushing anyway."
 fi
 
 exit 0

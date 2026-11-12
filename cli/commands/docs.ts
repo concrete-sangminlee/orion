@@ -261,7 +261,8 @@ async function generateJSDoc(filePath: string): Promise<void> {
 
     const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Documentation generated');
 
-    await askAI(fullSystemPrompt, userMessage, callbacks);
+    // The reply replaces the whole file, so a truncated one must not be used.
+    await askAI(fullSystemPrompt, userMessage, callbacks, { requireComplete: true });
 
     const response = getResponse();
 

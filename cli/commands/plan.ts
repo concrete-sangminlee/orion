@@ -6,35 +6,24 @@
  * Usage:
  *   orion plan "Add authentication to the Express app"
  *   orion plan "Refactor the database layer to use Prisma"
- *   orion plan --execute "Migrate from REST to GraphQL"
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import inquirer from 'inquirer';
 import { askAI } from '../ai-client.js';
 import {
   colors,
   printInfo,
-  printSuccess,
   printError,
-  printWarning,
   printDivider,
   startSpinner,
   stopSpinner,
   getCurrentDirectoryContext,
   loadProjectContext,
-  writeFileContent,
-  readFileContent,
-  fileExists,
 } from '../utils.js';
 import { renderMarkdown } from '../markdown.js';
-import {
-  createSilentStreamHandler,
-  createStreamHandler,
-} from '../shared.js';
-import { getPipelineOptions, jsonOutput } from '../pipeline.js';
-import { createCheckpoint } from '../checkpoint.js';
+import { createSilentStreamHandler } from '../shared.js';
+import { jsonOutput } from '../pipeline.js';
 import {
   commandHeader,
   table as uiTable,
@@ -43,7 +32,6 @@ import {
   badge,
   box,
   palette,
-  progressBar,
 } from '../ui.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -296,71 +284,6 @@ function savePlan(plan: Plan): string {
   return filepath;
 }
 
-// ─── Execute Plan Steps ──────────────────────────────────────────────────────
-
-async function executePlanStep(step: PlanStep, projectContext: string): Promise<boolean> {
-  const stepLabel = `Step ${step.number}: ${step.title}`;
-
-  console.log();
-  console.log(`  ${palette.violet.bold(stepLabel)}`);
-  console.log(divider());
-
-  const spinner = startSpinner(`Executing step ${step.number}...`);
-
-  const EXECUTE_PROMPT = `You are Orion, an expert code implementer. Execute the following step from an implementation plan.
-
-Rules:
-1. If modifying an existing file, output ONLY the complete modified file content
-2. If creating a new file, output ONLY the file content
-3. Do NOT include markdown code fences or explanations around the code
-4. Preserve existing formatting and patterns
-5. Be thorough and production-quality
-
-If the step involves multiple files, handle them one at a time. For this invocation, focus on the primary change described.`;
-
-  const dirContext = getCurrentDirectoryContext();
-
-  // Gather existing file contents for context
-  let fileContext = '';
-  for (const filePath of step.files) {
-    if (fileExists(filePath)) {
-      try {
-        const { content, language } = readFileContent(filePath);
-        fileContext += `\nExisting file ${filePath} (${language}):\n\`\`\`${language}\n${content}\n\`\`\`\n`;
-      } catch { /* skip unreadable files */ }
-    }
-  }
-
-  const userMessage = [
-    `Step: ${step.title}`,
-    `Description: ${step.description}`,
-    `Files involved: ${step.files.join(', ') || 'Determine from description'}`,
-    `\nProject context:\n${dirContext}`,
-    fileContext ? `\nExisting file contents:${fileContext}` : '',
-  ].join('\n');
-
-  const fullPrompt = projectContext
-    ? EXECUTE_PROMPT + '\n\nProject context:\n' + projectContext
-    : EXECUTE_PROMPT;
-
-  try {
-    const { callbacks, getResponse } = createStreamHandler(spinner, {
-      label: `Result (Step ${step.number})`,
-      markdown: true,
-    });
-
-    await askAI(fullPrompt, userMessage, callbacks);
-
-    console.log();
-    printSuccess(`Step ${step.number} complete: ${step.title}`);
-    return true;
-  } catch (err: any) {
-    stopSpinner(spinner, err.message, false);
-    printError(`Step ${step.number} failed: ${err.message}`);
-    return false;
-  }
-}
-
 // ─── Display Plan ───────────────────────────────────────────────────────────
 
 function displayPlan(plan: Plan): void {
@@ -427,7 +350,7 @@ function displayPlan(plan: Plan): void {
 
 // ─── Main Command ───────────────────────────────────────────────────────────
 
-export async function planCommand(task: string, options?: { execute?: boolean }): Promise<void> {
+export async function planCommand(task: string): Promise<void> {
   if (!task || !task.trim()) {
     console.log(commandHeader('Orion Plan'));
     console.log();
@@ -436,7 +359,6 @@ export async function planCommand(task: string, options?: { execute?: boolean })
     console.log(`  ${palette.dim('Usage:')}`);
     console.log(`    ${colors.command('orion plan')} ${palette.dim('"Add authentication to the Express app"')}`);
     console.log(`    ${colors.command('orion plan')} ${palette.dim('"Refactor database layer to use Prisma"')}`);
-    console.log(`    ${colors.command('orion plan --execute')} ${palette.dim('"Add unit tests for auth module"')}`);
     console.log();
     process.exit(1);
   }
@@ -495,94 +417,6 @@ export async function planCommand(task: string, options?: { execute?: boolean })
       })),
       savedTo: planPath,
     });
-
-    // Ask whether to execute
-    const pipelineOpts = getPipelineOptions();
-    let shouldExecute = options?.execute || false;
-
-    if (!shouldExecute && !pipelineOpts.yes) {
-      const answer = await inquirer.prompt([{
-        type: 'confirm',
-        name: 'execute',
-        message: 'Execute this plan?',
-        default: false,
-      }]);
-      shouldExecute = answer.execute;
-    } else if (pipelineOpts.yes) {
-      shouldExecute = true;
-    }
-
-    if (shouldExecute) {
-      if (pipelineOpts.dryRun) {
-        printInfo('Dry run: plan would be executed but no changes will be made.');
-        console.log();
-        return;
-      }
-
-      console.log();
-      console.log(divider('Executing Plan'));
-      console.log();
-
-      // Create a workspace checkpoint before multi-file execution
-      const allPlanFiles = [...new Set(plan.steps.flatMap(s => s.files))].filter(f => f.length > 0);
-      if (allPlanFiles.length > 0) {
-        try {
-          const cpId = createCheckpoint(`plan: ${task}`, allPlanFiles);
-          printInfo(`Checkpoint created: ${palette.dim(cpId)}`);
-          printInfo(`Restore with: ${colors.command('orion undo --checkpoint')}`);
-          console.log();
-        } catch {
-          printWarning('Could not create workspace checkpoint (files may not exist yet).');
-          console.log();
-        }
-      }
-
-      let completedSteps = 0;
-      let failedSteps = 0;
-
-      for (const step of plan.steps) {
-        console.log(progressBar(completedSteps, plan.steps.length));
-
-        const success = await executePlanStep(step, projectContext);
-        if (success) {
-          completedSteps++;
-        } else {
-          failedSteps++;
-
-          // Ask whether to continue on failure
-          if (!pipelineOpts.yes) {
-            const continueAnswer = await inquirer.prompt([{
-              type: 'confirm',
-              name: 'continueExecution',
-              message: `Step ${step.number} failed. Continue with remaining steps?`,
-              default: true,
-            }]);
-            if (!continueAnswer.continueExecution) {
-              printWarning('Plan execution stopped by user.');
-              break;
-            }
-          }
-        }
-      }
-
-      console.log();
-      console.log(progressBar(plan.steps.length, plan.steps.length));
-      console.log();
-      console.log(divider('Execution Complete'));
-      console.log();
-      console.log(`  ${palette.green(`${completedSteps} steps completed`)} | ${palette.red(`${failedSteps} steps failed`)} | ${palette.dim(`${plan.steps.length} total`)}`);
-      console.log();
-
-      jsonOutput('plan_execution', {
-        task,
-        completed: completedSteps,
-        failed: failedSteps,
-        total: plan.steps.length,
-      });
-    } else {
-      printInfo('Plan saved. Run with --execute to implement the steps.');
-      console.log();
-    }
   } catch (err: any) {
     stopSpinner(planSpinner, err.message, false);
     printError(`Plan generation failed: ${err.message}`);

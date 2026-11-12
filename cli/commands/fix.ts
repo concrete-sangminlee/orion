@@ -115,7 +115,7 @@ export async function fixCommand(filePath?: string, options?: FixCommandOptions)
 
     const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Analysis complete');
 
-    await askAI(fullSystemPrompt, userMessage, callbacks);
+    await askAI(fullSystemPrompt, userMessage, callbacks, { requireComplete: true });
 
     const fullResponse = getResponse();
 
@@ -169,12 +169,6 @@ export async function fixCommand(filePath?: string, options?: FixCommandOptions)
       `${palette.blue(`${infoCount} suggestions`)}`
     );
 
-    if (!fixedContent) {
-      log();
-      process.stderr.write(`  ${colors.info('i')} No fixable issues found, or AI did not provide fixes.\n`);
-      return;
-    }
-
     // Clean up potential code fences
     if (fixedContent.startsWith('```')) {
       const lines = fixedContent.split('\n');
@@ -183,6 +177,13 @@ export async function fixCommand(filePath?: string, options?: FixCommandOptions)
         lines.pop();
       }
       fixedContent = lines.join('\n');
+    }
+
+    // Checked after removing fences: a reply of only a fence is an empty file.
+    if (!fixedContent.trim()) {
+      log();
+      process.stderr.write(`  ${colors.info('i')} No fixable issues found, or AI did not provide fixes.\n`);
+      return;
     }
 
     const pipelineOpts = getPipelineOptions();
@@ -309,6 +310,7 @@ export async function fixCommand(filePath?: string, options?: FixCommandOptions)
                 'You are Orion, an expert code fixer. Output ONLY the complete fixed file content. No markdown, no code fences, no explanation.',
                 retryMessage,
                 retryCallbacks,
+                { requireComplete: true },
               );
 
               let retryContent = getRetryResponse().trim();
@@ -323,8 +325,34 @@ export async function fixCommand(filePath?: string, options?: FixCommandOptions)
                 retryContent = rLines.join('\n');
               }
 
+              console.log();
+              if (!retryContent.trim()) {
+                printWarning('The AI returned an empty file. Stopping; the file keeps the previous fix.');
+                break;
+              }
+
+              // Each retry rewrites the whole file, so it gets the same review
+              // as the first fix: a diff, and a prompt unless --yes was given.
+              if (!pipelineOpts.quiet) {
+                console.log(diffBlock(currentContent, retryContent, filePath));
+              }
+              let applyRetry = pipelineOpts.yes;
+              if (!applyRetry) {
+                const retryAnswer = await inquirer.prompt([{
+                  type: 'confirm',
+                  name: 'apply',
+                  message: `Apply fix attempt ${iteration + 1}?`,
+                  default: false,
+                }]);
+                applyRetry = retryAnswer.apply;
+              }
+              if (!applyRetry) {
+                printInfo('Stopped; the file keeps the previous fix.');
+                break;
+              }
+
               writeFileContent(filePath, retryContent);
-              console.log(palette.green('done'));
+              printSuccess(`Fix attempt ${iteration + 1} saved.`);
             }
 
             if (testsPass) {
