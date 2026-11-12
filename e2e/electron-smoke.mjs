@@ -247,6 +247,9 @@ try {
   fs.writeFileSync(keepFile, 'a week of work\n')
   await win.waitForFunction(() => document.body.innerText.includes('keep.md'), null, { timeout: 10_000 })
   await win.locator('[title="New File"]').first().click()
+  // The name field takes focus on the next frame; typing earlier would go to
+  // the editor that had focus before.
+  await win.waitForFunction(() => document.activeElement instanceof HTMLInputElement && !document.activeElement.closest('.monaco-editor'), null, { timeout: 5_000 })
   await win.keyboard.type('keep.md')
   await win.keyboard.press('Enter')
   await win.waitForFunction(() => document.body.innerText.includes('already exists'), null, { timeout: 5_000 }).catch(() => {})
