@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { useThemeStore } from './theme'
+import { applyUserSettings, normalizeSettings, readStoredSettings, SETTINGS_STORAGE_KEYS } from './settingsPersistence'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -19,7 +20,8 @@ interface ProfileStore {
   profiles: Profile[]
   activeProfileId: string
   createProfile: (name: string, icon: string) => Profile
-  switchProfile: (id: string) => void
+  /** Applies the profile's settings everywhere; rejects (and stays on the current profile) when they could not be applied. */
+  switchProfile: (id: string) => Promise<void>
   updateProfile: (id: string) => void
   deleteProfile: (id: string) => boolean
   renameProfile: (id: string, name: string) => void
@@ -39,42 +41,29 @@ function generateId(): string {
   return `profile_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 }
 
-/** Capture the current settings from localStorage into a snapshot. */
+/**
+ * The settings a profile carries, saved under their localStorage keys (the
+ * format profiles have always been stored and exported in).
+ */
+const PROFILE_GROUPS = ['editor', 'terminal', 'prompts'] as const
+
+/**
+ * The effective settings, defaults included: a profile made before anything
+ * was saved must still restore those defaults when switched back to.
+ */
 function snapshotSettings(): Record<string, any> {
-  const keys = [
-    'orion-editor-settings',
-    'orion-terminal-settings',
-    'orion-prompts',
-  ]
-  const snapshot: Record<string, any> = {}
-  for (const key of keys) {
-    try {
-      const raw = localStorage.getItem(key)
-      if (raw) snapshot[key] = JSON.parse(raw)
-    } catch { /* skip */ }
-  }
-  return snapshot
+  const current = readStoredSettings()
+  return Object.fromEntries(PROFILE_GROUPS.map((group) => [SETTINGS_STORAGE_KEYS[group], current[group]]))
 }
 
-/** Apply a settings snapshot back to localStorage and dispatch update events. */
-function applySettings(settings: Record<string, any>) {
-  const settingsKeys = [
-    'orion-editor-settings',
-    'orion-terminal-settings',
-    'orion-prompts',
-  ]
-  for (const key of settingsKeys) {
-    if (settings[key] !== undefined) {
-      localStorage.setItem(key, JSON.stringify(settings[key]))
-    }
-  }
-  // Dispatch events so editor/terminal pick up changes
-  if (settings['orion-editor-settings']) {
-    window.dispatchEvent(new CustomEvent('orion:editor-config', { detail: settings['orion-editor-settings'] }))
-  }
-  if (settings['orion-terminal-settings']) {
-    window.dispatchEvent(new CustomEvent('orion:terminal-config', { detail: settings['orion-terminal-settings'] }))
-  }
+/**
+ * Apply a snapshot everywhere, prompts included. A group the snapshot lacks
+ * (older profiles saved {}) gets the defaults instead of keeping the previous
+ * profile's values.
+ */
+function applySettings(settings: Record<string, any>): Promise<void> {
+  const read = <G extends (typeof PROFILE_GROUPS)[number]>(group: G) => normalizeSettings(group, settings[SETTINGS_STORAGE_KEYS[group]])
+  return applyUserSettings({ editor: read('editor'), terminal: read('terminal'), prompts: read('prompts') })
 }
 
 function persist(profiles: Profile[], activeId: string) {
@@ -143,11 +132,10 @@ export const useProfileStore = create<ProfileStore>((set, get) => {
       return profile
     },
 
-    switchProfile: (id) => {
+    switchProfile: async (id) => {
       const profile = get().profiles.find(p => p.id === id)
       if (!profile) return
-      // Apply settings snapshot
-      applySettings(profile.settings)
+      await applySettings(profile.settings)
       // Switch theme
       useThemeStore.getState().setTheme(profile.theme)
       persist(get().profiles, id)

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { LEGACY_API_KEYS_STORAGE_KEY, legacyKeysToPatch, migrateLegacyApiKeys } from './apiKeys'
+import { cleanApiKeyInput, LEGACY_API_KEYS_STORAGE_KEY, legacyKeysToPatch, migrateLegacyApiKeys, saveApiKeys } from './apiKeys'
 
 function memoryStorage(initial: Record<string, string> = {}): Storage {
   const data = new Map(Object.entries(initial))
@@ -82,5 +82,33 @@ describe('migrateLegacyApiKeys', () => {
     const setKeys = stubApi({ success: true, persisted: true })
     await expect(migrateLegacyApiKeys(memoryStorage())).resolves.toBe('none')
     expect(setKeys).not.toHaveBeenCalled()
+  })
+})
+
+describe('cleanApiKeyInput', () => {
+  it('strips the invisible characters a key copied from a page can carry', () => {
+    expect(cleanApiKeyInput('\u200Bsk-ant-EXAMPLE\u00A0\n')).toBe('sk-ant-EXAMPLE')
+    expect(cleanApiKeyInput('sk-\uFEFFant-\u00A0EXAMPLE')).toBe('sk-ant-EXAMPLE')
+  })
+})
+
+describe('saveApiKeys', () => {
+  it('saves each key on its own, so one rejected key does not drop the others', async () => {
+    const omoSetApiKeys = vi.fn(async (patch: Record<string, string>) =>
+      Object.values(patch).some((key) => /\s/.test(key))
+        ? { success: false, error: 'API key for anthropic contains invalid characters' }
+        : { success: true })
+    vi.stubGlobal('window', { api: { omoSetApiKeys } })
+
+    const errors = await saveApiKeys({ anthropic: 'sk-ant EXAMPLE', openai: 'sk-oai-EXAMPLE\u200B', kimi: '  ' })
+
+    expect(errors).toEqual({ anthropic: 'API key for anthropic contains invalid characters' })
+    expect(omoSetApiKeys.mock.calls).toEqual([[{ anthropic: 'sk-ant EXAMPLE' }], [{ openai: 'sk-oai-EXAMPLE' }]])
+  })
+
+  it('reports a request that failed', async () => {
+    const omoSetApiKeys = vi.fn(async () => { throw new Error("Error invoking remote method 'omo:set-api-keys': Error: store locked") })
+    vi.stubGlobal('window', { api: { omoSetApiKeys } })
+    await expect(saveApiKeys({ gemini: 'AIza-EXAMPLE' })).resolves.toEqual({ gemini: 'store locked' })
   })
 })

@@ -1,13 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X, Check, Eye, EyeOff, Sparkles, Code, Palette, Plus, Trash2, Terminal, Keyboard, Settings, User, Download, Upload, Pencil, Copy, FileText, Info, RotateCcw, ZoomIn } from 'lucide-react'
+import { X, Check, Eye, EyeOff, Sparkles, Code, Palette, Plus, Trash2, Terminal, Keyboard, Settings, User, Download, Upload, Pencil, Copy, FileText, Info, RotateCcw } from 'lucide-react'
 import { useThemeStore } from '@/store/theme'
 import { useWorkspaceStore, DEFAULT_WORKSPACE_SETTINGS } from '@/store/workspace'
 import { useFileStore } from '@/store/files'
 import { useProfileStore } from '@/store/profiles'
-import { useSettingsStore } from '@/store/settings'
-import type { WorkspaceSettings } from '@shared/types'
-import type { ApiKeyPatch, ApiKeyStatus } from '@shared/ipc-contract'
-import { DEFAULT_COMPLETION_SETTINGS, type CompletionProviderSetting } from '@/store/completion'
+import type { AppInfo, WorkspaceSettings } from '@shared/types'
+import type { ApiKeyPatch, ApiKeyProvider, ApiKeyStatus } from '@shared/ipc-contract'
+import type { CompletionProviderSetting } from '@/store/completion'
+import {
+  applyUserSettings, DEFAULT_USER_SETTINGS, readStoredSettings,
+  type AiSettings, type AutoSaveMode, type CursorBlinking, type EditorCursorStyle, type EditorSettings,
+  type LineNumbersMode, type MinimapSide, type RenderWhitespace, type TerminalSettings, type WordWrapMode,
+} from '@/store/settingsPersistence'
+import { cleanApiKeyInput, saveApiKeys } from '@/utils/apiKeys'
+import { ipcErrorMessage } from '@/utils/ipcResult'
+import { PROJECT_LINKS } from '@/utils/projectLinks'
 
 interface Props {
   open: boolean
@@ -20,104 +27,12 @@ const providers = [
   { key: 'nvidia', label: 'NVIDIA NIM (build.nvidia.com)', placeholder: 'nvapi-...', color: '#76b900' },
   { key: 'kimi', label: 'Moonshot (Kimi)', placeholder: 'sk-...', color: '#f78166' },
   { key: 'gemini', label: 'Google (Gemini)', placeholder: 'AIza...', color: '#58a6ff' },
-  { key: 'custom', label: 'Custom Provider', placeholder: 'your-api-key...', color: '#8b949e' },
-]
-
-const AI_MODELS: Record<string, { value: string; label: string }[]> = {
-  anthropic: [
-    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-    { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
-    { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
-  ],
-  openai: [
-    { value: 'gpt-4o', label: 'GPT-4o' },
-    { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
-    { value: 'o3-mini', label: 'o3-mini' },
-  ],
-  nvidia: [
-    { value: 'meta/llama-3.1-405b-instruct', label: 'Llama 3.1 405B' },
-    { value: 'meta/llama-3.1-70b-instruct', label: 'Llama 3.1 70B' },
-  ],
-  kimi: [
-    { value: 'moonshot-v1-128k', label: 'Moonshot v1 128K' },
-    { value: 'moonshot-v1-32k', label: 'Moonshot v1 32K' },
-  ],
-  gemini: [
-    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-    { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
-  ],
-  custom: [
-    { value: 'custom', label: 'Custom Model' },
-  ],
-}
+] satisfies { key: ApiKeyProvider; label: string; placeholder: string; color: string }[]
 
 const DEFAULT_SYSTEM_PROMPT = 'You are Orion AI by Bebut, an expert coding assistant integrated into a code editor IDE. You help with code analysis, debugging, feature implementation, and code explanations. Be concise and helpful. Use markdown formatting for code blocks. Respond in the same language the user uses.'
 const DEFAULT_USER_TEMPLATE = '{message}'
 
 type CategoryId = 'general' | 'editor' | 'ai' | 'appearance' | 'terminal' | 'files' | 'shortcuts' | 'profiles' | 'about'
-
-type AutoSaveMode = 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange'
-type StartupBehavior = 'welcomeTab' | 'lastSession' | 'empty'
-type WindowTitleFormat = 'default' | 'filePath' | 'fileName' | 'folderName'
-
-type EditorCursorStyle = 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin'
-type CursorBlinking = 'blink' | 'smooth' | 'expand' | 'solid' | 'phase'
-type WordWrapMode = 'off' | 'on' | 'wordWrapColumn' | 'bounded'
-type LineNumbersMode = 'on' | 'off' | 'relative' | 'interval'
-type MinimapSide = 'right' | 'left'
-type RenderWhitespace = 'none' | 'boundary' | 'selection' | 'trailing' | 'all'
-
-interface GeneralSettings {
-  startupBehavior: StartupBehavior
-  windowTitleFormat: WindowTitleFormat
-  confirmBeforeClose: boolean
-  telemetryEnabled: boolean
-}
-
-interface EditorSettings {
-  fontSize: number
-  fontFamily: string
-  lineHeight: number
-  fontLigatures: boolean
-  letterSpacing: number
-  cursorStyle: EditorCursorStyle
-  cursorBlinking: CursorBlinking
-  renderWhitespace: RenderWhitespace
-  wordWrap: boolean // kept for backward compat
-  wordWrapMode: WordWrapMode
-  wordWrapColumn: number
-  insertSpaces: boolean
-  minimap: boolean
-  minimapSide: MinimapSide
-  minimapMaxColumn: number
-  autoSave: boolean // kept for backward compat
-  autoSaveMode: AutoSaveMode
-  autoSaveDelay: number
-  tabSize: number
-  lineNumbers: boolean // kept for backward compat
-  lineNumbersMode: LineNumbersMode
-  bracketPairColorization: boolean
-  stickyScroll: boolean
-  smoothScrolling: boolean
-  formatOnSave: boolean
-  formatOnPaste: boolean
-  trimTrailingWhitespace: boolean
-  insertFinalNewline: boolean
-  rulers: number[]
-}
-
-interface AISettings {
-  activeProvider: string
-  selectedModels: Record<string, string>
-  temperature: number
-  maxTokens: number
-  ghostTextEnabled: boolean
-  completionProvider: CompletionProviderSetting
-  completionDelay: number
-  customModelName: string
-  customEndpointUrl: string
-}
 
 const FONT_FAMILIES = [
   'Cascadia Code',
@@ -131,14 +46,6 @@ const FONT_FAMILIES = [
   'IBM Plex Mono',
   'Hack',
 ]
-
-interface TerminalSettings {
-  defaultShell: string
-  fontFamily: string
-  fontSize: number
-  cursorStyle: 'block' | 'bar' | 'underline'
-  scrollback: number
-}
 
 const TERMINAL_SHELLS = [
   { value: 'default', label: 'System Default' },
@@ -327,58 +234,14 @@ export default function SettingsModal({ open, onClose }: Props) {
   const [systemPrompt, setSystemPrompt] = useState('')
   const [userTemplate, setUserTemplate] = useState('')
   const [saved, setSaved] = useState(false)
-  const [generalSettings, setGeneralSettings] = useState<GeneralSettings>({
-    startupBehavior: 'welcomeTab',
-    windowTitleFormat: 'default',
-    confirmBeforeClose: true,
-    telemetryEnabled: false,
-  })
-  const [editorSettings, setEditorSettings] = useState<EditorSettings>({
-    fontSize: 14, fontFamily: 'Cascadia Code', lineHeight: 1.5, fontLigatures: true,
-    letterSpacing: 0, cursorStyle: 'line', cursorBlinking: 'blink',
-    renderWhitespace: 'selection',
-    wordWrap: false, wordWrapMode: 'off', wordWrapColumn: 80,
-    insertSpaces: true,
-    minimap: true, minimapSide: 'right', minimapMaxColumn: 120,
-    autoSave: true,
-    autoSaveMode: 'afterDelay', autoSaveDelay: 1000, tabSize: 2,
-    lineNumbers: true, lineNumbersMode: 'on',
-    bracketPairColorization: true, stickyScroll: true, smoothScrolling: true,
-    formatOnSave: false, formatOnPaste: false,
-    trimTrailingWhitespace: true, insertFinalNewline: true,
-    rulers: [],
-  })
-  const [aiSettings, setAiSettings] = useState<AISettings>({
-    activeProvider: 'anthropic',
-    selectedModels: { anthropic: 'claude-sonnet-4-20250514', openai: 'gpt-4o', nvidia: 'meta/llama-3.1-405b-instruct', kimi: 'moonshot-v1-128k', gemini: 'gemini-2.0-flash', custom: 'custom' },
-    temperature: 0.7,
-    maxTokens: 4096,
-    ghostTextEnabled: true,
-    completionProvider: DEFAULT_COMPLETION_SETTINGS.provider,
-    completionDelay: 300,
-    customModelName: '',
-    customEndpointUrl: '',
-  })
-  const [terminalSettings, setTerminalSettings] = useState<TerminalSettings>({
-    defaultShell: 'default', fontFamily: 'Cascadia Code',
-    fontSize: 13, cursorStyle: 'block', scrollback: 1000,
-  })
+  // Why the last Save or Reset did not fully apply; shown in the footer.
+  const [saveError, setSaveError] = useState<string | null>(null)
+  // Per provider: why its typed key was not saved (the input keeps the key).
+  const [keyErrors, setKeyErrors] = useState<Partial<Record<ApiKeyProvider, string>>>({})
+  const [editorSettings, setEditorSettings] = useState<EditorSettings>(DEFAULT_USER_SETTINGS.editor)
+  const [aiSettings, setAiSettings] = useState<AiSettings>(DEFAULT_USER_SETTINGS.ai)
+  const [terminalSettings, setTerminalSettings] = useState<TerminalSettings>(DEFAULT_USER_SETTINGS.terminal)
   const [newRuler, setNewRuler] = useState('')
-
-  // Appearance settings
-  const [appearanceSettings, setAppearanceSettings] = useState({
-    fontSizeScaling: 100,
-    zoomLevel: 0,
-  })
-
-  // Files settings
-  const [filesSettings, setFilesSettings] = useState({
-    defaultEncoding: 'utf-8',
-    autoGuessEncoding: true,
-    hotExit: 'onExit' as 'off' | 'onExit' | 'onExitAndWindowClose',
-    watcherExclude: ['**/.git/objects/**', '**/.git/subtree-cache/**', '**/node_modules/**'],
-  })
-  const [newWatcherExclude, setNewWatcherExclude] = useState('')
 
   // Reset confirmation
   const [showResetConfirm, setShowResetConfirm] = useState(false)
@@ -387,56 +250,38 @@ export default function SettingsModal({ open, onClose }: Props) {
   const rootPath = useFileStore((s) => s.rootPath)
   const wsSettings = useWorkspaceStore((s) => s.settings)
   const wsIsWorkspaceLevel = useWorkspaceStore((s) => s.isWorkspaceLevel)
+  const wsLoadError = useWorkspaceStore((s) => s.loadError)
   const [wsLocal, setWsLocal] = useState<WorkspaceSettings>({ ...DEFAULT_WORKSPACE_SETTINGS })
   const [newExclude, setNewExclude] = useState('')
-  const [newAssocExt, setNewAssocExt] = useState('')
-  const [newAssocLang, setNewAssocLang] = useState('')
   const [wsSaved, setWsSaved] = useState(false)
+  const [wsSaveError, setWsSaveError] = useState<string | null>(null)
+  // Versions for the About tab, from the main process.
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+
+  /** Show what is stored; also after a profile switch, so Save cannot write the old values back. */
+  const loadStoredSettings = useCallback(() => {
+    const stored = readStoredSettings()
+    setEditorSettings(stored.editor)
+    setTerminalSettings(stored.terminal)
+    setAiSettings(stored.ai)
+    setSystemPrompt(stored.prompts.systemPrompt)
+    setUserTemplate(stored.prompts.userPromptTemplate)
+  }, [])
 
   useEffect(() => {
     if (open) {
-      try {
-        void refreshKeyStatus()
-        const storedPrompts = localStorage.getItem('orion-prompts')
-        if (storedPrompts) {
-          const p = JSON.parse(storedPrompts)
-          setSystemPrompt(p.systemPrompt || '')
-          setUserTemplate(p.userPromptTemplate || '')
-        }
-        const storedGeneral = localStorage.getItem('orion-general-settings')
-        if (storedGeneral) setGeneralSettings(prev => ({ ...prev, ...JSON.parse(storedGeneral) }))
-        const storedEditor = localStorage.getItem('orion-editor-settings')
-        if (storedEditor) {
-          const parsed = JSON.parse(storedEditor)
-          // Migrate old boolean autoSave to autoSaveMode
-          if (parsed.autoSave !== undefined && !parsed.autoSaveMode) {
-            parsed.autoSaveMode = parsed.autoSave ? 'afterDelay' : 'off'
-          }
-          // Migrate old boolean wordWrap to wordWrapMode
-          if (parsed.wordWrap !== undefined && !parsed.wordWrapMode) {
-            parsed.wordWrapMode = parsed.wordWrap ? 'on' : 'off'
-          }
-          // Migrate old boolean lineNumbers to lineNumbersMode
-          if (parsed.lineNumbers !== undefined && !parsed.lineNumbersMode) {
-            parsed.lineNumbersMode = parsed.lineNumbers ? 'on' : 'off'
-          }
-          setEditorSettings(prev => ({ ...prev, ...parsed }))
-        }
-        const storedAi = localStorage.getItem('orion-ai-settings')
-        if (storedAi) setAiSettings(prev => ({ ...prev, ...JSON.parse(storedAi) }))
-        const storedTerminal = localStorage.getItem('orion-terminal-settings')
-        if (storedTerminal) setTerminalSettings(prev => ({ ...prev, ...JSON.parse(storedTerminal) }))
-        const storedAppearance = localStorage.getItem('orion-appearance-settings')
-        if (storedAppearance) setAppearanceSettings(prev => ({ ...prev, ...JSON.parse(storedAppearance) }))
-        const storedFiles = localStorage.getItem('orion-files-settings')
-        if (storedFiles) setFilesSettings(prev => ({ ...prev, ...JSON.parse(storedFiles) }))
-      } catch {}
+      void refreshKeyStatus()
+      window.api.appGetInfo().then(setAppInfo, () => setAppInfo(null))
+      loadStoredSettings()
       // Load workspace settings
       if (rootPath) {
         useWorkspaceStore.getState().loadWorkspaceSettings(rootPath)
       }
       setSaved(false)
+      setSaveError(null)
+      setKeyErrors({})
       setWsSaved(false)
+      setWsSaveError(null)
     }
   }, [open])
 
@@ -448,98 +293,59 @@ export default function SettingsModal({ open, onClose }: Props) {
   }, [wsSettings, open])
 
   const handleSave = async () => {
+    setSaved(false)
+    // Errors of an earlier save no longer apply once the key was cleared or replaced.
+    setKeyErrors({})
+    const problems: string[] = []
+
     // Send only keys the user typed; blank inputs leave stored keys alone.
-    const enteredKeys = Object.fromEntries(Object.entries(keys).filter(([, value]) => value.trim())) as ApiKeyPatch
+    const enteredKeys = Object.fromEntries(Object.entries(keys).filter(([, value]) => cleanApiKeyInput(value)))
     if (Object.keys(enteredKeys).length > 0) {
-      const result = await window.api?.omoSetApiKeys(enteredKeys)
-      if (result?.success) setKeys((prev) => Object.fromEntries(Object.keys(prev).map((provider) => [provider, ''])))
+      const errors = await saveApiKeys(enteredKeys)
+      setKeyErrors(errors)
+      // Clear the saved inputs; a rejected key stays so it can be corrected.
+      setKeys((prev) => Object.fromEntries(Object.entries(prev).map(([provider, value]) => [provider, provider in errors ? value : ''])))
+      const rejected = providers.filter((p) => p.key in errors).map((p) => p.label)
+      if (rejected.length > 0) problems.push(`API key not saved for ${rejected.join(', ')}`)
       await refreshKeyStatus()
     }
 
-    const prompts = {
-      systemPrompt: systemPrompt || '',
-      userPromptTemplate: userTemplate || '',
+    try {
+      await applyUserSettings({
+        editor: editorSettings,
+        terminal: terminalSettings,
+        ai: aiSettings,
+        prompts: { systemPrompt, userPromptTemplate: userTemplate },
+      })
+    } catch (err) {
+      problems.push(`Settings not applied: ${ipcErrorMessage(err)}`)
     }
-    localStorage.setItem('orion-prompts', JSON.stringify(prompts))
-    await window.api?.omoSetPrompts(prompts)
 
-    localStorage.setItem('orion-general-settings', JSON.stringify(generalSettings))
-    localStorage.setItem('orion-editor-settings', JSON.stringify(editorSettings))
-    localStorage.setItem('orion-ai-settings', JSON.stringify(aiSettings))
-    localStorage.setItem('orion-terminal-settings', JSON.stringify(terminalSettings))
-    localStorage.setItem('orion-appearance-settings', JSON.stringify(appearanceSettings))
-    localStorage.setItem('orion-files-settings', JSON.stringify(filesSettings))
-    // Dispatch config update events
-    window.dispatchEvent(new CustomEvent('orion:general-config', { detail: generalSettings }))
-    window.dispatchEvent(new CustomEvent('orion:editor-config', { detail: editorSettings }))
-    window.dispatchEvent(new CustomEvent('orion:ai-config', { detail: aiSettings }))
-    window.dispatchEvent(new CustomEvent('orion:terminal-config', { detail: terminalSettings }))
-    window.dispatchEvent(new CustomEvent('orion:appearance-config', { detail: appearanceSettings }))
-    window.dispatchEvent(new CustomEvent('orion:files-config', { detail: filesSettings }))
-
+    if (problems.length > 0) {
+      setSaveError(problems.join('. '))
+      return
+    }
+    setSaveError(null)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
 
-  const handleResetAll = () => {
-    // Reset all local state to defaults
-    setGeneralSettings({
-      startupBehavior: 'welcomeTab',
-      windowTitleFormat: 'default',
-      confirmBeforeClose: true,
-      telemetryEnabled: false,
-    })
-    setEditorSettings({
-      fontSize: 14, fontFamily: 'Cascadia Code', lineHeight: 1.5, fontLigatures: true,
-      letterSpacing: 0, cursorStyle: 'line', cursorBlinking: 'blink',
-      renderWhitespace: 'selection',
-      wordWrap: false, wordWrapMode: 'off', wordWrapColumn: 80,
-      insertSpaces: true,
-      minimap: true, minimapSide: 'right', minimapMaxColumn: 120,
-      autoSave: true,
-      autoSaveMode: 'afterDelay', autoSaveDelay: 1000, tabSize: 2,
-      lineNumbers: true, lineNumbersMode: 'on',
-      bracketPairColorization: true, stickyScroll: true, smoothScrolling: true,
-      formatOnSave: false, formatOnPaste: false,
-      trimTrailingWhitespace: true, insertFinalNewline: true,
-      rulers: [],
-    })
-    setAiSettings({
-      activeProvider: 'anthropic',
-      selectedModels: { anthropic: 'claude-sonnet-4-20250514', openai: 'gpt-4o', nvidia: 'meta/llama-3.1-405b-instruct', kimi: 'moonshot-v1-128k', gemini: 'gemini-2.0-flash', custom: 'custom' },
-      temperature: 0.7,
-      maxTokens: 4096,
-      ghostTextEnabled: true,
-      completionProvider: DEFAULT_COMPLETION_SETTINGS.provider,
-      completionDelay: 300,
-      customModelName: '',
-      customEndpointUrl: '',
-    })
-    setTerminalSettings({
-      defaultShell: 'default', fontFamily: 'Cascadia Code',
-      fontSize: 13, cursorStyle: 'block', scrollback: 1000,
-    })
-    setAppearanceSettings({ fontSizeScaling: 100, zoomLevel: 0 })
-    setFilesSettings({
-      defaultEncoding: 'utf-8',
-      autoGuessEncoding: true,
-      hotExit: 'onExit',
-      watcherExclude: ['**/.git/objects/**', '**/.git/subtree-cache/**', '**/node_modules/**'],
-    })
-    setSystemPrompt('')
-    setUserTemplate('')
-    // Reset store layers
-    useSettingsStore.getState().resetAll()
-    // Clear localStorage
-    localStorage.removeItem('orion-general-settings')
-    localStorage.removeItem('orion-editor-settings')
-    localStorage.removeItem('orion-ai-settings')
-    localStorage.removeItem('orion-terminal-settings')
-    localStorage.removeItem('orion-appearance-settings')
-    localStorage.removeItem('orion-files-settings')
-    localStorage.removeItem('orion-prompts')
+  /** Store and apply the defaults right away, as Save would; Cancel cannot undo a confirmed reset. */
+  const handleResetAll = async () => {
     setShowResetConfirm(false)
     setSaved(false)
+    const defaults = DEFAULT_USER_SETTINGS
+    setEditorSettings(defaults.editor)
+    setTerminalSettings(defaults.terminal)
+    setAiSettings(defaults.ai)
+    setSystemPrompt(defaults.prompts.systemPrompt)
+    setUserTemplate(defaults.prompts.userPromptTemplate)
+    try {
+      await applyUserSettings(defaults)
+      setSaveError(null)
+    } catch (err) {
+      setSaveError(`Reset not applied: ${ipcErrorMessage(err)}`)
+    }
   }
 
   if (!open) return null
@@ -633,41 +439,6 @@ export default function SettingsModal({ open, onClose }: Props) {
             {/* ---- GENERAL ---- */}
             {activeCategory === 'general' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <SectionHeader title="Application" />
-
-                <SettingRow label="Startup Behavior" description="What to show when Orion starts">
-                  <SelectDropdown
-                    value={generalSettings.startupBehavior}
-                    onChange={(v) => setGeneralSettings(s => ({ ...s, startupBehavior: v as StartupBehavior }))}
-                    options={[
-                      { value: 'welcomeTab', label: 'Welcome Tab' },
-                      { value: 'lastSession', label: 'Restore Last Session' },
-                      { value: 'empty', label: 'Empty Editor' },
-                    ]}
-                  />
-                </SettingRow>
-
-                <SettingRow label="Window Title Format" description="Controls the format of the window title bar">
-                  <SelectDropdown
-                    value={generalSettings.windowTitleFormat}
-                    onChange={(v) => setGeneralSettings(s => ({ ...s, windowTitleFormat: v as WindowTitleFormat }))}
-                    options={[
-                      { value: 'default', label: 'Default' },
-                      { value: 'filePath', label: 'Full File Path' },
-                      { value: 'fileName', label: 'File Name Only' },
-                      { value: 'folderName', label: 'Folder Name' },
-                    ]}
-                  />
-                </SettingRow>
-
-                <SettingRow label="Confirm Before Close" description="Show confirmation dialog when closing with unsaved changes">
-                  <Toggle checked={generalSettings.confirmBeforeClose} onChange={(v) => setGeneralSettings(s => ({ ...s, confirmBeforeClose: v }))} />
-                </SettingRow>
-
-                <SettingRow label="Telemetry" description="Allow anonymous usage data collection to improve Orion">
-                  <Toggle checked={generalSettings.telemetryEnabled} onChange={(v) => setGeneralSettings(s => ({ ...s, telemetryEnabled: v }))} />
-                </SettingRow>
-
                 <SectionHeader title="Auto Save" />
 
                 <SettingRow label="Auto Save Mode" description="Controls when files are automatically saved">
@@ -737,10 +508,10 @@ export default function SettingsModal({ open, onClose }: Props) {
                 <div style={{ paddingTop: 8 }}>
                   <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 4 }}>User Prompt Template</div>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.4 }}>
-                    Template prepended to your messages. Use <code style={{
+                    Text added before each message you send. Put <code style={{
                       background: 'var(--bg-tertiary)', padding: '1px 4px', borderRadius: 3,
                       fontFamily: 'var(--font-mono, monospace)', fontSize: 11,
-                    }}>{'{message}'}</code> as placeholder.
+                    }}>{'{message}'}</code> in it to place your message somewhere else.
                   </div>
                   <textarea
                     value={userTemplate}
@@ -766,6 +537,11 @@ export default function SettingsModal({ open, onClose }: Props) {
                 {wsIsWorkspaceLevel && (
                   <div style={{ fontSize: 11, color: 'var(--accent-green)', marginBottom: 4 }}>
                     Loaded from .orion/settings.json
+                  </div>
+                )}
+                {wsLoadError && (
+                  <div role="alert" style={{ fontSize: 11, color: 'var(--accent-red, #f85149)', marginBottom: 4, lineHeight: 1.4 }}>
+                    .orion/settings.json could not be read ({wsLoadError}). Fix the file and reopen Settings; it will not be overwritten until then.
                   </div>
                 )}
 
@@ -843,135 +619,37 @@ export default function SettingsModal({ open, onClose }: Props) {
                   </div>
                 </div>
 
-                {/* Workspace toggles */}
-                {([
-                  ['autoSave', 'Auto Save', 'Automatically save files when switching tabs'],
-                  ['formatOnSave', 'Format on Save', 'Format the file each time it is saved'],
-                  ['insertSpaces', 'Insert Spaces', 'Use spaces instead of tabs for indentation'],
-                ] as const).map(([key, label, desc]) => (
-                  <SettingRow key={key} label={label} description={desc}>
-                    <Toggle checked={!!wsLocal[key]} onChange={(v) => setWsLocal(s => ({ ...s, [key]: v }))} />
-                  </SettingRow>
-                ))}
-
-                {/* Workspace Tab Size */}
-                <SettingRow label="Tab Size" description="Number of spaces per tab (workspace)">
-                  <PillToggle value={wsLocal.tabSize} onChange={(v) => setWsLocal(s => ({ ...s, tabSize: v }))} options={[2, 4, 8]} />
-                </SettingRow>
-
-                {/* File Associations */}
-                <div style={{ paddingTop: 8 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 4 }}>File Associations</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-                    Map file extensions to language modes.
-                  </div>
-                  {Object.entries(wsLocal.fileAssociations).length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
-                      {Object.entries(wsLocal.fileAssociations).map(([ext, lang]) => (
-                        <div key={ext} style={{
-                          display: 'flex', alignItems: 'center', gap: 8,
-                          padding: '4px 8px', borderRadius: 4,
-                          background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                          fontSize: 11,
-                        }}>
-                          <span style={{ fontFamily: 'var(--font-mono, monospace)', color: 'var(--accent-blue, #388bfd)' }}>.{ext}</span>
-                          <span style={{ color: 'var(--text-muted)' }}>&rarr;</span>
-                          <span style={{ color: 'var(--text-primary)', flex: 1 }}>{lang}</span>
-                          <button
-                            onClick={() => setWsLocal(s => {
-                              const fa = { ...s.fileAssociations }
-                              delete fa[ext]
-                              return { ...s, fileAssociations: fa }
-                            })}
-                            style={{
-                              background: 'transparent', border: 'none', cursor: 'pointer',
-                              color: 'var(--text-muted)', padding: 0, display: 'flex',
-                            }}
-                          >
-                            <Trash2 size={11} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <input
-                      value={newAssocExt}
-                      onChange={(e) => setNewAssocExt(e.target.value)}
-                      placeholder="ext (e.g. mdx)"
-                      style={{
-                        width: 80, padding: '6px 10px',
-                        background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                        borderRadius: 6, outline: 'none',
-                        fontSize: 12, color: 'var(--text-primary)',
-                        fontFamily: 'var(--font-mono, monospace)',
-                      }}
-                    />
-                    <input
-                      value={newAssocLang}
-                      onChange={(e) => setNewAssocLang(e.target.value)}
-                      placeholder="language (e.g. markdown)"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && newAssocExt.trim() && newAssocLang.trim()) {
-                          setWsLocal(s => ({
-                            ...s,
-                            fileAssociations: { ...s.fileAssociations, [newAssocExt.trim().replace(/^\./, '')]: newAssocLang.trim() },
-                          }))
-                          setNewAssocExt('')
-                          setNewAssocLang('')
-                        }
-                      }}
-                      style={{
-                        flex: 1, padding: '6px 10px',
-                        background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                        borderRadius: 6, outline: 'none',
-                        fontSize: 12, color: 'var(--text-primary)',
-                      }}
-                    />
-                    <button
-                      onClick={() => {
-                        if (newAssocExt.trim() && newAssocLang.trim()) {
-                          setWsLocal(s => ({
-                            ...s,
-                            fileAssociations: { ...s.fileAssociations, [newAssocExt.trim().replace(/^\./, '')]: newAssocLang.trim() },
-                          }))
-                          setNewAssocExt('')
-                          setNewAssocLang('')
-                        }
-                      }}
-                      style={{
-                        padding: '6px 10px', borderRadius: 6, border: 'none',
-                        background: 'var(--accent-blue, #388bfd)', color: '#fff', cursor: 'pointer',
-                        fontSize: 12, display: 'flex', alignItems: 'center', gap: 4,
-                      }}
-                    >
-                      <Plus size={12} /> Add
-                    </button>
-                  </div>
-                </div>
-
                 {/* Save workspace settings button */}
                 <div style={{ paddingTop: 12 }}>
                   <button
-                    disabled={!rootPath}
+                    disabled={!rootPath || !!wsLoadError}
                     onClick={async () => {
                       if (!rootPath) return
-                      useWorkspaceStore.getState().setSettings(wsLocal)
-                      await useWorkspaceStore.getState().saveWorkspaceSettings(rootPath)
-                      setWsSaved(true)
-                      setTimeout(() => setWsSaved(false), 2000)
+                      setWsSaveError(null)
+                      try {
+                        await useWorkspaceStore.getState().saveWorkspaceSettings(rootPath, wsLocal)
+                        setWsSaved(true)
+                        setTimeout(() => setWsSaved(false), 2000)
+                      } catch (err) {
+                        setWsSaveError(ipcErrorMessage(err))
+                      }
                     }}
                     style={{
                       padding: '8px 16px', borderRadius: 6,
                       fontSize: 12, fontWeight: 600,
-                      background: wsSaved ? 'var(--accent-green)' : !rootPath ? 'var(--bg-hover)' : 'var(--accent-blue, #388bfd)',
-                      color: !rootPath ? 'var(--text-muted)' : '#fff',
-                      border: 'none', cursor: rootPath ? 'pointer' : 'not-allowed',
+                      background: wsSaved ? 'var(--accent-green)' : !rootPath || wsLoadError ? 'var(--bg-hover)' : 'var(--accent-blue, #388bfd)',
+                      color: !rootPath || wsLoadError ? 'var(--text-muted)' : '#fff',
+                      border: 'none', cursor: rootPath && !wsLoadError ? 'pointer' : 'not-allowed',
                       transition: 'background 0.2s',
                     }}
                   >
                     {wsSaved ? '\u2713 Workspace Settings Saved' : 'Save to .orion/settings.json'}
                   </button>
+                  {wsSaveError && (
+                    <div role="alert" style={{ fontSize: 11, color: 'var(--accent-red, #f85149)', marginTop: 6, lineHeight: 1.4 }}>
+                      Not saved: {wsSaveError}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1244,90 +922,9 @@ if (a === b && c >= d) {
             {/* ---- AI / MODELS ---- */}
             {activeCategory === 'ai' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <SectionHeader title="Active Provider" />
-
-                <SettingRow label="API Provider" description="Select the AI provider to use for chat and completions">
-                  <SelectDropdown
-                    value={aiSettings.activeProvider}
-                    onChange={(v) => setAiSettings(s => ({ ...s, activeProvider: v }))}
-                    options={providers.map(p => ({ value: p.key, label: p.label }))}
-                  />
-                </SettingRow>
-
-                <SettingRow label="Model" description="Select the model for the active provider">
-                  <SelectDropdown
-                    value={aiSettings.selectedModels[aiSettings.activeProvider] || ''}
-                    onChange={(v) => setAiSettings(s => ({ ...s, selectedModels: { ...s.selectedModels, [s.activeProvider]: v } }))}
-                    options={AI_MODELS[aiSettings.activeProvider] || [{ value: 'custom', label: 'Custom' }]}
-                  />
-                </SettingRow>
-
-                {aiSettings.activeProvider === 'custom' && (
-                  <>
-                    <SettingRow label="Custom Model Name" description="Name identifier for your custom model">
-                      <input
-                        value={aiSettings.customModelName}
-                        onChange={(e) => setAiSettings(s => ({ ...s, customModelName: e.target.value }))}
-                        placeholder="my-model-v1"
-                        style={{
-                          width: 160, padding: '5px 10px',
-                          background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                          borderRadius: 6, outline: 'none', fontSize: 12, color: 'var(--text-primary)',
-                          fontFamily: 'var(--font-mono, monospace)',
-                        }}
-                      />
-                    </SettingRow>
-                    <SettingRow label="Endpoint URL" description="Base URL for the custom API endpoint">
-                      <input
-                        value={aiSettings.customEndpointUrl}
-                        onChange={(e) => setAiSettings(s => ({ ...s, customEndpointUrl: e.target.value }))}
-                        placeholder="https://api.example.com/v1"
-                        style={{
-                          width: 200, padding: '5px 10px',
-                          background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                          borderRadius: 6, outline: 'none', fontSize: 12, color: 'var(--text-primary)',
-                          fontFamily: 'var(--font-mono, monospace)',
-                        }}
-                      />
-                    </SettingRow>
-                  </>
-                )}
-
-                <SectionHeader title="Model Parameters" />
-
-                <SettingRow label="Temperature" description="Sampling temperature (0 = deterministic, 2 = creative)">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input
-                      type="range" min={0} max={2} step={0.1}
-                      value={aiSettings.temperature}
-                      onChange={(e) => setAiSettings(s => ({ ...s, temperature: parseFloat(e.target.value) }))}
-                      style={{ width: 90, accentColor: 'var(--accent-blue, #388bfd)' }}
-                    />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', minWidth: 28, textAlign: 'center' }}>
-                      {aiSettings.temperature.toFixed(1)}
-                    </span>
-                  </div>
-                </SettingRow>
-
-                <SettingRow label="Max Tokens" description="Maximum number of tokens in the AI response">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <input
-                      type="number"
-                      value={aiSettings.maxTokens}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value, 10)
-                        if (!isNaN(v) && v >= 256 && v <= 128000) setAiSettings(s => ({ ...s, maxTokens: v }))
-                      }}
-                      style={{
-                        width: 80, padding: '4px 8px',
-                        background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                        borderRadius: 6, outline: 'none', fontSize: 12, color: 'var(--text-primary)',
-                        textAlign: 'center',
-                      }}
-                    />
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>tokens</span>
-                  </div>
-                </SettingRow>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 4 }}>
+                  The chat model is chosen with the model selector in the chat panel.
+                </p>
 
                 <SectionHeader title="Inline Completions" />
 
@@ -1388,7 +985,8 @@ if (a === b && c >= d) {
                   </p>
                 )}
                 {providers.map(({ key, label, placeholder, color }) => {
-                  const saved = Boolean(keyStatus?.configured[key as keyof ApiKeyStatus['configured']])
+                  const saved = Boolean(keyStatus?.configured[key])
+                  const keyError = keyErrors[key]
                   return (
                   <div key={key} style={{ marginBottom: 12 }}>
                     <label style={{
@@ -1441,47 +1039,37 @@ if (a === b && c >= d) {
                         </button>
                       )}
                     </div>
+                    {keyError && (
+                      <div role="alert" style={{ fontSize: 11, color: 'var(--accent-red, #f85149)', marginTop: 4 }}>
+                        Not saved: {keyError}
+                      </div>
+                    )}
                   </div>
                   )
                 })}
+                {/* Earlier versions offered a Custom Provider key that nothing ever used; it can still be removed. */}
+                {keyStatus?.configured.custom && (
+                  <SettingRow label="Old Custom Provider key" description="Saved by an earlier version of Orion. Nothing uses it.">
+                    <button
+                      onClick={() => void removeApiKey('custom')}
+                      aria-label="Remove saved Custom Provider key"
+                      style={{
+                        padding: '5px 12px', borderRadius: 6, fontSize: 11,
+                        background: 'transparent', border: '1px solid var(--border)',
+                        color: 'var(--accent-red, #f85149)', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', gap: 4,
+                      }}
+                    >
+                      <Trash2 size={12} /> Remove
+                    </button>
+                  </SettingRow>
+                )}
               </div>
             )}
 
             {/* ---- APPEARANCE (replaces Theme) ---- */}
             {activeCategory === 'appearance' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <SectionHeader title="Zoom & Scaling" />
-
-                <SettingRow label="UI Font Size Scaling" description="Scale the entire UI font size (50% - 200%)">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input
-                      type="range" min={50} max={200} step={10}
-                      value={appearanceSettings.fontSizeScaling}
-                      onChange={(e) => setAppearanceSettings(s => ({ ...s, fontSizeScaling: parseInt(e.target.value, 10) }))}
-                      style={{ width: 90, accentColor: 'var(--accent-blue, #388bfd)' }}
-                    />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', minWidth: 36, textAlign: 'center' }}>
-                      {appearanceSettings.fontSizeScaling}%
-                    </span>
-                  </div>
-                </SettingRow>
-
-                <SettingRow label="Zoom Level" description="Adjust the zoom level of the window (-5 to 5)">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <ZoomIn size={14} style={{ color: 'var(--text-muted)' }} />
-                    <input
-                      type="range" min={-5} max={5} step={1}
-                      value={appearanceSettings.zoomLevel}
-                      onChange={(e) => setAppearanceSettings(s => ({ ...s, zoomLevel: parseInt(e.target.value, 10) }))}
-                      style={{ width: 90, accentColor: 'var(--accent-blue, #388bfd)' }}
-                    />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', minWidth: 28, textAlign: 'center' }}>
-                      {appearanceSettings.zoomLevel > 0 ? '+' : ''}{appearanceSettings.zoomLevel}
-                    </span>
-                  </div>
-                </SettingRow>
-
-                <SectionHeader title="Color Theme" />
                 <ThemePicker />
               </div>
             )}
@@ -1586,119 +1174,6 @@ if (a === b && c >= d) {
                   </SettingRow>
                 )}
 
-                <SettingRow label="Hot Exit" description="Controls whether unsaved files are remembered between sessions">
-                  <SelectDropdown
-                    value={filesSettings.hotExit}
-                    onChange={(v) => setFilesSettings(s => ({ ...s, hotExit: v as typeof s.hotExit }))}
-                    options={[
-                      { value: 'off', label: 'Off' },
-                      { value: 'onExit', label: 'On Exit' },
-                      { value: 'onExitAndWindowClose', label: 'On Exit & Window Close' },
-                    ]}
-                  />
-                </SettingRow>
-
-                <SectionHeader title="Encoding" />
-
-                <SettingRow label="Default Encoding" description="The default character set encoding for reading and writing files">
-                  <SelectDropdown
-                    value={filesSettings.defaultEncoding}
-                    onChange={(v) => setFilesSettings(s => ({ ...s, defaultEncoding: v }))}
-                    options={[
-                      { value: 'utf-8', label: 'UTF-8' },
-                      { value: 'utf-8-bom', label: 'UTF-8 with BOM' },
-                      { value: 'utf-16le', label: 'UTF-16 LE' },
-                      { value: 'utf-16be', label: 'UTF-16 BE' },
-                      { value: 'ascii', label: 'ASCII' },
-                      { value: 'iso-8859-1', label: 'ISO 8859-1 (Latin-1)' },
-                      { value: 'windows-1252', label: 'Windows 1252' },
-                      { value: 'euc-kr', label: 'EUC-KR' },
-                      { value: 'shift-jis', label: 'Shift JIS' },
-                      { value: 'gb2312', label: 'GB2312' },
-                    ]}
-                  />
-                </SettingRow>
-
-                <SettingRow label="Auto Guess Encoding" description="Automatically detect the file encoding when opening">
-                  <Toggle checked={filesSettings.autoGuessEncoding} onChange={(v) => setFilesSettings(s => ({ ...s, autoGuessEncoding: v }))} />
-                </SettingRow>
-
-                <SectionHeader title="File Exclusion Patterns" />
-                <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 8 }}>
-                  Glob patterns for files and folders excluded from file watching and search.
-                </p>
-
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-                  {filesSettings.watcherExclude.map((pat) => (
-                    <span key={pat} style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 4,
-                      padding: '3px 8px', borderRadius: 4,
-                      background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                      fontSize: 11, color: 'var(--text-primary)',
-                      fontFamily: 'var(--font-mono, monospace)',
-                    }}>
-                      {pat}
-                      <button
-                        onClick={() => setFilesSettings(s => ({
-                          ...s,
-                          watcherExclude: s.watcherExclude.filter(p => p !== pat),
-                        }))}
-                        style={{
-                          background: 'transparent', border: 'none', cursor: 'pointer',
-                          color: 'var(--text-muted)', padding: 0, display: 'flex',
-                        }}
-                      >
-                        <X size={10} />
-                      </button>
-                    </span>
-                  ))}
-                  {filesSettings.watcherExclude.length === 0 && (
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>No exclusion patterns configured</span>
-                  )}
-                </div>
-
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <input
-                    value={newWatcherExclude}
-                    onChange={(e) => setNewWatcherExclude(e.target.value)}
-                    placeholder="e.g. **/dist/**, *.log"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && newWatcherExclude.trim()) {
-                        setFilesSettings(s => ({
-                          ...s,
-                          watcherExclude: [...s.watcherExclude, newWatcherExclude.trim()],
-                        }))
-                        setNewWatcherExclude('')
-                      }
-                    }}
-                    style={{
-                      flex: 1, padding: '6px 10px',
-                      background: 'var(--bg-primary)', border: '1px solid var(--border)',
-                      borderRadius: 6, outline: 'none',
-                      fontSize: 12, color: 'var(--text-primary)',
-                      fontFamily: 'var(--font-mono, monospace)',
-                    }}
-                  />
-                  <button
-                    onClick={() => {
-                      if (newWatcherExclude.trim()) {
-                        setFilesSettings(s => ({
-                          ...s,
-                          watcherExclude: [...s.watcherExclude, newWatcherExclude.trim()],
-                        }))
-                        setNewWatcherExclude('')
-                      }
-                    }}
-                    style={{
-                      padding: '6px 10px', borderRadius: 6, border: 'none',
-                      background: 'var(--accent-blue, #388bfd)', color: '#fff', cursor: 'pointer',
-                      fontSize: 12, display: 'flex', alignItems: 'center', gap: 4,
-                    }}
-                  >
-                    <Plus size={12} /> Add
-                  </button>
-                </div>
-
                 <SectionHeader title="Save Behavior" />
 
                 <SettingRow label="Trim Trailing Whitespace" description="Remove trailing whitespace from lines when saving">
@@ -1716,7 +1191,7 @@ if (a === b && c >= d) {
             )}
 
             {/* ---- PROFILES ---- */}
-            {activeCategory === 'profiles' && <ProfilesPanel />}
+            {activeCategory === 'profiles' && <ProfilesPanel onProfileSwitched={loadStoredSettings} />}
 
             {/* ---- KEYBOARD SHORTCUTS ---- */}
             {activeCategory === 'shortcuts' && (
@@ -1797,17 +1272,17 @@ if (a === b && c >= d) {
                       Orion IDE
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                      Version 2.0.0
+                      Version {appInfo?.version || 'N/A'}
                     </div>
                   </div>
                 </div>
 
                 <SettingRow label="Version" description="Current application version">
-                  <span style={{ fontSize: 12, fontFamily: 'var(--font-mono, monospace)', color: 'var(--text-primary)' }}>2.0.0</span>
+                  <span style={{ fontSize: 12, fontFamily: 'var(--font-mono, monospace)', color: 'var(--text-primary)' }}>{appInfo?.version || 'N/A'}</span>
                 </SettingRow>
 
                 <SettingRow label="Electron" description="Electron runtime version">
-                  <span style={{ fontSize: 12, fontFamily: 'var(--font-mono, monospace)', color: 'var(--text-primary)' }}>{(window as unknown as Record<string, unknown>).electronVersion as string || 'N/A'}</span>
+                  <span style={{ fontSize: 12, fontFamily: 'var(--font-mono, monospace)', color: 'var(--text-primary)' }}>{appInfo?.electron || 'N/A'}</span>
                 </SettingRow>
 
                 <SettingRow label="Chrome" description="Chromium engine version">
@@ -1836,10 +1311,10 @@ if (a === b && c >= d) {
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 4 }}>
                   {([
-                    ['Documentation', 'https://orion-ide.dev/docs'],
-                    ['Report Issue', 'https://github.com/orion-ide/orion/issues'],
-                    ['Release Notes', 'https://orion-ide.dev/changelog'],
-                    ['License', 'https://orion-ide.dev/license'],
+                    ['Documentation', PROJECT_LINKS.readme],
+                    ['Report Issue', PROJECT_LINKS.issues],
+                    ['Release Notes', PROJECT_LINKS.releases],
+                    ['License', PROJECT_LINKS.license],
                   ] as const).map(([label, url]) => (
                     <a
                       key={label}
@@ -1892,9 +1367,9 @@ if (a === b && c >= d) {
             </button>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 'auto' }}>
-              <span style={{ fontSize: 11, color: 'var(--accent-red, #f85149)', fontWeight: 600 }}>Reset all settings?</span>
+              <span style={{ fontSize: 11, color: 'var(--accent-red, #f85149)', fontWeight: 600 }}>Reset editor, terminal, completion and prompt settings?</span>
               <button
-                onClick={handleResetAll}
+                onClick={() => void handleResetAll()}
                 style={{
                   padding: '5px 12px', borderRadius: 6,
                   fontSize: 11, fontWeight: 600,
@@ -1917,6 +1392,11 @@ if (a === b && c >= d) {
               </button>
             </div>
           )}
+          {saveError && (
+            <span role="alert" style={{ fontSize: 11, color: 'var(--accent-red, #f85149)', alignSelf: 'center', maxWidth: 320 }}>
+              {saveError}
+            </span>
+          )}
           <button
             onClick={onClose}
             style={{
@@ -1928,7 +1408,7 @@ if (a === b && c >= d) {
             Cancel
           </button>
           <button
-            onClick={handleSave}
+            onClick={() => void handleSave()}
             style={{
               padding: '6px 16px', borderRadius: 6,
               fontSize: 12, fontWeight: 600,
@@ -1949,7 +1429,7 @@ if (a === b && c >= d) {
 /*  Profiles Panel sub-component (rendered in the Profiles tab) */
 /* ----------------------------------------------------------- */
 
-function ProfilesPanel() {
+function ProfilesPanel({ onProfileSwitched }: { onProfileSwitched: () => void }) {
   const { profiles, activeProfileId, createProfile, switchProfile, updateProfile, deleteProfile, renameProfile, exportProfile, importProfile, _load } = useProfileStore()
   const [newName, setNewName] = useState('')
   const [newIcon, setNewIcon] = useState('\u{1F4BB}')
@@ -1957,15 +1437,26 @@ function ProfilesPanel() {
   const [renameValue, setRenameValue] = useState('')
   const [importJson, setImportJson] = useState('')
   const [showImport, setShowImport] = useState(false)
-  const [feedback, setFeedback] = useState('')
+  const [feedback, setFeedback] = useState<{ text: string; error?: boolean } | null>(null)
 
   useEffect(() => { _load() }, [])
 
   const iconOptions = ['\u{1F4BB}', '\u{1F3E0}', '\u{1F680}', '\u{1F3A8}', '\u2699\uFE0F', '\u{1F4DA}', '\u{1F4A1}', '\u26A1', '\u{1F527}', '\u{1F9EA}', '\u{1F33F}', '\u{1F525}']
 
-  const showFeedback = (msg: string) => {
-    setFeedback(msg)
-    setTimeout(() => setFeedback(''), 2000)
+  const showFeedback = (text: string, error = false) => {
+    setFeedback({ text, error })
+    setTimeout(() => setFeedback(null), 2000)
+  }
+
+  const handleSwitch = async (id: string) => {
+    try {
+      await switchProfile(id)
+    } catch (err) {
+      showFeedback(`Could not switch profile: ${ipcErrorMessage(err)}`, true)
+    } finally {
+      // The modal's other tabs must show the values now stored.
+      onProfileSwitched()
+    }
   }
 
   const handleCreate = () => {
@@ -2091,7 +1582,7 @@ function ProfilesPanel() {
               <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
                 {!isActive && (
                   <button
-                    onClick={() => switchProfile(profile.id)}
+                    onClick={() => void handleSwitch(profile.id)}
                     title="Switch to this profile"
                     style={{
                       padding: '4px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
@@ -2149,9 +1640,9 @@ function ProfilesPanel() {
       {/* Feedback */}
       {feedback && (
         <div style={{
-          fontSize: 12, color: 'var(--accent-green, #3fb950)', fontWeight: 600,
+          fontSize: 12, color: feedback.error ? 'var(--accent-red, #f85149)' : 'var(--accent-green, #3fb950)', fontWeight: 600,
           padding: '6px 0', textAlign: 'center',
-        }}>{feedback}</div>
+        }}>{feedback.text}</div>
       )}
 
       <SectionHeader title="Create Profile" />
