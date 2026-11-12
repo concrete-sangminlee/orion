@@ -101,7 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `npm run test:e2e` launches the built desktop app (Playwright's Electron driver) and checks that a window opens, `window.api` works, React renders, IPC round-trips, navigation stays in the app, and API keys are stored without exposing them. A new CI job runs it under Xvfb.
 - `shared/ipc-contract.ts`: single typed contract for every IPC channel. The main process registers handlers through typed `handle()`/`listen()`/`emit()`, the preload builds `window.api` from an electron-free factory, and the renderer's `window.api` type is derived from it, so channel/argument/payload drift is a compile error.
 - IPC integrity tests: the preload exposes exactly the contract, the main process registers each channel exactly once, every event is emitted, and no module reachable from the app entry point uses `window.electron`, `window.electronAPI`, or `(window as any).api`.
-- `npm run audit:reachability` reports renderer modules the app never imports (currently 142 of 219 files under `src/`).
+- `npm run audit:reachability` reports renderer modules the app never imports, and a test fails when there is any.
 - `npm run typecheck` now also type-checks `electron/` and `cli/` (previously only `src/` and `shared/`).
 - Dependabot configuration for weekly npm and GitHub Actions updates, with minor/patch updates grouped into a single PR per ecosystem.
 - `npm run typecheck` script (`tsc --noEmit`), wired into CI.
@@ -118,6 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AI chat markdown parsing was extracted from `AIChatWidget` into a shared `src/utils/aiChatMarkdown.ts` module. The widget no longer duplicates fenced-code-block detection: both call sites use `hasCodeBlock()` and the shared `CODE_BLOCK_REGEX`.
 
 ### Removed
+- 153 renderer modules (about 154,000 lines, 72% of the renderer) that the app never imported: simulated panels, duplicate implementations of features the app has, and code calling IPC methods that never existed. They were not shipped, but read as features.
 - The app-level breadcrumb bar, which listed made-up sibling files and folders (the editor's own breadcrumb is real), and menu, palette and status bar entries with nothing behind them (debugger, extensions, remote, accounts, fullscreen, the encoding picker, the memory estimate, the Explorer's Clone Repository, the inline edit's Refine and model picker).
 - Simulated features with nothing behind them: Run and Debug (timers, fake variables and call stack), Extensions (hard-coded catalogue, timed "install"), Testing (`Math.random()` results), AI Agents (mock tasks), the Composer tab (canned diffs), the chat's Agent mode (scripted agent logs), the Ports and Debug Console tabs, the terminal's keyword-table "Generate", the notification center's seeded notifications, and the welcome tab's invented "What's New" list.
 - New Window: a second window shared the first window's workspace, watcher and terminals, and Ctrl+Shift+N was registered as a global shortcut that took the key from every other application.
