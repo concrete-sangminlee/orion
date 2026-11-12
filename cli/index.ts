@@ -339,14 +339,16 @@ program
   .description('Run multiple AI tasks in parallel (multi-agent)')
   .argument('<tasks...>', 'Task descriptions to run in parallel')
   .option('--parallel <n>', 'Max concurrent tasks (default: 3)', '3')
-  .option('--provider <name>', 'Force a specific AI provider for all tasks')
+  .option('--provider <name>', 'Run all tasks on one provider: anthropic, openai or ollama (default: the configured one)')
+  .option('--round-robin', 'Spread tasks over every available provider (paid ones included)')
   .option('--no-save', 'Do not save results to .orion/agents/')
-  .action(async (tasks: string[], options: { parallel?: string; provider?: string; save?: boolean }) => {
+  .action(async (tasks: string[], options: { parallel?: string; provider?: string; roundRobin?: boolean; save?: boolean }) => {
     try {
       const { agentCommand } = await import('./commands/agent.js');
       await agentCommand(tasks, {
         parallel: parseInt(options.parallel || '3', 10),
         provider: options.provider,
+        roundRobin: options.roundRobin,
         save: options.save,
       });
     } catch (err: any) {
@@ -396,11 +398,10 @@ program
 program
   .command('plan <task>')
   .description('Generate a multi-step implementation plan from a task description')
-  .option('--execute', 'Execute the plan immediately after generating it')
-  .action(async (task: string, options: { execute?: boolean }) => {
+  .action(async (task: string) => {
     try {
       const { planCommand } = await import('./commands/plan.js');
-      await planCommand(task, { execute: options.execute });
+      await planCommand(task);
     } catch (err: any) {
       handleCommandError(err, 'plan', 'Ensure your AI provider is configured. Run `orion config`.');
     }
@@ -1382,7 +1383,6 @@ function showQuickReference(): void {
   console.log(palette.violet.bold('  Generate'));
   console.log();
   console.log(cmd('orion plan', '"task"', 'AI implementation plan from task'));
-  console.log(cmd('orion plan', '--execute "task"', 'Plan and execute immediately'));
   console.log(cmd('orion generate', 'component Name', 'Generate UI component'));
   console.log(cmd('orion generate', 'api /route', 'Generate API endpoint'));
   console.log(cmd('orion generate', 'model Name', 'Generate data model'));

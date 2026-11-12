@@ -1,10 +1,12 @@
 import os from 'os'
 import { createRequire } from 'module'
 import path from 'path'
+import type { TerminalSize } from '../../shared/ipc-contract'
 import { getProjectPath } from '../workspace/project-path'
 
 interface PtyProcess {
   onData: (callback: (data: string) => void) => void
+  onExit: (callback: (event: { exitCode: number; signal?: number }) => void) => void
   write: (data: string) => void
   resize: (cols: number, rows: number) => void
   kill: () => void
@@ -15,7 +17,19 @@ export interface ShellOptions {
   shellArgs?: string[]
 }
 
-const terminals = new Map<string, PtyProcess>()
+export interface TerminalCallbacks {
+  onData: (data: string) => void
+  /** The shell exited by itself. Not called for killTerminal/killAllTerminals. */
+  onExit: (exitCode: number) => void
+}
+
+interface TerminalEntry {
+  pty: PtyProcess
+  /** webContents id of the window that created the terminal. */
+  ownerId?: number
+}
+
+const terminals = new Map<string, TerminalEntry>()
 
 function detectShell(): string {
   if (process.platform === 'win32') {
@@ -39,8 +53,10 @@ function loadNodePty() {
 
 export async function createTerminal(
   id: string,
-  onData: (data: string) => void,
-  shellOptions?: ShellOptions
+  callbacks: TerminalCallbacks,
+  shellOptions?: ShellOptions,
+  size?: TerminalSize,
+  ownerId?: number,
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const pty = loadNodePty()
@@ -48,17 +64,29 @@ export async function createTerminal(
     const shell = shellOptions?.shellPath || detectShell()
     const args = shellOptions?.shellArgs || []
     const cwd = getProjectPath() || os.homedir()
-    const term = pty.spawn(shell, args, {
+    const term: PtyProcess = pty.spawn(shell, args, {
       name: 'xterm-256color',
-      cols: 80,
-      rows: 24,
+      // Start at the size of the view so the shell does not lay out its
+      // first prompt for 80x24 while xterm shows something else.
+      cols: size?.cols ?? 80,
+      rows: size?.rows ?? 24,
       cwd,
       env: process.env as Record<string, string>,
       useConpty: false,
     })
 
-    term.onData(onData)
-    terminals.set(id, term)
+    // Re-creating an id (a remounted view) must not orphan the old shell.
+    killTerminal(id)
+
+    term.onData(callbacks.onData)
+    term.onExit(({ exitCode }) => {
+      // A killed or replaced pty is no longer in the map: stay silent so the
+      // view now using this id is not told its shell died.
+      if (terminals.get(id)?.pty !== term) return
+      terminals.delete(id)
+      callbacks.onExit(exitCode)
+    })
+    terminals.set(id, { pty: term, ownerId })
     return { success: true }
   } catch (err: any) {
     console.error('Failed to create terminal:', err.message)
@@ -67,24 +95,34 @@ export async function createTerminal(
 }
 
 export function writeToTerminal(id: string, data: string) {
-  terminals.get(id)?.write(data)
+  terminals.get(id)?.pty.write(data)
 }
 
 export function resizeTerminal(id: string, cols: number, rows: number) {
-  terminals.get(id)?.resize(cols, rows)
+  try {
+    terminals.get(id)?.pty.resize(cols, rows)
+  } catch (err: any) {
+    // The shell can exit between the renderer's resize and this call.
+    console.warn(`Failed to resize terminal ${id}:`, err.message)
+  }
 }
 
 export function killTerminal(id: string) {
-  const term = terminals.get(id)
-  if (term) {
-    term.kill()
-    terminals.delete(id)
+  const entry = terminals.get(id)
+  if (!entry) return
+  // Remove first so the pty's exit callback sees it was killed on purpose.
+  terminals.delete(id)
+  entry.pty.kill()
+}
+
+/** Kill the terminals a window created, when that window goes away. */
+export function killTerminalsOwnedBy(ownerId: number) {
+  for (const [id, entry] of terminals) {
+    if (entry.ownerId === ownerId) killTerminal(id)
   }
 }
 
+/** Kill every shell; call before the app quits so none outlive it. */
 export function killAllTerminals() {
-  for (const [id, term] of terminals) {
-    term.kill()
-    terminals.delete(id)
-  }
+  for (const id of [...terminals.keys()]) killTerminal(id)
 }

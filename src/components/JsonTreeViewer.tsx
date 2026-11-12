@@ -1,5 +1,7 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useRef } from 'react'
 import { ChevronRight, ChevronDown, Copy, Search } from 'lucide-react'
+
+type PathSegment = string | number
 
 // ── Styles ──────────────────────────────────────────────
 const colors = {
@@ -22,11 +24,115 @@ function copyToClipboard(text: string) {
   navigator.clipboard.writeText(text).catch(() => {})
 }
 
+// ── Targeted text edits ─────────────────────────────────
+// An edit replaces only the source text of one value. Re-serialising the
+// parsed document would reformat the file and round integers above 2^53.
+
+const JSON_WS = new Set([' ', '\t', '\n', '\r'])
+
+function skipWs(text: string, i: number): number {
+  while (i < text.length && JSON_WS.has(text[i])) i++
+  return i
+}
+
+/** Offset just past the string literal that starts at `i`. */
+function stringEnd(text: string, i: number): number {
+  i++
+  while (i < text.length) {
+    if (text[i] === '\\') i += 2
+    else if (text[i] === '"') return i + 1
+    else i++
+  }
+  return i
+}
+
+/** Offset just past the JSON value that starts at `i`. */
+function valueEnd(text: string, i: number): number {
+  const c = text[i]
+  if (c === '"') return stringEnd(text, i)
+  if (c === '{' || c === '[') {
+    let depth = 0
+    while (i < text.length) {
+      const ch = text[i]
+      if (ch === '"') { i = stringEnd(text, i); continue }
+      if (ch === '{' || ch === '[') depth++
+      else if (ch === '}' || ch === ']') {
+        depth--
+        if (depth === 0) return i + 1
+      }
+      i++
+    }
+    return i
+  }
+  while (i < text.length && !JSON_WS.has(text[i]) && text[i] !== ',' && text[i] !== '}' && text[i] !== ']') i++
+  return i
+}
+
+/** Offset of the child `key` of the object/array starting at `start`; the last duplicate key wins, as in JSON.parse. */
+function childStart(text: string, start: number, key: PathSegment): number | null {
+  let i = skipWs(text, start + 1)
+  if (text[start] === '{' && typeof key === 'string') {
+    let found: number | null = null
+    while (text[i] === '"') {
+      const keyEnd = stringEnd(text, i)
+      const name: unknown = JSON.parse(text.slice(i, keyEnd))
+      i = skipWs(text, skipWs(text, keyEnd) + 1) // past ':'
+      if (name === key) found = i
+      const end = valueEnd(text, i)
+      if (end <= i) return null
+      i = skipWs(text, end)
+      if (text[i] === ',') i = skipWs(text, i + 1)
+    }
+    return found
+  }
+  if (text[start] === '[' && typeof key === 'number') {
+    for (let index = 0; i < text.length && text[i] !== ']'; index++) {
+      if (index === key) return i
+      const end = valueEnd(text, i)
+      if (end <= i) return null
+      i = skipWs(text, end)
+      if (text[i] === ',') i = skipWs(text, i + 1)
+    }
+  }
+  return null
+}
+
+/**
+ * Replace the value at `segments` in the JSON `text` with the JSON `literal`,
+ * leaving every other byte as it was. Returns null when the path is not found.
+ */
+export function replaceJsonValue(text: string, segments: PathSegment[], literal: string): string | null {
+  let start = skipWs(text, 0)
+  for (const key of segments) {
+    const next = childStart(text, start, key)
+    if (next === null) return null
+    start = next
+  }
+  return text.slice(0, start) + literal + text.slice(valueEnd(text, start))
+}
+
+/**
+ * JSON text for an edited primitive, or null when nothing changed. Strings
+ * stay strings ("3000" stays "3000"); other values take a typed JSON literal,
+ * and text that is not one becomes a string.
+ */
+export function editedLiteral(previous: unknown, text: string): string | null {
+  if (typeof previous === 'string') return text === previous ? null : JSON.stringify(text)
+  if (text === JSON.stringify(previous)) return null
+  const trimmed = text.trim()
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (parsed === null || typeof parsed === 'number' || typeof parsed === 'boolean') return trimmed
+  } catch { /* not a JSON literal */ }
+  return JSON.stringify(text)
+}
+
 // ── JsonNode (recursive) ────────────────────────────────
 function JsonNode({
   name,
   value,
   path,
+  segments,
   depth,
   defaultExpanded,
   filter,
@@ -35,14 +141,17 @@ function JsonNode({
   name: string | number | null
   value: unknown
   path: string
+  segments: PathSegment[]
   depth: number
   defaultExpanded: boolean
   filter: string
-  onEdit: (path: string, newValue: unknown) => void
+  onEdit: (segments: PathSegment[], literal: string) => void
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded && depth < 2)
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
+  // Enter/Escape unmount the input, which may still fire blur: end each edit once.
+  const editEndedRef = useRef(false)
   const [copied, setCopied] = useState(false)
   const [hovered, setHovered] = useState(false)
 
@@ -79,18 +188,22 @@ function JsonNode({
 
   const handleStartEdit = () => {
     if (isExpandable) return
+    editEndedRef.current = false
     setEditing(true)
     setEditValue(type === 'string' ? (value as string) : JSON.stringify(value))
   }
 
   const handleFinishEdit = () => {
+    if (editEndedRef.current) return
+    editEndedRef.current = true
     setEditing(false)
-    let parsed: unknown = editValue
-    if (editValue === 'null') parsed = null
-    else if (editValue === 'true') parsed = true
-    else if (editValue === 'false') parsed = false
-    else if (!isNaN(Number(editValue)) && editValue.trim() !== '') parsed = Number(editValue)
-    onEdit(path, parsed)
+    const literal = editedLiteral(value, editValue)
+    if (literal !== null) onEdit(segments, literal)
+  }
+
+  const handleCancelEdit = () => {
+    editEndedRef.current = true
+    setEditing(false)
   }
 
   const renderValue = () => {
@@ -101,7 +214,7 @@ function JsonNode({
           value={editValue}
           onChange={(e) => setEditValue(e.target.value)}
           onBlur={handleFinishEdit}
-          onKeyDown={(e) => { if (e.key === 'Enter') handleFinishEdit(); if (e.key === 'Escape') setEditing(false) }}
+          onKeyDown={(e) => { if (e.key === 'Enter') handleFinishEdit(); if (e.key === 'Escape') handleCancelEdit() }}
           style={{
             background: 'rgba(255,255,255,0.06)',
             border: '1px solid var(--accent-blue, #58a6ff)',
@@ -208,6 +321,7 @@ function JsonNode({
                 name={key}
                 value={val}
                 path={childPath}
+                segments={[...segments, key]}
                 depth={depth + 1}
                 defaultExpanded={depth < 1}
                 filter={filter}
@@ -248,30 +362,11 @@ export default function JsonTreeViewer({
     }
   }, [content])
 
-  const handleEdit = useCallback((path: string, newValue: unknown) => {
-    if (!onChange || parsed === null) return
-    try {
-      const clone = JSON.parse(JSON.stringify(parsed))
-      if (!path) {
-        onChange(JSON.stringify(newValue, null, 2))
-        return
-      }
-      // Navigate to parent and set value
-      const parts: (string | number)[] = []
-      const regex = /\.?([^.[]+)|\[(\d+)\]/g
-      let m: RegExpExecArray | null
-      while ((m = regex.exec(path)) !== null) {
-        parts.push(m[2] !== undefined ? Number(m[2]) : m[1])
-      }
-      let obj = clone
-      for (let i = 0; i < parts.length - 1; i++) {
-        obj = obj[parts[i] as keyof typeof obj]
-      }
-      const lastKey = parts[parts.length - 1]
-      obj[lastKey as keyof typeof obj] = newValue
-      onChange(JSON.stringify(clone, null, 2))
-    } catch { /* ignore edit errors */ }
-  }, [parsed, onChange])
+  const handleEdit = useCallback((segments: PathSegment[], literal: string) => {
+    if (!onChange) return
+    const next = replaceJsonValue(content, segments, literal)
+    if (next !== null && next !== content) onChange(next)
+  }, [content, onChange])
 
   if (parseError) {
     return (
@@ -333,6 +428,7 @@ export default function JsonTreeViewer({
           name={null}
           value={parsed}
           path=""
+          segments={[]}
           depth={0}
           defaultExpanded={true}
           filter={filter}

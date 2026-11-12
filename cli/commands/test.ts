@@ -34,7 +34,8 @@ import {
   printFileInfo,
 } from '../shared.js';
 import { getPipelineOptions, jsonOutput } from '../pipeline.js';
-import { commandHeader, divider, palette, statusLine, box } from '../ui.js';
+import { commandHeader, diffBlock, divider, palette, statusLine, box } from '../ui.js';
+import { createBackup } from '../backup.js';
 import inquirer from 'inquirer';
 
 // ─── Prompts ────────────────────────────────────────────────────────────────
@@ -152,7 +153,9 @@ function detectTestRunner(): TestRunner | null {
 
   // Java projects (Gradle)
   if (fs.existsSync(path.join(cwd, 'build.gradle')) || fs.existsSync(path.join(cwd, 'build.gradle.kts'))) {
-    return { name: 'Gradle', command: './gradlew test', language: 'java' };
+    // cmd.exe cannot run `./gradlew`; the wrapper ships gradlew.bat for Windows.
+    const wrapper = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+    return { name: 'Gradle', command: `${wrapper} test`, language: 'java' };
   }
 
   return null;
@@ -314,7 +317,7 @@ async function generateTests(sourceFilePath: string): Promise<void> {
       : TEST_GENERATE_PROMPT;
 
     const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Tests generated');
-    await askAI(fullPrompt, userMessage, callbacks);
+    await askAI(fullPrompt, userMessage, callbacks, { requireComplete: true });
 
     let testContent = getResponse();
 
@@ -326,6 +329,28 @@ async function generateTests(sourceFilePath: string): Promise<void> {
         lines.pop(); // Remove closing fence
       }
       testContent = lines.join('\n');
+    }
+
+    if (!testContent.trim()) {
+      throw new Error('The AI returned an empty test file. Nothing was written.');
+    }
+
+    const pipelineOpts = getPipelineOptions();
+    const testFileExists = fs.existsSync(testPath);
+
+    if (pipelineOpts.dryRun) {
+      if (!pipelineOpts.quiet) {
+        console.log();
+        console.log(diffBlock(testFileExists ? fs.readFileSync(testPath, 'utf-8') : '', testContent, relativeTestPath));
+      }
+      printInfo('Dry run: no files were modified.');
+      jsonOutput('test_generate', { source: file.resolvedPath, testFile: testPath, dryRun: true });
+      return;
+    }
+
+    // An existing test file is only replaced once `orion undo` can bring it back.
+    if (testFileExists) {
+      createBackup(testPath);
     }
 
     // Ensure output directory exists
@@ -457,6 +482,10 @@ export async function testCommand(options: { generate?: string } = {}): Promise<
       duration: durationStr,
       success: false,
     });
+
+    // Failing tests must fail the process for scripts and CI. exitCode (not
+    // exit()) lets the JSON line and update notice flush first.
+    process.exitCode = result.exitCode || 1;
   } catch (err: any) {
     stopSpinner(spinner, err.message, false);
     printError(`AI analysis failed: ${err.message}`);

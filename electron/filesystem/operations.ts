@@ -225,11 +225,17 @@ export async function buildFileTree(dirPath: string, isRoot = true): Promise<Fil
   })
 }
 
+/**
+ * Monaco language id for a file. The renderer hands it straight to Monaco, so
+ * .tsx/.jsx map to 'typescript'/'javascript': Monaco has no '*react' ids and
+ * would show such files as plain text. The TS worker still parses JSX because
+ * it picks the script kind from the model URI's extension.
+ */
 export function detectLanguage(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase()
   const map: Record<string, string> = {
-    '.ts': 'typescript', '.tsx': 'typescriptreact',
-    '.js': 'javascript', '.jsx': 'javascriptreact',
+    '.ts': 'typescript', '.tsx': 'typescript',
+    '.js': 'javascript', '.jsx': 'javascript',
     '.json': 'json', '.md': 'markdown', '.html': 'html',
     '.css': 'css', '.scss': 'scss', '.py': 'python',
     '.rs': 'rust', '.go': 'go', '.java': 'java',

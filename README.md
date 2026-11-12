@@ -168,7 +168,6 @@ orion compare file1.ts file2.ts     # Compare two files with AI
 
 ```bash
 orion plan "Add auth to the app"    # AI implementation plan + auto-execute
-orion plan --execute "task"         # Plan and execute immediately
 orion generate component LoginForm  # Generate code (20+ frameworks)
 orion docs src/app.ts               # Generate JSDoc/docstrings
 orion docs src/ --readme            # Generate README for directory

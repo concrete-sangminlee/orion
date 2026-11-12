@@ -194,6 +194,32 @@ function parseMultiFileResponse(response: string): Map<string, string> {
   return fileMap;
 }
 
+/**
+ * Keep only AI edits to files we actually sent it, keyed by absolute path.
+ * The `===FILE:` paths come from the model and are untrusted (a comment in any
+ * scanned file can steer them), so `../` escapes, absolute paths and new files
+ * are refused. Every sent file was found by walking searchDir without
+ * following symlinks, so this also confines writes to searchDir.
+ */
+export function confineRenameChanges(
+  fileChanges: Map<string, string>,
+  searchDir: string,
+  sentFiles: string[],
+): { allowed: Map<string, string>; refused: string[] } {
+  const sent = new Set(sentFiles.map(f => path.resolve(f)));
+  const allowed = new Map<string, string>();
+  const refused: string[] = [];
+  for (const [aiPath, content] of fileChanges) {
+    const absPath = path.resolve(searchDir, aiPath);
+    if (sent.has(absPath)) {
+      allowed.set(absPath, content);
+    } else {
+      refused.push(aiPath);
+    }
+  }
+  return { allowed, refused };
+}
+
 // ─── Rename Refactor ─────────────────────────────────────────────────────────
 
 async function handleRename(
@@ -250,14 +276,22 @@ async function handleRename(
 
   const { callbacks, getResponse } = createSilentStreamHandler(spinner, `Rename plan generated`);
 
-  await askAI(fullPrompt, userMessage, callbacks);
+  await askAI(fullPrompt, userMessage, callbacks, { requireComplete: true });
 
   const response = getResponse();
-  const fileChanges = parseMultiFileResponse(response);
+  const { allowed: fileChanges, refused } = confineRenameChanges(
+    parseMultiFileResponse(response),
+    searchDir,
+    matchingFiles,
+  );
+
+  for (const aiPath of refused) {
+    printError(`Refusing to write ${aiPath}: it is not one of the files that contain "${oldName}".`);
+  }
 
   if (fileChanges.size === 0) {
     console.log();
-    printWarning('AI did not produce any file changes. The symbol may not exist or may be a partial match.');
+    printWarning('AI did not produce any usable file changes. The symbol may not exist or may be a partial match.');
     console.log();
     return;
   }
@@ -268,11 +302,9 @@ async function handleRename(
   console.log();
   console.log(divider(`Changes in ${fileChanges.size} file(s)`));
 
-  for (const [relativePath, newContent] of fileChanges) {
-    const absPath = path.resolve(searchDir, relativePath);
-    const originalContent = fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : '';
+  for (const [absPath, newContent] of fileChanges) {
     if (!pipelineOpts.quiet) {
-      console.log(diffBlock(originalContent, newContent, relativePath));
+      console.log(diffBlock(fs.readFileSync(absPath, 'utf-8'), newContent, path.relative(searchDir, absPath)));
     }
   }
 
@@ -280,7 +312,7 @@ async function handleRename(
     oldName,
     newName,
     filesChanged: fileChanges.size,
-    files: Array.from(fileChanges.keys()),
+    files: Array.from(fileChanges.keys(), absPath => path.relative(searchDir, absPath)),
   });
 
   // Confirm
@@ -308,14 +340,12 @@ async function handleRename(
     }
 
     // Create backups and apply
-    for (const [relativePath, newContent] of fileChanges) {
-      const absPath = path.resolve(searchDir, relativePath);
-      if (fs.existsSync(absPath)) {
-        try {
-          createBackup(absPath);
-        } catch (backupErr: any) {
-          printWarning(`Backup skipped for ${relativePath}: ${backupErr.message}`);
-        }
+    for (const [absPath, newContent] of fileChanges) {
+      const relativePath = path.relative(searchDir, absPath);
+      try {
+        createBackup(absPath);
+      } catch (backupErr: any) {
+        printWarning(`Backup skipped for ${relativePath}: ${backupErr.message}`);
       }
       writeFileContent(absPath, newContent);
       printSuccess(`Updated: ${relativePath}`);
@@ -358,7 +388,7 @@ async function handleExtract(filePath: string, functionName: string): Promise<vo
 
   const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Extraction plan generated');
 
-  await askAI(fullPrompt, userMessage, callbacks);
+  await askAI(fullPrompt, userMessage, callbacks, { requireComplete: true });
 
   let modifiedContent = getResponse().trim();
 
@@ -370,6 +400,10 @@ async function handleExtract(filePath: string, functionName: string): Promise<vo
       lines.pop();
     }
     modifiedContent = lines.join('\n');
+  }
+
+  if (!modifiedContent.trim()) {
+    throw new Error('The AI returned an empty file. Nothing was written.');
   }
 
   const pipelineOpts = getPipelineOptions();
@@ -452,7 +486,7 @@ async function handleSimplify(filePath: string): Promise<void> {
 
   const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Simplification complete');
 
-  await askAI(fullPrompt, userMessage, callbacks);
+  await askAI(fullPrompt, userMessage, callbacks, { requireComplete: true });
 
   const fullResponse = getResponse();
   const parts = fullResponse.split('---REFACTORED---');
@@ -481,13 +515,6 @@ async function handleSimplify(filePath: string): Promise<void> {
     console.log(statusLine('i' as any, 'No significant simplifications found.'));
   }
 
-  if (!simplifiedContent) {
-    console.log();
-    printInfo('No refactored code produced. The code may already be well-structured.');
-    console.log();
-    return;
-  }
-
   // Clean up potential code fences
   if (simplifiedContent.startsWith('```')) {
     const lines = simplifiedContent.split('\n');
@@ -496,6 +523,14 @@ async function handleSimplify(filePath: string): Promise<void> {
       lines.pop();
     }
     simplifiedContent = lines.join('\n');
+  }
+
+  // Checked after removing fences: a reply of only a fence is an empty file.
+  if (!simplifiedContent.trim()) {
+    console.log();
+    printInfo('No refactored code produced. The code may already be well-structured.');
+    console.log();
+    return;
   }
 
   const pipelineOpts = getPipelineOptions();

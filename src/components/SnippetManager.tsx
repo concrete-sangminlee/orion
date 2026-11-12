@@ -1,12 +1,13 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { useSnippetStore, type Snippet, type VSCodeSnippetFormat } from '@/store/snippets'
+import { useToastStore } from '@/store/toast'
 import {
   X, Plus, Trash2, Edit3, Download, Upload,
   Code, ChevronDown, ChevronRight, Save, Search,
   Eye, Lock, Copy, FileJson, Info, Zap,
-  Keyboard, Tag, AlertTriangle, BarChart3,
+  Tag, AlertTriangle, BarChart3,
   GripVertical, ArrowUpDown, Star, Clock,
-  Hash, FolderOpen, Check, XCircle,
+  Hash, FolderOpen, Check,
 } from 'lucide-react'
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -28,11 +29,9 @@ interface SnippetFormData {
   description: string
   language: string
   category: string
-  keybinding: string
 }
 
 interface SnippetMeta {
-  keybinding: string
   category: string
   usageCount: number
   lastUsed: number | null
@@ -133,10 +132,6 @@ const TRANSFORM_HELP = [
   { syntax: '${TM_FILENAME/(.*)/${1:/pascalcase}/}', desc: 'Convert to PascalCase' },
 ]
 
-const isMac =
-  typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform)
-const MOD_KEY = isMac ? '\u2318' : 'Ctrl'
-
 /* ═══════════════════════════════════════════════════════════════════════════
    Shared Styles
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -194,23 +189,6 @@ const pillBtnStyle: React.CSSProperties = {
   cursor: 'pointer',
 }
 
-const kbdStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  minWidth: 18,
-  height: 18,
-  padding: '0 5px',
-  fontSize: 10,
-  fontFamily: "'Cascadia Code', 'Fira Code', monospace",
-  fontWeight: 600,
-  color: 'var(--text-secondary)',
-  background: 'var(--bg-primary)',
-  border: '1px solid var(--border-color, var(--border))',
-  borderRadius: 3,
-  lineHeight: 1,
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════
    Metadata Persistence (localStorage)
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -232,7 +210,7 @@ function saveMeta(meta: Record<string, SnippetMeta>) {
 }
 
 function getMetaForSnippet(meta: Record<string, SnippetMeta>, id: string): SnippetMeta {
-  return meta[id] || { keybinding: '', category: 'Uncategorized', usageCount: 0, lastUsed: null, tags: [] }
+  return meta[id] || { category: 'Uncategorized', usageCount: 0, lastUsed: null, tags: [] }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -386,100 +364,6 @@ function detectPrefixConflicts(snippets: Snippet[]): Map<string, PrefixConflict>
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   Keybinding Recorder Component
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-function KeybindingRecorder({
-  value,
-  onChange,
-  onCancel,
-}: {
-  value: string
-  onChange: (kb: string) => void
-  onCancel: () => void
-}) {
-  const [recording, setRecording] = useState(false)
-  const [current, setCurrent] = useState(value)
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (recording && inputRef.current) {
-      inputRef.current.focus()
-    }
-  }, [recording])
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (!recording) return
-      e.preventDefault()
-      e.stopPropagation()
-
-      const parts: string[] = []
-      if (e.ctrlKey || e.metaKey) parts.push(MOD_KEY)
-      if (e.shiftKey) parts.push('Shift')
-      if (e.altKey) parts.push(isMac ? '\u2325' : 'Alt')
-
-      const key = e.key
-      if (!['Control', 'Shift', 'Alt', 'Meta'].includes(key)) {
-        const displayKey = key.length === 1 ? key.toUpperCase() : key
-        parts.push(displayKey)
-        const combo = parts.join('+')
-        setCurrent(combo)
-        onChange(combo)
-        setRecording(false)
-      }
-    },
-    [recording, onChange]
-  )
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
-      <input
-        ref={inputRef}
-        value={recording ? 'Press key combination...' : current || 'None'}
-        readOnly
-        onKeyDown={handleKeyDown}
-        onBlur={() => setRecording(false)}
-        style={{
-          ...monoInputStyle,
-          marginTop: 0,
-          flex: 1,
-          cursor: recording ? 'default' : 'pointer',
-          color: recording ? 'var(--accent)' : current ? 'var(--text-primary)' : 'var(--text-muted)',
-          background: recording ? 'var(--bg-active)' : 'var(--bg-primary)',
-          textAlign: 'center',
-          fontSize: 11,
-        }}
-        onClick={() => !recording && setRecording(true)}
-      />
-      {current && (
-        <button
-          onClick={() => {
-            setCurrent('')
-            onChange('')
-          }}
-          title="Clear keybinding"
-          style={{ ...smallBtnStyle, color: 'var(--text-error, #f87171)' }}
-        >
-          <XCircle size={12} />
-        </button>
-      )}
-      {recording && (
-        <button
-          onClick={() => {
-            setRecording(false)
-            onCancel()
-          }}
-          style={{ ...smallBtnStyle, fontSize: 10, width: 'auto', padding: '0 6px' }}
-        >
-          Esc
-        </button>
-      )}
-    </div>
-  )
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
    Snippet Form (Create / Edit)
    ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -604,7 +488,7 @@ function SnippetForm({
         </div>
       </div>
 
-      {/* Row 2: description + category + keybinding */}
+      {/* Row 2: description + category */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <div style={{ flex: 2 }}>
           <label style={labelStyle}>Description</label>
@@ -628,14 +512,6 @@ function SnippetForm({
               </option>
             ))}
           </select>
-        </div>
-        <div style={{ flex: 1 }}>
-          <label style={labelStyle}>Keybinding</label>
-          <KeybindingRecorder
-            value={data.keybinding}
-            onChange={(kb) => update('keybinding', kb)}
-            onCancel={() => {}}
-          />
         </div>
       </div>
 
@@ -1771,13 +1647,13 @@ export default function SnippetManager({ open, onClose }: Props) {
         language: data.language,
       })
       // Save meta for the new snippet
-      if (data.category !== 'Uncategorized' || data.keybinding) {
+      if (data.category !== 'Uncategorized') {
         // We need the ID; for now use a heuristic since createSnippet may not return id
         // The newest snippet will be the last user snippet
         const newest = useSnippetStore.getState().userSnippets
         if (newest.length > 0) {
           const newId = newest[newest.length - 1].id
-          updateMeta(newId, { category: data.category, keybinding: data.keybinding })
+          updateMeta(newId, { category: data.category })
         }
       }
       setShowAddForm(false)
@@ -1795,7 +1671,7 @@ export default function SnippetManager({ open, onClose }: Props) {
         description: data.description.trim() || data.name.trim(),
         language: data.language,
       })
-      updateMeta(editingId, { category: data.category, keybinding: data.keybinding })
+      updateMeta(editingId, { category: data.category })
       setEditingId(null)
     },
     [editingId, updateSnippet, updateMeta]
@@ -1853,8 +1729,11 @@ export default function SnippetManager({ open, onClose }: Props) {
             }
           } else {
             if (Array.isArray(data)) {
-              importSnippets(data)
-              setImportMsg(`Imported ${data.length} snippet${data.length !== 1 ? 's' : ''}`)
+              const { imported, skipped } = importSnippets(data)
+              setImportMsg(
+                `Imported ${imported} snippet${imported !== 1 ? 's' : ''}` +
+                  (skipped > 0 ? `, skipped ${skipped} without a text prefix and body` : ''),
+              )
               setTimeout(() => setImportMsg(null), 3000)
             } else {
               setImportMsg('Invalid Orion format (expected JSON array)')
@@ -1874,10 +1753,15 @@ export default function SnippetManager({ open, onClose }: Props) {
 
   const handleInsertSnippet = useCallback(
     (snippet: Snippet) => {
-      insertSnippetAtCursor(snippet)
+      if (!insertSnippetAtCursor(snippet)) {
+        useToastStore.getState().addToast({ type: 'warning', message: 'Open a file in the editor to insert a snippet.' })
+        return
+      }
+      // Usage counts real insertions only; close so the user lands in the expanded snippet.
       recordUsage(snippet.id)
+      onClose()
     },
-    [insertSnippetAtCursor, recordUsage]
+    [insertSnippetAtCursor, recordUsage, onClose]
   )
 
   const handleCopyBody = useCallback((body: string) => {
@@ -1933,33 +1817,12 @@ export default function SnippetManager({ open, onClose }: Props) {
         if (showAddForm) setShowAddForm(false)
         else if (editingId) setEditingId(null)
         else onClose()
-        return
-      }
-
-      // Check snippet keybindings
-      const parts: string[] = []
-      if (e.ctrlKey || e.metaKey) parts.push(MOD_KEY)
-      if (e.shiftKey) parts.push('Shift')
-      if (e.altKey) parts.push(isMac ? '\u2325' : 'Alt')
-      if (!['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
-        parts.push(e.key.length === 1 ? e.key.toUpperCase() : e.key)
-      }
-      const combo = parts.join('+')
-
-      for (const [id, meta] of Object.entries(snippetMeta)) {
-        if (meta.keybinding && meta.keybinding === combo) {
-          const snippet = snippets.find((s) => s.id === id)
-          if (snippet) {
-            e.preventDefault()
-            handleInsertSnippet(snippet)
-          }
-        }
       }
     }
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [open, snippets, snippetMeta, showAddForm, editingId, onClose, handleInsertSnippet])
+  }, [open, showAddForm, editingId, onClose])
 
   if (!open) return null
 
@@ -2319,7 +2182,6 @@ export default function SnippetManager({ open, onClose }: Props) {
               description: '',
               language: 'javascript',
               category: 'Uncategorized',
-              keybinding: '',
             }}
             onSave={handleAdd}
             onCancel={() => setShowAddForm(false)}
@@ -2435,7 +2297,6 @@ export default function SnippetManager({ open, onClose }: Props) {
                                     description: snippet.description,
                                     language: snippet.language,
                                     category: sMeta.category,
-                                    keybinding: sMeta.keybinding,
                                   }}
                                   onSave={handleSaveEdit}
                                   onCancel={() => setEditingId(null)}
@@ -2586,11 +2447,6 @@ export default function SnippetManager({ open, onClose }: Props) {
                                       )}
                                     </div>
                                   </div>
-
-                                  {/* Keybinding badge */}
-                                  {sMeta.keybinding && (
-                                    <span style={kbdStyle}>{sMeta.keybinding}</span>
-                                  )}
 
                                   {/* Usage count */}
                                   {sMeta.usageCount > 0 && (
@@ -2780,12 +2636,6 @@ export default function SnippetManager({ open, onClose }: Props) {
                                   <Tag size={9} /> {m.category}
                                 </span>
                               )}
-                              {m.keybinding && (
-                                <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                                  <Keyboard size={9} />{' '}
-                                  <span style={kbdStyle}>{m.keybinding}</span>
-                                </span>
-                              )}
                               {m.usageCount > 0 && (
                                 <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
                                   <BarChart3 size={9} /> Used {m.usageCount} time
@@ -2924,15 +2774,6 @@ export default function SnippetManager({ open, onClose }: Props) {
                           {selectedSnippet.prefix}
                         </code>{' '}
                         in the editor.
-                        {(() => {
-                          const m = getMetaForSnippet(snippetMeta, selectedSnippet.id)
-                          return m.keybinding ? (
-                            <>
-                              {' '}
-                              Or press <span style={kbdStyle}>{m.keybinding}</span>.
-                            </>
-                          ) : null
-                        })()}
                       </span>
                     </div>
                   </div>

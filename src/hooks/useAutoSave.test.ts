@@ -74,6 +74,24 @@ describe('useAutoSave', () => {
     expect(apiWrite).not.toHaveBeenCalled()
   })
 
+  it('keeps an untitled buffer for an explicit Save As instead of writing a relative path', async () => {
+    openModifiedFiles('untitled-1700000000000')
+    const { result } = renderHook(() => useAutoSave())
+    const apiWrite = (globalThis as unknown as { api: { writeFile: ReturnType<typeof vi.fn> } }).api.writeFile
+
+    act(() => {
+      result.current.scheduleAutoSave('untitled-1700000000000', 'draft')
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+      await Promise.resolve()
+    })
+
+    expect(apiWrite).not.toHaveBeenCalled()
+    // Its text is still kept for crash recovery.
+    expect(getRecoveryEntries()).toEqual([expect.objectContaining({ path: 'untitled-1700000000000', content: 'draft' })])
+  })
+
   it('debounces repeated changes for the same file', async () => {
     const { result } = renderHook(() => useAutoSave())
     const apiWrite = (globalThis as unknown as { api: { writeFile: ReturnType<typeof vi.fn> } }).api.writeFile

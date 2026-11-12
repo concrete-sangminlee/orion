@@ -31,7 +31,8 @@ import {
   createSilentStreamHandler,
 } from '../shared.js';
 import { getPipelineOptions, jsonOutput } from '../pipeline.js';
-import { commandHeader, divider, palette, statusLine, box } from '../ui.js';
+import { commandHeader, diffBlock, divider, palette, statusLine, box } from '../ui.js';
+import { createBackup } from '../backup.js';
 
 // ─── Prompts ────────────────────────────────────────────────────────────────
 
@@ -77,19 +78,43 @@ interface FileFix {
   outsideProject: boolean;
 }
 
+function isStrictlyInside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  // Empty rel means the target IS the root; ../ prefix means it escapes; an
+  // absolute path on Windows survives `path.relative` (drive change).
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * The real location `target` would be written to: symlinks in its existing
+ * part resolved, the part that does not exist yet appended unchanged.
+ */
+function realWriteTarget(target: string): string {
+  const missing: string[] = [];
+  let existing = target;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(existing), ...missing.reverse());
+    } catch {
+      const parent = path.dirname(existing);
+      if (parent === existing) return target;
+      missing.push(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
 /**
  * Returns true if `filepath` (relative or absolute), once resolved against
  * `projectRoot`, stays inside the project root. Used to guard against AI
- * responses that try to write `../../../etc/passwd` or absolute paths.
+ * responses that try to write `../../../etc/passwd` or absolute paths, also
+ * through a symlink inside the project that points outside it.
  */
 export function isWithinProjectRoot(filepath: string, projectRoot: string): boolean {
   const resolvedRoot = path.resolve(projectRoot);
   const resolvedTarget = path.resolve(projectRoot, filepath);
-  const rel = path.relative(resolvedRoot, resolvedTarget);
-  // Empty rel means the target IS the root; ../ prefix means it escapes; an
-  // absolute path on Windows survives `path.relative` (drive change).
-  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return false;
-  return true;
+  if (!isStrictlyInside(resolvedRoot, resolvedTarget)) return false;
+  return isStrictlyInside(realWriteTarget(resolvedRoot), realWriteTarget(resolvedTarget));
 }
 
 interface CommandFix {
@@ -151,9 +176,16 @@ function executeCommand(command: string): Promise<RunResult> {
 
 // ─── Parse AI Fix Response ──────────────────────────────────────────────────
 
-export function parseFixResponse(response: string, projectRoot: string = process.cwd()): { explanation: string; files: FileFix[]; commands: CommandFix[] } {
+export function parseFixResponse(response: string, projectRoot: string = process.cwd()): {
+  explanation: string;
+  files: FileFix[];
+  commands: CommandFix[];
+  /** Paths of FILE blocks with no `---END FILE---`: their content may be cut off. */
+  incomplete: string[];
+} {
   const files: FileFix[] = [];
   const commands: CommandFix[] = [];
+  const incomplete: string[] = [];
   const explanationParts: string[] = [];
 
   const lines = response.split('\n');
@@ -172,11 +204,15 @@ export function parseFixResponse(response: string, projectRoot: string = process
         contentLines.push(lines[i]);
         i++;
       }
-      files.push({
-        filepath,
-        content: contentLines.join('\n'),
-        outsideProject: !isWithinProjectRoot(filepath, projectRoot),
-      });
+      if (i < lines.length) {
+        files.push({
+          filepath,
+          content: contentLines.join('\n'),
+          outsideProject: !isWithinProjectRoot(filepath, projectRoot),
+        });
+      } else {
+        incomplete.push(filepath);
+      }
       i++;
       continue;
     }
@@ -202,7 +238,16 @@ export function parseFixResponse(response: string, projectRoot: string = process
     explanation: explanationParts.join('\n').trim(),
     files,
     commands,
+    incomplete,
   };
+}
+
+function readCurrentContent(filepath: string): string {
+  try {
+    return fs.readFileSync(path.resolve(filepath), 'utf-8');
+  } catch {
+    return ''; // new file (or unreadable): diff against nothing
+  }
 }
 
 // ─── Main Command ───────────────────────────────────────────────────────────
@@ -272,16 +317,21 @@ export async function runCommand(command: string, options: { fix?: boolean } = {
     if (autoFix) {
       // Auto-fix mode: collect response silently, then parse and apply
       const { callbacks, getResponse } = createSilentStreamHandler(spinner, 'Analysis complete');
-      await askAI(fullPrompt, userMessage, callbacks);
+      await askAI(fullPrompt, userMessage, callbacks, { requireComplete: true });
 
       const response = getResponse();
-      const { explanation, files, commands: fixCommands } = parseFixResponse(response);
+      const { explanation, files, commands: fixCommands, incomplete } = parseFixResponse(response);
+      let fixesApplied = 0;
 
       // Show explanation
       if (explanation) {
         console.log();
         console.log(divider('AI Diagnosis'));
         console.log(renderMarkdown(explanation));
+      }
+
+      for (const filepath of incomplete) {
+        printError(`Ignoring the fix for ${filepath}: its FILE block is not terminated, so the content may be cut off.`);
       }
 
       // Apply file fixes
@@ -299,17 +349,19 @@ export async function runCommand(command: string, options: { fix?: boolean } = {
           printError(`Refusing to write outside project root: ${u.filepath}`);
         }
 
-        // Show each path the user is about to approve so they can spot anything
-        // unexpected before saying yes.
-        for (const f of safeFiles) {
-          console.log(`  ${palette.dim('•')} ${colors.file(f.filepath)}`);
-        }
-        console.log();
-
         const pipelineOpts = getPipelineOptions();
+
+        // Show exactly what each file would become before anything is approved.
+        for (const f of safeFiles) {
+          console.log(diffBlock(readCurrentContent(f.filepath), f.content, f.filepath));
+        }
+
         let applyAll: boolean;
 
         if (safeFiles.length === 0) {
+          applyAll = false;
+        } else if (pipelineOpts.dryRun) {
+          printInfo('Dry run: no files were modified.');
           applyAll = false;
         } else if (pipelineOpts.yes) {
           applyAll = true;
@@ -317,23 +369,26 @@ export async function runCommand(command: string, options: { fix?: boolean } = {
           const answer = await inquirer.prompt([{
             type: 'confirm',
             name: 'apply',
-            message: `Apply ${safeFiles.length} file fix(es) listed above?`,
+            message: `Apply ${safeFiles.length} file fix(es) shown above?`,
             default: false,
           }]);
           applyAll = answer.apply;
+          if (!applyAll) printInfo('Fixes not applied. Review the suggestions above.');
         }
 
         if (applyAll) {
           for (const fix of safeFiles) {
             try {
+              // Back up first so `orion undo` can restore the overwritten file;
+              // if the backup fails the file is left alone.
+              if (fs.existsSync(path.resolve(fix.filepath))) createBackup(fix.filepath);
               writeFileContent(fix.filepath, fix.content);
+              fixesApplied++;
               printSuccess(`Fixed: ${colors.file(fix.filepath)}`);
             } catch (err: any) {
               printError(`Could not write ${fix.filepath}: ${err.message}`);
             }
           }
-        } else if (safeFiles.length > 0) {
-          printInfo('Fixes not applied. Review the suggestions above.');
         }
         console.log();
       }
@@ -353,7 +408,7 @@ export async function runCommand(command: string, options: { fix?: boolean } = {
         exitCode: result.exitCode,
         duration: durationStr,
         success: false,
-        fixesApplied: files.length,
+        fixesApplied,
         suggestedCommands: fixCommands.length,
       });
     } else {
@@ -373,6 +428,10 @@ export async function runCommand(command: string, options: { fix?: boolean } = {
         success: false,
       });
     }
+
+    // The wrapped command failed; scripts and CI must see that. exitCode (not
+    // exit()) lets the JSON line and update notice flush first.
+    process.exitCode = result.exitCode || 1;
   } catch (err: any) {
     stopSpinner(spinner, err.message, false);
     printError(`AI analysis failed: ${err.message}`);

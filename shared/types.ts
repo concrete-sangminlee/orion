@@ -124,8 +124,6 @@ export interface OpenFile {
 }
 
 // Chat types
-export type ChatMode = 'agent' | 'chat'
-
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
@@ -133,12 +131,6 @@ export interface ChatMessage {
   agentName?: string
   model?: string
   timestamp: number
-  taskProgress?: TaskProgress[]
-}
-
-export interface TaskProgress {
-  name: string
-  status: 'done' | 'working' | 'pending'
 }
 
 // Terminal types

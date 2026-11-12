@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import chalk from 'chalk';
-import { askAI, type AIProvider, resolveProviderConfig, getAvailableProviders } from '../ai-client.js';
+import { streamChat, type AIProvider, resolveProviderConfig, getAvailableProviders } from '../ai-client.js';
 import {
   colors,
   printHeader,
@@ -19,6 +19,7 @@ import {
   ensureConfigDir,
   getCurrentDirectoryContext,
   loadProjectContext,
+  readConfig,
 } from '../utils.js';
 import { renderMarkdown } from '../markdown.js';
 import { commandHeader, table as uiTable, statusLine, divider, palette } from '../ui.js';
@@ -32,6 +33,8 @@ interface AgentTask {
   description: string;
   status: AgentStatus;
   provider?: AIProvider;
+  /** The model for `provider`; config.model may belong to another provider. */
+  model?: string;
   result?: string;
   error?: string;
   startTime?: number;
@@ -41,6 +44,8 @@ interface AgentTask {
 interface AgentOptions {
   parallel?: number;
   provider?: string;
+  /** Spread tasks over every available provider. Opt-in: some of them bill per request. */
+  roundRobin?: boolean;
   save?: boolean;
 }
 
@@ -186,7 +191,10 @@ async function executeTask(task: AgentTask, context: string, projectContext: str
 
   try {
     let result = '';
-    await askAI(fullSystemPrompt, task.description, {
+    await streamChat([
+      { role: 'system', content: fullSystemPrompt },
+      { role: 'user', content: task.description },
+    ], {
       onToken(token: string) {
         result += token;
       },
@@ -196,7 +204,7 @@ async function executeTask(task: AgentTask, context: string, projectContext: str
       onError(error: Error) {
         throw error;
       },
-    });
+    }, task.provider, task.model);
 
     task.result = result;
     task.status = 'complete';
@@ -233,31 +241,47 @@ async function runWithConcurrency<T>(
 
 // ─── Round-Robin Provider Assignment ─────────────────────────────────────────
 
-async function assignProviders(tasks: AgentTask[], requestedProvider?: string): Promise<void> {
-  if (requestedProvider) {
-    // All tasks use the same provider
+/**
+ * Give each task the provider and model it will run on: the one named by
+ * --provider, else the configured provider, or with --round-robin every
+ * available provider in turn. Returns an error message when that provider
+ * cannot be used, since silently running on a different one would make the
+ * saved report wrong.
+ *
+ * Round-robin is opt-in: by default a user who configured a free local model
+ * but has, say, ANTHROPIC_API_KEY set for other tools would otherwise have
+ * some tasks sent to (and billed by) that provider.
+ */
+async function assignProviders(tasks: AgentTask[], requestedProvider?: string, roundRobin = false): Promise<string | null> {
+  const providers = await getAvailableProviders();
+
+  if (requestedProvider !== undefined || !roundRobin) {
+    const name = requestedProvider ?? readConfig().provider;
+    const chosen = providers.find(p => p.provider === name);
+    if (!chosen) {
+      return `Unknown provider "${name}". Use one of: ${providers.map(p => p.provider).join(', ')}.`;
+    }
+    if (!chosen.available) {
+      const hint = requestedProvider === undefined ? ' (the configured provider; use --provider or --round-robin to run elsewhere)' : '';
+      return `Provider "${name}" is not available${hint}: ${chosen.reason}.`;
+    }
     for (const task of tasks) {
-      task.provider = requestedProvider as AIProvider;
+      task.provider = chosen.provider;
+      task.model = chosen.model;
     }
-    return;
+    return null;
   }
 
-  // Round-robin across available providers
-  try {
-    const providers = await getAvailableProviders();
-    const available = providers.filter(p => p.available);
-
-    if (available.length === 0) {
-      // Let each task fail individually with proper error messages
-      return;
-    }
-
-    for (let i = 0; i < tasks.length; i++) {
-      tasks[i].provider = available[i % available.length].provider;
-    }
-  } catch {
-    // Provider detection failed; let tasks use default resolution
+  // Round-robin; with none available each task fails with the provider error.
+  const available = providers.filter(p => p.available);
+  if (available.length > 0) {
+    tasks.forEach((task, i) => {
+      const pick = available[i % available.length];
+      task.provider = pick.provider;
+      task.model = pick.model;
+    });
   }
+  return null;
 }
 
 // ─── Main Command ────────────────────────────────────────────────────────────
@@ -285,7 +309,11 @@ export async function agentCommand(taskDescriptions: string[], options: AgentOpt
   }));
 
   // Assign providers (round-robin or user choice)
-  await assignProviders(tasks, options.provider);
+  const providerError = await assignProviders(tasks, options.provider, options.roundRobin);
+  if (providerError) {
+    printError(providerError);
+    process.exit(1);
+  }
 
   // Show initial dashboard
   printInfo(`Running ${tasks.length} task(s) with concurrency limit: ${maxParallel}`);
@@ -384,4 +412,8 @@ export async function agentCommand(taskDescriptions: string[], options: AgentOpt
   }
 
   console.log();
+
+  if (failed > 0) {
+    process.exitCode = 1;
+  }
 }

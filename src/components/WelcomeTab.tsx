@@ -1,31 +1,26 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { create } from 'zustand'
 import {
-  FolderOpen, FileText, GitBranch, FilePlus, Globe,
+  FolderOpen, FileText, FilePlus,
   ChevronRight, ChevronDown, Lightbulb, Check, RefreshCw,
   File, Code, Image, Database, FileJson, FileCode, Braces,
   Palette, Settings, Keyboard, Terminal, Sparkles, Zap,
-  Star, ExternalLink, BookOpen, MessageCircle, X, Pin,
-  PinOff, Clock, Monitor, Sun, Moon, Cloud, Cpu, Eye,
-  Puzzle, Shield, Search, Play, Wand2, Bot, BrainCircuit,
-  ArrowRight, Heart, Minus, Plus, ToggleLeft, ToggleRight,
-  Layout, Type, Hash, Coffee, Layers, Rocket, Award,
-  MousePointer, Maximize2, SplitSquareHorizontal,
+  ExternalLink, BookOpen, MessageCircle, X, Eye, Wand2, BrainCircuit,
+  Heart, Minus, Plus, Type, Rocket,
 } from 'lucide-react'
+import { DEFAULT_FONT_SIZE } from '@shared/constants'
+import type { Theme } from '@/themes'
 import { APP_VERSION } from '@/utils/version'
+import { PROJECT_LINKS } from '@/utils/projectLinks'
+import { openFileInEditor, pickAndOpenFiles } from '@/utils/openFileInEditor'
 import { useEditorStore } from '@/store/editor'
+import { useRecentFilesStore } from '@/store/recentFiles'
+import { useThemeStore } from '@/store/theme'
+import { useCompletionStore } from '@/store/completion'
 
 /* ════════════════════════════════════════════════════════════════════════════
-   Inline Zustand Store — walkthrough progress, recent items, quick settings
+   Inline Zustand Store — walkthrough progress and section layout
    ════════════════════════════════════════════════════════════════════════════ */
-
-interface RecentItem {
-  path: string
-  name: string
-  type: 'file' | 'folder'
-  timestamp: number
-  pinned: boolean
-}
 
 interface WalkthroughStep {
   id: string
@@ -45,37 +40,20 @@ interface WalkthroughGroup {
   expanded: boolean
 }
 
-interface QuickSettings {
-  selectedTheme: string
-  fontSize: number
-  aiProvider: 'anthropic' | 'openai' | 'local' | 'none'
-}
-
 interface WelcomeStore {
-  recentItems: RecentItem[]
   walkthroughs: WalkthroughGroup[]
-  quickSettings: QuickSettings
-  showOnStartup: boolean
   expandedSections: Record<string, boolean>
   tipIndex: number
 
-  togglePin: (path: string) => void
-  removeRecent: (path: string) => void
-  clearRecent: () => void
   completeStep: (walkthroughId: string, stepId: string) => void
   resetWalkthrough: (walkthroughId: string) => void
   toggleWalkthroughExpand: (walkthroughId: string) => void
-  setQuickSetting: <K extends keyof QuickSettings>(key: K, value: QuickSettings[K]) => void
-  setShowOnStartup: (show: boolean) => void
   toggleSection: (section: string) => void
   nextTip: () => void
 }
 
 const STORAGE_KEYS = {
-  recent: 'orion-welcome-recent-items',
   walkthroughs: 'orion-welcome-walkthrough-progress',
-  quickSettings: 'orion-welcome-quick-settings',
-  showOnStartup: 'orion-show-welcome',
   sections: 'orion-welcome-sections',
 } as const
 
@@ -97,9 +75,8 @@ function createDefaultWalkthroughs(): WalkthroughGroup[] {
       icon: Rocket,
       expanded: true,
       steps: [
-        { id: 'theme', label: 'Choose a Color Theme', description: 'Personalize the look and feel of your editor with a theme that suits your style', icon: Palette, completed: false, actionLabel: 'Browse Themes' },
-        { id: 'keybindings', label: 'Customize Keybindings', description: 'Set up keyboard shortcuts from VS Code, Vim, Emacs, or create your own', icon: Keyboard, completed: false, actionLabel: 'Open Keybindings' },
-        { id: 'extensions', label: 'Install Extensions', description: 'Enhance your editor with language support, linters, formatters, and more', icon: Puzzle, completed: false, actionLabel: 'Browse Extensions' },
+        { id: 'theme', label: 'Choose a Color Theme', description: 'Personalize the look and feel of your editor with a theme that suits your style', icon: Palette, completed: false, actionLabel: 'Open Settings' },
+        { id: 'keybindings', label: 'Customize Keybindings', description: 'Look up the keyboard shortcut for every command', icon: Keyboard, completed: false, actionLabel: 'Open Keybindings' },
         { id: 'ai-setup', label: 'Configure AI Assistant', description: 'Connect to Anthropic, OpenAI, or a local model for AI-powered coding', icon: BrainCircuit, completed: false, actionLabel: 'AI Settings' },
         { id: 'terminal', label: 'Explore the Terminal', description: 'Use the built-in terminal to run commands without leaving the editor', icon: Terminal, completed: false, actionLabel: 'Open Terminal' },
       ],
@@ -112,7 +89,7 @@ function createDefaultWalkthroughs(): WalkthroughGroup[] {
       expanded: false,
       steps: [
         { id: 'ai-chat', label: 'Chat with AI', description: 'Ask questions about your code, get explanations, or brainstorm solutions in the AI panel', icon: MessageCircle, completed: false, actionLabel: 'Open AI Chat' },
-        { id: 'ai-completions', label: 'AI Code Completions', description: 'Get intelligent inline suggestions as you type, powered by large language models', icon: Wand2, completed: false, actionLabel: 'Try Completions' },
+        { id: 'ai-completions', label: 'AI Code Completions', description: 'Get intelligent inline suggestions as you type, powered by large language models', icon: Wand2, completed: false, actionLabel: 'Turn On' },
         { id: 'ai-refactor', label: 'AI Refactoring', description: 'Select code and describe how to transform it. AI handles the rest', icon: Zap, completed: false, actionLabel: 'Try Refactor' },
         { id: 'ai-explain', label: 'Explain Code', description: 'Highlight any code block and ask AI to explain what it does step by step', icon: Eye, completed: false, actionLabel: 'Explain Selection' },
       ],
@@ -125,8 +102,6 @@ function createDefaultWalkthroughs(): WalkthroughGroup[] {
       expanded: false,
       steps: [
         { id: 'settings', label: 'Edit Settings', description: 'Fine-tune every aspect of the editor behavior, from tab size to auto-save', icon: Settings, completed: false, actionLabel: 'Open Settings' },
-        { id: 'themes-deep', label: 'Create a Custom Theme', description: 'Design your own color theme or modify an existing one with the theme editor', icon: Palette, completed: false, actionLabel: 'Theme Editor' },
-        { id: 'keybinds-deep', label: 'Advanced Key Bindings', description: 'Create multi-chord shortcuts, when-clauses, and context-specific bindings', icon: Keyboard, completed: false, actionLabel: 'Keybinding Editor' },
       ],
     },
   ]
@@ -151,47 +126,16 @@ function saveWalkthroughProgress(walkthroughs: WalkthroughGroup[]) {
   localStorage.setItem(STORAGE_KEYS.walkthroughs, JSON.stringify(data))
 }
 
-const defaultRecentItems: RecentItem[] = loadJSON<RecentItem[]>(STORAGE_KEYS.recent, [])
-
-const useWelcomeStore = create<WelcomeStore>((set, get) => ({
-  recentItems: defaultRecentItems,
+const useWelcomeStore = create<WelcomeStore>((set) => ({
   walkthroughs: loadWalkthroughProgress(createDefaultWalkthroughs()),
-  quickSettings: loadJSON<QuickSettings>(STORAGE_KEYS.quickSettings, {
-    selectedTheme: 'Orion Dark',
-    fontSize: 14,
-    aiProvider: 'anthropic',
-  }),
-  showOnStartup: loadJSON<boolean>(STORAGE_KEYS.showOnStartup, true),
   expandedSections: loadJSON<Record<string, boolean>>(STORAGE_KEYS.sections, {
     start: true,
     recent: true,
     walkthroughs: true,
     learn: true,
     quickSettings: false,
-    whatsNew: false,
   }),
   tipIndex: Math.floor(Math.random() * 13),
-
-  togglePin: (path) =>
-    set((state) => {
-      const items = state.recentItems.map((item) =>
-        item.path === path ? { ...item, pinned: !item.pinned } : item
-      )
-      localStorage.setItem(STORAGE_KEYS.recent, JSON.stringify(items))
-      return { recentItems: items }
-    }),
-
-  removeRecent: (path) =>
-    set((state) => {
-      const items = state.recentItems.filter((item) => item.path !== path)
-      localStorage.setItem(STORAGE_KEYS.recent, JSON.stringify(items))
-      return { recentItems: items }
-    }),
-
-  clearRecent: () => {
-    localStorage.removeItem(STORAGE_KEYS.recent)
-    set({ recentItems: [] })
-  },
 
   completeStep: (walkthroughId, stepId) =>
     set((state) => {
@@ -200,7 +144,7 @@ const useWelcomeStore = create<WelcomeStore>((set, get) => ({
           ? {
               ...wt,
               steps: wt.steps.map((s) =>
-                s.id === stepId ? { ...s, completed: !s.completed } : s
+                s.id === stepId ? { ...s, completed: true } : s
               ),
             }
           : wt
@@ -226,18 +170,6 @@ const useWelcomeStore = create<WelcomeStore>((set, get) => ({
         wt.id === walkthroughId ? { ...wt, expanded: !wt.expanded } : wt
       ),
     })),
-
-  setQuickSetting: (key, value) =>
-    set((state) => {
-      const quickSettings = { ...state.quickSettings, [key]: value }
-      localStorage.setItem(STORAGE_KEYS.quickSettings, JSON.stringify(quickSettings))
-      return { quickSettings }
-    }),
-
-  setShowOnStartup: (show) => {
-    localStorage.setItem(STORAGE_KEYS.showOnStartup, JSON.stringify(show))
-    set({ showOnStartup: show })
-  },
 
   toggleSection: (section) =>
     set((state) => {
@@ -273,31 +205,55 @@ const TIPS = [
   { shortcut: 'Ctrl+,', text: 'Open Settings to customize every aspect of your editing experience.' },
 ]
 
-const WHATS_NEW = [
-  { icon: BrainCircuit, title: 'Multi-Model AI Support', desc: 'Switch between Anthropic, OpenAI, and local models on the fly.', version: 'v1.3.0', badge: 'new' as const },
-  { icon: SplitSquareHorizontal, title: 'Split Editor Enhancements', desc: 'Drag tabs between editor groups and use vertical/horizontal splits.', version: 'v1.3.0', badge: 'new' as const },
-  { icon: Zap, title: 'Performance Boost', desc: 'File loading is 3x faster with our new virtual document engine.', version: 'v1.3.0', badge: 'improved' as const },
-  { icon: Shield, title: 'Workspace Trust', desc: 'Control which folders can run code and access resources.', version: 'v1.2.0', badge: 'new' as const },
-  { icon: Sparkles, title: 'AI Inline Edits', desc: 'Press Ctrl+K to transform code with natural language.', version: 'v1.2.0', badge: 'new' as const },
-  { icon: Terminal, title: 'Terminal Themes', desc: 'Choose from multiple terminal color schemes.', version: 'v1.2.0', badge: 'improved' as const },
-  { icon: Palette, title: 'Status Bar Dropdowns', desc: 'Quick access to language mode, encoding, and EOL settings.', version: 'v1.1.0', badge: 'improved' as const },
-  { icon: Star, title: 'Chat History', desc: 'Your AI conversations are now saved and searchable.', version: 'v1.1.0', badge: 'new' as const },
-]
+/** Themes offered as one-click tiles; Settings lists all of them. */
+const QUICK_THEME_IDS = ['orion-dark', 'github-light', 'monokai-pro', 'nord']
 
-const THEME_PREVIEWS = [
-  { id: 'orion-dark', name: 'Orion Dark', bg: '#1a1b26', sidebar: '#16161e', editor: '#1a1b26', accent: '#7aa2f7', text: '#a9b1d6', comment: '#565f89' },
-  { id: 'orion-light', name: 'Orion Light', bg: '#f5f5f5', sidebar: '#e8e8e8', editor: '#ffffff', accent: '#4f46e5', text: '#333333', comment: '#999999' },
-  { id: 'monokai', name: 'Monokai Pro', bg: '#2d2a2e', sidebar: '#221f22', editor: '#2d2a2e', accent: '#ffd866', text: '#fcfcfa', comment: '#727072' },
-  { id: 'nord', name: 'Nord', bg: '#2e3440', sidebar: '#242933', editor: '#2e3440', accent: '#88c0d0', text: '#d8dee9', comment: '#616e88' },
-]
+/** Mini-preview colours, taken from the theme's own workbench colours. */
+function themePreview(theme: Theme) {
+  const c = theme.colors
+  return {
+    id: theme.id,
+    name: theme.name,
+    bg: c['--bg-tertiary'] || c['--bg-primary'],
+    sidebar: c['--bg-secondary'],
+    editor: c['--bg-primary'],
+    accent: c['--accent'],
+    text: c['--text-primary'],
+    comment: c['--text-muted'],
+  }
+}
+
+/** The editor's own settings record (written by Settings, read by the editor panel). */
+const EDITOR_SETTINGS_KEY = 'orion-editor-settings'
+const FONT_SIZE_MIN = 10
+const FONT_SIZE_MAX = 24
+
+function readEditorFontSize(): number {
+  try {
+    const size = JSON.parse(localStorage.getItem(EDITOR_SETTINGS_KEY) || '{}')?.fontSize
+    if (typeof size === 'number' && Number.isFinite(size)) return size
+  } catch { /* fall back to the default */ }
+  return DEFAULT_FONT_SIZE
+}
+
+/** Save the font size where Settings keeps it and apply it to open editors. */
+function applyEditorFontSize(fontSize: number) {
+  let stored: Record<string, unknown> = {}
+  try {
+    const parsed = JSON.parse(localStorage.getItem(EDITOR_SETTINGS_KEY) || '{}')
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) stored = parsed
+  } catch { /* overwrite unreadable data */ }
+  localStorage.setItem(EDITOR_SETTINGS_KEY, JSON.stringify({ ...stored, fontSize }))
+  window.dispatchEvent(new CustomEvent('orion:editor-config', { detail: { fontSize } }))
+}
+
+const openExternal = (url: string) => () => { void window.api.shellOpenExternal(url) }
 
 const LEARN_LINKS = [
-  { icon: BookOpen, label: 'Documentation', description: 'Comprehensive guides and API reference', shortcut: '', url: '#docs' },
-  { icon: Lightbulb, label: 'Tips & Tricks', description: 'Productivity hacks and hidden features', shortcut: '', url: '#tips' },
-  { icon: Keyboard, label: 'Keyboard Shortcuts', description: 'Complete keyboard shortcut reference', shortcut: 'Ctrl+K Ctrl+S', url: '#shortcuts' },
-  { icon: FileText, label: 'Release Notes', description: 'Detailed changelog for every version', shortcut: '', url: '#release-notes' },
-  { icon: Play, label: 'Video Tutorials', description: 'Step-by-step walkthroughs on YouTube', shortcut: '', url: '#videos' },
-  { icon: MessageCircle, label: 'Community Forum', description: 'Ask questions and share knowledge', shortcut: '', url: '#community' },
+  { icon: BookOpen, label: 'Documentation', description: 'Setup and feature guide in the README', shortcut: '', external: true, action: openExternal(PROJECT_LINKS.readme) },
+  { icon: Keyboard, label: 'Keyboard Shortcuts', description: 'Complete keyboard shortcut reference', shortcut: 'Ctrl+K Ctrl+S', external: false, action: () => window.dispatchEvent(new Event('orion:keyboard-shortcuts')) },
+  { icon: FileText, label: 'Release Notes', description: 'Changelog for every release', shortcut: '', external: true, action: openExternal(PROJECT_LINKS.releases) },
+  { icon: MessageCircle, label: 'Report an Issue', description: 'Bugs and feature requests on GitHub', shortcut: '', external: true, action: openExternal(PROJECT_LINKS.issues) },
 ]
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -443,17 +399,6 @@ function injectStyles() {
     }
     .owt-recent-item:hover .owt-recent-name {
       color: var(--accent-primary) !important;
-    }
-    .owt-recent-item:hover .owt-recent-actions {
-      opacity: 1;
-    }
-
-    .owt-recent-actions {
-      opacity: 0;
-      transition: opacity 0.15s;
-      display: flex;
-      align-items: center;
-      gap: 2px;
     }
 
     .owt-icon-btn {
@@ -663,27 +608,6 @@ function injectStyles() {
     .owt-clear-btn:hover {
       color: var(--text-primary);
       background: var(--bg-tertiary, var(--bg-hover));
-    }
-
-    .owt-toggle-provider {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 12px;
-      border-radius: 6px;
-      border: 1px solid var(--border-color);
-      background: transparent;
-      cursor: pointer;
-      transition: all 0.15s;
-      flex: 1;
-      font-family: inherit;
-    }
-    .owt-toggle-provider:hover {
-      background: var(--bg-tertiary, var(--bg-hover));
-    }
-    .owt-toggle-provider.owt-provider-active {
-      border-color: var(--accent-primary);
-      background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
     }
 
     .owt-scroll-container::-webkit-scrollbar {
@@ -1034,7 +958,7 @@ function StartSection({ onOpenFolder }: { onOpenFolder: () => void }) {
       label: 'Open File...',
       shortcut: 'Ctrl+O',
       color: 'var(--accent-primary)',
-      onClick: onOpenFolder,
+      onClick: () => { void pickAndOpenFiles() },
     },
     {
       id: 'open-folder',
@@ -1043,22 +967,6 @@ function StartSection({ onOpenFolder }: { onOpenFolder: () => void }) {
       shortcut: 'Ctrl+K Ctrl+O',
       color: '#e5c07b',
       onClick: onOpenFolder,
-    },
-    {
-      id: 'clone-repo',
-      icon: GitBranch,
-      label: 'Clone Git Repository...',
-      shortcut: '',
-      color: '#e06c75',
-      onClick: () => window.dispatchEvent(new Event('orion:show-git')),
-    },
-    {
-      id: 'connect-remote',
-      icon: Globe,
-      label: 'Connect to Remote...',
-      shortcut: '',
-      color: '#56b6c2',
-      onClick: () => window.dispatchEvent(new Event('orion:connect-remote')),
     },
   ], [openFile, onOpenFolder])
 
@@ -1092,20 +1000,19 @@ function StartSection({ onOpenFolder }: { onOpenFolder: () => void }) {
    Recent Section
    ──────────────────────────────────────────────────────────────────────────── */
 
+const RECENT_LIMIT = 10
+
 function RecentSection() {
   const expanded = useWelcomeStore((s) => s.expandedSections.recent)
   const toggleSection = useWelcomeStore((s) => s.toggleSection)
-  const recentItems = useWelcomeStore((s) => s.recentItems)
-  const togglePin = useWelcomeStore((s) => s.togglePin)
-  const removeRecent = useWelcomeStore((s) => s.removeRecent)
-  const clearRecent = useWelcomeStore((s) => s.clearRecent)
-  const openFile = useEditorStore((s) => s.openFile)
-
-  const sortedItems = useMemo(() => {
-    const pinned = recentItems.filter((i) => i.pinned).sort((a, b) => b.timestamp - a.timestamp)
-    const unpinned = recentItems.filter((i) => !i.pinned).sort((a, b) => b.timestamp - a.timestamp)
-    return [...pinned, ...unpinned]
-  }, [recentItems])
+  // The editor records every opened file here; untitled buffers have no file to reopen.
+  const recentFiles = useRecentFilesStore((s) => s.recentFiles)
+  const clearRecent = useRecentFilesStore((s) => s.clearRecent)
+  // The badge counts what is listed, so it is sliced here rather than in the list.
+  const items = useMemo(
+    () => recentFiles.filter((f) => !f.path.startsWith('untitled-')).slice(0, RECENT_LIMIT),
+    [recentFiles],
+  )
 
   return (
     <section>
@@ -1113,9 +1020,9 @@ function RecentSection() {
         title="Recent"
         expanded={expanded}
         onToggle={() => toggleSection('recent')}
-        badge={recentItems.length > 0 ? String(recentItems.length) : undefined}
+        badge={items.length > 0 ? String(items.length) : undefined}
         rightContent={
-          recentItems.length > 0 && expanded ? (
+          items.length > 0 && expanded ? (
             <button
               className="owt-clear-btn"
               onClick={(e) => { e.stopPropagation(); clearRecent() }}
@@ -1128,7 +1035,7 @@ function RecentSection() {
       />
       {expanded && (
         <>
-          {sortedItems.length === 0 ? (
+          {items.length === 0 ? (
             <div style={{
               fontSize: 12,
               color: 'var(--text-secondary)',
@@ -1140,51 +1047,22 @@ function RecentSection() {
               lineHeight: 1.6,
             }}>
               <FolderOpen size={24} style={{ color: 'var(--text-secondary)', marginBottom: 8, opacity: 0.5 }} />
-              <div>No recent files or folders yet.</div>
+              <div>No recent files yet.</div>
               <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
-                Open a file or folder to get started.
+                Files you open will be listed here.
               </div>
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              {sortedItems.map((item) => {
-                const isFolder = item.type === 'folder'
-                const { icon: FileIcon, color } = isFolder
-                  ? { icon: FolderOpen, color: '#e5c07b' }
-                  : getFileIcon(item.name)
+              {items.map((item) => {
+                const { icon: FileIcon, color } = getFileIcon(item.name)
                 return (
                   <div
                     key={item.path}
                     className="owt-recent-item"
-                    onClick={async () => {
-                      if (isFolder) {
-                        window.dispatchEvent(new CustomEvent('orion:open-folder', { detail: item.path }))
-                        return
-                      }
-                      try {
-                        const result = await window.api.readFile(item.path)
-                        if (result) {
-                          openFile({
-                            path: item.path,
-                            name: item.name,
-                            content: result.content,
-                            language: result.language || 'plaintext',
-                            isModified: false,
-                            aiModified: false,
-                          })
-                        }
-                      } catch { /* ignore */ }
-                    }}
+                    title={item.path}
+                    onClick={() => { void openFileInEditor(item.path) }}
                   >
-                    {item.pinned && (
-                      <Pin size={8} style={{
-                        color: 'var(--accent-primary)',
-                        position: 'absolute',
-                        top: 3,
-                        left: 4,
-                        transform: 'rotate(-45deg)',
-                      }} />
-                    )}
                     <FileIcon size={14} style={{ color, flexShrink: 0 }} />
                     <span className="owt-recent-name" style={{
                       color: 'var(--text-primary)',
@@ -1214,22 +1092,6 @@ function RecentSection() {
                     }}>
                       {formatTimestamp(item.timestamp)}
                     </span>
-                    <div className="owt-recent-actions" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        className="owt-icon-btn"
-                        title={item.pinned ? 'Unpin' : 'Pin'}
-                        onClick={() => togglePin(item.path)}
-                      >
-                        {item.pinned ? <PinOff size={11} /> : <Pin size={11} />}
-                      </button>
-                      <button
-                        className="owt-icon-btn"
-                        title="Remove from recent"
-                        onClick={() => removeRecent(item.path)}
-                      >
-                        <X size={11} />
-                      </button>
-                    </div>
                   </div>
                 )
               })}
@@ -1266,19 +1128,17 @@ function WalkthroughsSection({
   const totalSteps = walkthroughs.reduce((acc, wt) => acc + wt.steps.length, 0)
   const totalCompleted = walkthroughs.reduce((acc, wt) => acc + wt.steps.filter((s) => s.completed).length, 0)
 
+  // Every step opens a feature that exists; a step is ticked only when its action runs.
   const stepActionMap: Record<string, () => void> = useMemo(() => ({
-    theme: () => window.dispatchEvent(new Event('orion:open-themes')),
-    keybindings: () => window.dispatchEvent(new Event('orion:open-keybindings')),
-    extensions: () => window.dispatchEvent(new Event('orion:open-extensions')),
+    theme: onOpenSettings,
+    keybindings: () => window.dispatchEvent(new Event('orion:keyboard-shortcuts')),
     'ai-setup': onOpenSettings,
     terminal: onOpenTerminal,
     'ai-chat': onOpenChat,
-    'ai-completions': () => window.dispatchEvent(new Event('orion:toggle-ai-completions')),
+    'ai-completions': () => useCompletionStore.getState().setEnabled(true),
     'ai-refactor': onOpenPalette,
     'ai-explain': onOpenChat,
     settings: onOpenSettings,
-    'themes-deep': () => window.dispatchEvent(new Event('orion:open-theme-editor')),
-    'keybinds-deep': () => window.dispatchEvent(new Event('orion:open-keybindings')),
   }), [onOpenPalette, onOpenTerminal, onOpenSettings, onOpenChat])
 
   return (
@@ -1381,9 +1241,10 @@ function WalkthroughsSection({
                             key={step.id}
                             className="owt-walkthrough-step"
                             onClick={() => {
-                              completeStep(wt.id, step.id)
                               const action = stepActionMap[step.id]
-                              if (action) action()
+                              if (!action) return
+                              action()
+                              completeStep(wt.id, step.id)
                             }}
                           >
                             {/* Checkbox */}
@@ -1507,11 +1368,11 @@ function LearnSection() {
       />
       {expanded && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {LEARN_LINKS.map(({ icon: LIcon, label, description, shortcut, url }) => (
+          {LEARN_LINKS.map(({ icon: LIcon, label, description, shortcut, external, action }) => (
             <button
               key={label}
               className="owt-learn-link"
-              onClick={() => window.open(url, '_blank')}
+              onClick={action}
             >
               <IconBox icon={LIcon} color="var(--accent-primary)" />
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -1523,7 +1384,7 @@ function LearnSection() {
                 </div>
               </div>
               {shortcut && <KBD>{shortcut}</KBD>}
-              <ExternalLink size={12} style={{ color: 'var(--text-secondary)', flexShrink: 0, opacity: 0.5 }} />
+              {external && <ExternalLink size={12} style={{ color: 'var(--text-secondary)', flexShrink: 0, opacity: 0.5 }} />}
             </button>
           ))}
         </div>
@@ -1539,15 +1400,29 @@ function LearnSection() {
 function QuickSettingsSection() {
   const expanded = useWelcomeStore((s) => s.expandedSections.quickSettings)
   const toggleSection = useWelcomeStore((s) => s.toggleSection)
-  const quickSettings = useWelcomeStore((s) => s.quickSettings)
-  const setQuickSetting = useWelcomeStore((s) => s.setQuickSetting)
+  const allThemes = useThemeStore((s) => s.themes)
+  const activeThemeId = useThemeStore((s) => s.activeThemeId)
+  const setTheme = useThemeStore((s) => s.setTheme)
+  const quickThemes = useMemo(
+    () => QUICK_THEME_IDS.map((id) => allThemes.find((t) => t.id === id)).filter((t) => t !== undefined),
+    [allThemes],
+  )
 
-  const aiProviders: Array<{ id: 'anthropic' | 'openai' | 'local' | 'none'; name: string; icon: typeof Bot; desc: string }> = [
-    { id: 'anthropic', name: 'Anthropic', icon: BrainCircuit, desc: 'Claude models' },
-    { id: 'openai', name: 'OpenAI', icon: Bot, desc: 'GPT models' },
-    { id: 'local', name: 'Local', icon: Cpu, desc: 'Ollama / LM Studio' },
-    { id: 'none', name: 'None', icon: Shield, desc: 'Disable AI' },
-  ]
+  const [fontSize, setFontSize] = useState(readEditorFontSize)
+  // Settings can change the font size while this tab is open.
+  useEffect(() => {
+    const onConfig = (e: Event) => {
+      const size = (e as CustomEvent<{ fontSize?: unknown }>).detail?.fontSize
+      if (typeof size === 'number' && Number.isFinite(size)) setFontSize(size)
+    }
+    window.addEventListener('orion:editor-config', onConfig)
+    return () => window.removeEventListener('orion:editor-config', onConfig)
+  }, [])
+  const changeFontSize = (size: number) => {
+    const next = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, size))
+    setFontSize(next)
+    applyEditorFontSize(next)
+  }
 
   return (
     <section>
@@ -1566,16 +1441,14 @@ function QuickSettingsSection() {
               gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
               gap: 10,
             }}>
-              {THEME_PREVIEWS.map((theme) => {
-                const isActive = quickSettings.selectedTheme === theme.name
+              {quickThemes.map((t) => {
+                const theme = themePreview(t)
+                const isActive = activeThemeId === theme.id
                 return (
                   <div
                     key={theme.id}
                     className={`owt-theme-preview ${isActive ? 'owt-theme-active' : ''}`}
-                    onClick={() => {
-                      setQuickSetting('selectedTheme', theme.name)
-                      window.dispatchEvent(new CustomEvent('orion:set-theme', { detail: theme.id }))
-                    }}
+                    onClick={() => setTheme(theme.id)}
                   >
                     {/* Mini editor preview */}
                     <div style={{ background: theme.bg, padding: 6, height: 72 }}>
@@ -1667,11 +1540,8 @@ function QuickSettingsSection() {
             }}>
               <button
                 className="owt-icon-btn"
-                onClick={() => {
-                  const newSize = Math.max(10, quickSettings.fontSize - 1)
-                  setQuickSetting('fontSize', newSize)
-                  window.dispatchEvent(new CustomEvent('orion:set-font-size', { detail: newSize }))
-                }}
+                title="Decrease font size"
+                onClick={() => changeFontSize(fontSize - 1)}
               >
                 <Minus size={12} />
               </button>
@@ -1679,25 +1549,19 @@ function QuickSettingsSection() {
                 <Type size={12} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />
                 <input
                   type="range"
-                  min={10}
-                  max={24}
+                  min={FONT_SIZE_MIN}
+                  max={FONT_SIZE_MAX}
                   step={1}
-                  value={quickSettings.fontSize}
-                  onChange={(e) => {
-                    const v = Number(e.target.value)
-                    setQuickSetting('fontSize', v)
-                    window.dispatchEvent(new CustomEvent('orion:set-font-size', { detail: v }))
-                  }}
+                  value={fontSize}
+                  aria-label="Editor font size"
+                  onChange={(e) => changeFontSize(Number(e.target.value))}
                   className="owt-slider-track"
                 />
               </div>
               <button
                 className="owt-icon-btn"
-                onClick={() => {
-                  const newSize = Math.min(24, quickSettings.fontSize + 1)
-                  setQuickSetting('fontSize', newSize)
-                  window.dispatchEvent(new CustomEvent('orion:set-font-size', { detail: newSize }))
-                }}
+                title="Increase font size"
+                onClick={() => changeFontSize(fontSize + 1)}
               >
                 <Plus size={12} />
               </button>
@@ -1709,122 +1573,11 @@ function QuickSettingsSection() {
                 minWidth: 28,
                 textAlign: 'right' as const,
               }}>
-                {quickSettings.fontSize}px
+                {fontSize}px
               </span>
             </div>
           </div>
 
-          {/* AI Provider toggle */}
-          <div>
-            <SectionHeader style={{ marginBottom: 12 }}>AI Provider</SectionHeader>
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, 1fr)',
-              gap: 8,
-            }}>
-              {aiProviders.map(({ id, name, icon: ProvIcon, desc }) => {
-                const isActive = quickSettings.aiProvider === id
-                return (
-                  <button
-                    key={id}
-                    className={`owt-toggle-provider ${isActive ? 'owt-provider-active' : ''}`}
-                    onClick={() => {
-                      setQuickSetting('aiProvider', id)
-                      window.dispatchEvent(new CustomEvent('orion:set-ai-provider', { detail: id }))
-                    }}
-                  >
-                    <IconBox
-                      icon={ProvIcon}
-                      color={isActive ? 'var(--accent-primary)' : 'var(--text-secondary)'}
-                      size={28}
-                      iconSize={14}
-                      bgOpacity={isActive ? 15 : 5}
-                    />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{
-                        fontSize: 12,
-                        fontWeight: isActive ? 600 : 400,
-                        color: isActive ? 'var(--accent-primary)' : 'var(--text-primary)',
-                      }}>
-                        {name}
-                      </div>
-                      <div style={{ fontSize: 10, color: 'var(--text-secondary)' }}>
-                        {desc}
-                      </div>
-                    </div>
-                    {isActive && (
-                      <Check size={14} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
-  )
-}
-
-/* ────────────────────────────────────────────────────────────────────────────
-   What's New Section
-   ──────────────────────────────────────────────────────────────────────────── */
-
-function WhatsNewSection() {
-  const expanded = useWelcomeStore((s) => s.expandedSections.whatsNew)
-  const toggleSection = useWelcomeStore((s) => s.toggleSection)
-
-  return (
-    <section>
-      <CollapsibleHeader
-        title={`What's New in v${VERSION}`}
-        expanded={expanded}
-        onToggle={() => toggleSection('whatsNew')}
-      />
-      {expanded && (
-        <div className="owt-card" style={{ padding: 0, overflow: 'hidden' }}>
-          {WHATS_NEW.map(({ icon: WIcon, title, desc, version, badge }, i) => (
-            <div
-              key={title}
-              className="owt-whats-new-item"
-              style={{
-                borderBottom: i < WHATS_NEW.length - 1 ? '1px solid var(--border-color)' : 'none',
-              }}
-            >
-              <IconBox
-                icon={WIcon}
-                color={badge === 'new' ? 'var(--accent-primary)' : '#34d399'}
-                size={32}
-                iconSize={16}
-                bgOpacity={12}
-              />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  marginBottom: 2,
-                }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
-                    {title}
-                  </span>
-                  <span className={badge === 'new' ? 'owt-badge-new' : 'owt-badge-improved'}>
-                    {badge}
-                  </span>
-                  <span style={{
-                    fontSize: 9,
-                    color: 'var(--text-secondary)',
-                    fontFamily: 'var(--font-mono, monospace)',
-                  }}>
-                    {version}
-                  </span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-                  {desc}
-                </div>
-              </div>
-            </div>
-          ))}
         </div>
       )}
     </section>
@@ -1897,9 +1650,6 @@ function TipsSection() {
    ──────────────────────────────────────────────────────────────────────────── */
 
 function FooterSection() {
-  const showOnStartup = useWelcomeStore((s) => s.showOnStartup)
-  const setShowOnStartup = useWelcomeStore((s) => s.setShowOnStartup)
-
   return (
     <footer style={{
       marginTop: 48,
@@ -1921,16 +1671,13 @@ function FooterSection() {
         flexWrap: 'wrap' as const,
       }}>
         {[
-          { icon: BookOpen, label: 'Documentation' },
-          { icon: ExternalLink, label: 'GitHub' },
-          { icon: MessageCircle, label: 'Discord' },
-          { icon: ExternalLink, label: 'Twitter' },
-          { icon: Heart, label: 'Sponsor' },
-        ].map(({ icon: FIcon, label }, i, arr) => (
+          { icon: BookOpen, label: 'Documentation', url: PROJECT_LINKS.readme },
+          { icon: ExternalLink, label: 'GitHub', url: PROJECT_LINKS.repository },
+        ].map(({ icon: FIcon, label, url }, i, arr) => (
           <span key={label} style={{ display: 'contents' }}>
             <button
               className="owt-footer-link"
-              onClick={() => window.open('#', '_blank')}
+              onClick={openExternal(url)}
             >
               <FIcon size={12} />
               {label}
@@ -1942,41 +1689,13 @@ function FooterSection() {
         ))}
       </div>
 
-      {/* Startup toggle + version */}
+      {/* Version */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
+        justifyContent: 'flex-end',
         paddingBottom: 8,
       }}>
-        <label style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          cursor: 'pointer',
-          fontSize: 12,
-          color: 'var(--text-secondary)',
-        }}>
-          <div
-            onClick={() => setShowOnStartup(!showOnStartup)}
-            style={{
-              width: 14,
-              height: 14,
-              borderRadius: 3,
-              border: showOnStartup ? 'none' : '1.5px solid var(--text-secondary)',
-              background: showOnStartup ? 'var(--accent-primary)' : 'transparent',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-            }}
-          >
-            {showOnStartup && <Check size={10} style={{ color: 'var(--bg-primary)' }} />}
-          </div>
-          Show Welcome Tab on Startup
-        </label>
-
         <div style={{
           fontSize: 11,
           color: 'var(--text-secondary)',
@@ -2092,7 +1811,6 @@ export default function WelcomeTab({
               onOpenChat={onOpenChat}
             />
             <LearnSection />
-            <WhatsNewSection />
           </div>
         </div>
 

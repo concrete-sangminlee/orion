@@ -1,167 +1,126 @@
 import type { OmoBridgeMessage, OmoEvent } from './protocol'
 import type { Agent } from '../../shared/types'
-import { callAI, callAIStreaming, canRespond, checkOllama, getOllamaStatus, setCustomPrompts } from './ai-client'
+import { ASSISTANT_AGENT_ID, callAI, callAIStreaming, canRespond, checkOllama, setCustomPrompts, type ChatMessage } from './ai-client'
 
 let messageHandler: ((event: OmoEvent) => void) | null = null
 let apiKeys: Record<string, string> = {}
 
-const defaultAgents: Agent[] = [
-  { id: 'sisyphus', name: 'Sisyphus', role: 'Orchestrator', status: 'active' },
-  { id: 'hephaestus', name: 'Hephaestus', role: 'Deep Worker', status: 'idle' },
-  { id: 'prometheus', name: 'Prometheus', role: 'Planner', status: 'idle' },
-  { id: 'oracle', name: 'Oracle', role: 'Debugger', status: 'idle' },
-]
+// The chat assistant is the only agent: one provider request per turn, no
+// planning or verification steps. Its status is real: working while a request
+// is being handled, idle otherwise.
+const ASSISTANT: Agent = { id: ASSISTANT_AGENT_ID, name: 'Orion AI', role: 'Chat assistant', status: 'idle' }
 
-let agents: Agent[] = []
+/** Abort controllers of the turns being handled, with the renderer's request id (if it sent one). */
+const inFlight = new Map<AbortController, string | undefined>()
 
-// Abort controllers of the turns currently being handled; a 'cancel' aborts them all.
-const inFlight = new Set<AbortController>()
-
-function emit(event: OmoEvent) {
-  try { messageHandler?.(event) } catch (err) { console.error('[OMO] emit error:', err) }
-}
-
-function updateAgent(id: string, update: Partial<Agent>) {
-  agents = agents.map((a) => (a.id === id ? { ...a, ...update } : a))
-  emit({ type: 'agent-status', payload: { agents: [...agents] } })
-}
-
-function log(agentId: string, message: string, logType: string = 'info') {
-  emit({ type: 'agent-log', payload: { agentId, message, logType } })
-}
-
-function chatResponse(content: string, agentName: string, model: string, taskProgress?: any[]) {
-  emit({ type: 'chat-response', payload: { content, agentName, model, taskProgress } })
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
-function resetAgents() {
-  agents.forEach((a) => updateAgent(a.id, { status: a.id === 'sisyphus' ? 'active' : 'idle', currentTask: undefined, progress: undefined }))
-}
-
-async function handleWithAI(message: string, model: string, mode: string) {
-  const controller = new AbortController()
-  const { signal } = controller
-  inFlight.add(controller)
-  try {
-    const isAgent = mode === 'agent'
-    const canCall = canRespond(model, apiKeys)
-
-    // Phase 1: Start
-    updateAgent('sisyphus', { status: 'working', currentTask: 'Analyzing request...', progress: 10 })
-    log('sisyphus', `Received: "${message.slice(0, 80)}"`, 'info')
-
-    if (isAgent) {
-      await delay(200)
-      signal.throwIfAborted()
-      updateAgent('prometheus', { status: 'working', currentTask: 'Planning...' })
-      log('sisyphus', 'Delegating to Prometheus for planning', 'delegation')
-      updateAgent('sisyphus', { progress: 25 })
-      await delay(400)
-      signal.throwIfAborted()
-      log('prometheus', 'Plan ready', 'action')
-      updateAgent('prometheus', { status: 'idle', currentTask: undefined })
-
-      updateAgent('hephaestus', { status: 'working', currentTask: 'Executing...' })
-      log('sisyphus', 'Delegating to Hephaestus', 'delegation')
-      updateAgent('sisyphus', { progress: 40 })
-    }
-
-    // Phase 2: Call AI
-    let responseText: string
-    let responseModel: string
-
-    if (canCall) {
-      updateAgent('sisyphus', { progress: 60 })
-      // Use streaming for real-time response
-      emit({ type: 'chat-stream', payload: { status: 'start', agentName: isAgent ? 'Sisyphus' : 'AI Assistant' } })
-      try {
-        const result = await callAIStreaming(model, message, apiKeys, messageHandler, (chunk: string) => {
-          emit({ type: 'chat-stream', payload: { status: 'chunk', content: chunk } })
-        }, { signal })
-        responseText = result?.content || 'Failed to get response.'
-        responseModel = result?.model || model
-      } catch (streamErr: any) {
-        // A cancelled turn is not retried
-        if (signal.aborted) throw streamErr
-        // Fallback to non-streaming
-        console.log('[OMO] Streaming failed, falling back to non-streaming:', streamErr.message)
-        const result = await callAI(model, message, apiKeys, messageHandler, { signal })
-        responseText = result?.content || 'Failed to get response.'
-        responseModel = result?.model || model
-      }
-      emit({ type: 'chat-stream', payload: { status: 'end' } })
-    } else {
-      // No AI available
-      updateAgent('sisyphus', { progress: 60 })
-      await delay(500)
-
-      const { available } = getOllamaStatus()
-      if (!available) {
-        responseText = `**Ollama가 실행되지 않고 있습니다.**
+const NO_PROVIDER_TEXT = `**Ollama가 실행되지 않고 있습니다.**
 
 로컬 AI를 사용하려면:
 
 1. **Ollama 설치**: [ollama.com](https://ollama.com) 에서 다운로드
 2. **모델 다운로드**: 터미널에서 \`ollama pull llama3.2\` 실행
 3. **Ollama 실행**: \`ollama serve\` 또는 앱 실행
-4. **재시작**: Orion을 다시 시작하면 자동 감지됩니다
+
+Ollama를 실행한 뒤 메시지를 다시 보내면 자동으로 감지됩니다.
 
 또는 Settings(⚙️)에서 API 키를 입력할 수도 있습니다.`
-      } else {
-        responseText = `Ollama가 감지되었지만 응답 생성에 실패했습니다. 터미널에서 Ollama 상태를 확인해주세요.`
-      }
-      responseModel = 'System'
-    }
 
-    if (isAgent) {
-      updateAgent('hephaestus', { status: 'idle', currentTask: undefined })
-      updateAgent('oracle', { status: 'working', currentTask: 'Verifying...' })
-      log('sisyphus', 'Delegating to Oracle', 'delegation')
-      updateAgent('sisyphus', { progress: 90 })
-      await delay(300)
+function emit(event: OmoEvent) {
+  try { messageHandler?.(event) } catch (err) { console.error('[OMO] emit error:', err) }
+}
+
+function emitAssistantStatus() {
+  const working = inFlight.size > 0
+  emit({
+    type: 'agent-status',
+    payload: { agents: [{ ...ASSISTANT, status: working ? 'working' : 'idle', ...(working && { currentTask: 'Generating a reply' }) }] },
+  })
+}
+
+function log(message: string, logType: string = 'info') {
+  emit({ type: 'agent-log', payload: { agentId: ASSISTANT_AGENT_ID, message, logType } })
+}
+
+/** Spread into a chat event so the renderer can route it; omitted for requests that sent no id. */
+function tagged(requestId: string | undefined) {
+  return requestId === undefined ? {} : { requestId }
+}
+
+function chatResponse(requestId: string | undefined, content: string, agentName: string, model: string) {
+  emit({ type: 'chat-response', payload: { ...tagged(requestId), content, agentName, model } })
+}
+
+interface ChatRequest {
+  message: string
+  model: string
+  requestId?: string
+  /** Untrusted renderer data: the AI client validates and caps it. */
+  history?: readonly ChatMessage[]
+  systemPrompt?: string
+}
+
+async function handleWithAI({ message, model, requestId, history, systemPrompt }: ChatRequest) {
+  const controller = new AbortController()
+  const { signal } = controller
+  inFlight.set(controller, requestId)
+  emitAssistantStatus()
+  try {
+    log(`Received: "${message.slice(0, 80)}"`, 'info')
+
+    if (!canRespond(model, apiKeys)) {
+      // Ollama may have been started since the last probe; check again before saying it is not running.
+      emit({ type: 'ollama-status', payload: await checkOllama() })
       signal.throwIfAborted()
-      log('oracle', 'Done', 'action')
-      updateAgent('oracle', { status: 'idle', currentTask: undefined })
+    }
+    if (!canRespond(model, apiKeys)) {
+      chatResponse(requestId, NO_PROVIDER_TEXT, 'System', 'System')
+      return
     }
 
-    updateAgent('sisyphus', { progress: 100 })
-    chatResponse(
-      responseText,
-      isAgent ? 'Sisyphus' : 'AI Assistant',
-      responseModel,
-      isAgent ? [
-        { name: 'Analyze', status: 'done' },
-        { name: 'Execute', status: 'done' },
-        { name: 'Verify', status: 'done' },
-      ] : undefined,
-    )
-
-    updateAgent('sisyphus', { status: 'active', currentTask: undefined, progress: undefined })
-
+    const options = { signal, history, systemPrompt }
+    emit({ type: 'chat-stream', payload: { ...tagged(requestId), status: 'start', agentName: 'AI Assistant' } })
+    let result: { content: string; model: string } | null
+    try {
+      result = await callAIStreaming(model, message, apiKeys, messageHandler, (chunk: string) => {
+        emit({ type: 'chat-stream', payload: { ...tagged(requestId), status: 'chunk', content: chunk } })
+      }, options)
+    } catch (streamErr: any) {
+      // A cancelled turn is not retried
+      if (signal.aborted) throw streamErr
+      console.log('[OMO] Streaming failed, falling back to non-streaming:', streamErr.message)
+      result = await callAI(model, message, apiKeys, messageHandler, options)
+    }
+    emit({ type: 'chat-stream', payload: { ...tagged(requestId), status: 'end' } })
+    chatResponse(requestId, result?.content || 'Failed to get response.', 'AI Assistant', result?.model || model)
   } catch (err: any) {
-    // Cancelled: cancelInFlight() already ended the stream and reset the agents
+    // Cancelled: cancelInFlight() already ended the stream
     if (signal.aborted) return
     console.error('[OMO] error:', err)
     chatResponse(
+      requestId,
       `**Error:** ${err.message || err}\n\nOllama가 실행 중인지 확인해주세요 (\`ollama serve\`).`,
       'System', model,
     )
-    resetAgents()
   } finally {
-    inFlight.delete(controller)
+    if (inFlight.delete(controller)) emitAssistantStatus()
   }
 }
 
-function cancelInFlight() {
-  for (const controller of inFlight) controller.abort()
-  inFlight.clear()
-  emit({ type: 'chat-stream', payload: { status: 'end' } })
-  resetAgents()
-  log('sisyphus', 'Request cancelled', 'info')
+/** Abort the turn with this request id, or every turn when none is given. */
+function cancelInFlight(requestId: string | undefined) {
+  for (const [controller, id] of inFlight) {
+    if (requestId !== undefined && id !== requestId) continue
+    controller.abort()
+    inFlight.delete(controller)
+  }
+  emit({ type: 'chat-stream', payload: { ...tagged(requestId), status: 'end' } })
+  emitAssistantStatus()
+  log('Request cancelled', 'info')
+}
+
+/** A string field of a renderer message, or undefined (the renderer may send anything). */
+function stringField(value: unknown, maxLength = Infinity): string | undefined {
+  return typeof value === 'string' && value.length <= maxLength ? value : undefined
 }
 
 export function setApiKeys(keys: Record<string, string>) {
@@ -169,45 +128,48 @@ export function setApiKeys(keys: Record<string, string>) {
   console.log('[OMO] API keys updated:', Object.keys(keys).filter((k) => !!keys[k]))
 }
 
-export function setPrompts(prompts: { systemPrompt?: string; userPromptTemplate?: string }) {
+/** Untrusted renderer data: the AI client keeps only string prompts. */
+export function setPrompts(prompts: unknown) {
   setCustomPrompts(prompts)
 }
 
 export async function startOmo(onMessage: (event: OmoEvent) => void): Promise<void> {
   console.log('[OMO] Starting...')
   messageHandler = onMessage
-  agents = defaultAgents.map((a) => ({ ...a }))
 
-  emit({ type: 'agent-status', payload: { agents: [...agents] } })
+  emitAssistantStatus()
 
   // Check Ollama availability
   const ollama = await checkOllama()
   if (ollama.available) {
-    log('system', `Ollama detected: ${ollama.models.length} model(s) available [${ollama.models.slice(0, 3).join(', ')}]`, 'info')
+    log(`Ollama detected: ${ollama.models.length} model(s) available [${ollama.models.slice(0, 3).join(', ')}]`, 'info')
     emit({ type: 'ollama-status', payload: { available: true, models: ollama.models } })
   } else {
-    log('system', 'Ollama not detected. Install from ollama.com for free local AI.', 'info')
+    log('Ollama not detected. Install from ollama.com for free local AI.', 'info')
     emit({ type: 'ollama-status', payload: { available: false, models: [] } })
   }
-
-  log('sisyphus', 'Orchestrator ready', 'info')
 }
 
 export function sendToOmo(message: OmoBridgeMessage): void {
   console.log('[OMO] sendToOmo:', message?.type)
   if (!messageHandler) return
 
+  const payload: OmoBridgeMessage['payload'] = message?.payload && typeof message.payload === 'object' ? message.payload : {}
+  const requestId = stringField(payload.requestId, 200)
+
   switch (message?.type) {
     case 'cancel':
-      cancelInFlight()
+      cancelInFlight(requestId)
       return
     case 'chat':
     case 'agent-command': {
-      const userMessage = message?.payload?.message || ''
-      const model = message?.payload?.model || 'Ollama'
-      const mode = message?.payload?.mode || 'agent'
-
-      handleWithAI(userMessage, model, mode)
+      handleWithAI({
+        message: stringField(payload.message) ?? '',
+        model: stringField(payload.model, 200) ?? 'Ollama',
+        requestId,
+        history: payload.history,
+        systemPrompt: stringField(payload.systemPrompt),
+      })
       return
     }
     default:
@@ -218,5 +180,4 @@ export function sendToOmo(message: OmoBridgeMessage): void {
 
 export function stopOmo(): void {
   messageHandler = null
-  agents = []
 }

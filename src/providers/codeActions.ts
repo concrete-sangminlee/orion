@@ -4,15 +4,14 @@
  * for TypeScript/JavaScript files.
  */
 import type { Monaco } from '@monaco-editor/react'
-import type { editor as MonacoEditorNs } from 'monaco-editor'
-
-type MonacoEditor = MonacoEditorNs.IStandaloneCodeEditor
 
 /**
- * Register code action providers for TS/JS languages and a "Fix with AI" command.
+ * Register code action providers for TS/JS languages. Global to the Monaco
+ * instance: call it once (see registerEditorProviders).
  */
-export function registerCodeActionProviders(monaco: Monaco, editor: MonacoEditor) {
-  const codeActionLanguages = ['typescript', 'typescriptreact', 'javascript', 'javascriptreact']
+export function registerCodeActionProviders(monaco: Monaco) {
+  // Monaco ids: .tsx/.jsx models are typescript/javascript.
+  const codeActionLanguages = ['typescript', 'javascript']
 
   for (const caLang of codeActionLanguages) {
     monaco.languages.registerCodeActionProvider(caLang, {
@@ -80,8 +79,9 @@ export function registerCodeActionProviders(monaco: Monaco, editor: MonacoEditor
           return m ? m[1] : ''
         }
 
-        const currentSelection = editor.getSelection()
-        const hasSelection = currentSelection && !currentSelection.isEmpty()
+        // Monaco asks with the editor's selection as the range.
+        const currentSelection = range
+        const hasSelection = !currentSelection.isEmpty()
         const selectedText = hasSelection ? model.getValueInRange(currentSelection!) : ''
         const trimmedSel = selectedText.trim()
 
@@ -1566,18 +1566,6 @@ export function registerCodeActionProviders(monaco: Monaco, editor: MonacoEditor
           }
         }
 
-        // ── Fix with AI – always last ────────────────────────────────
-        actions.push({
-          title: '\u2728 Fix with AI',
-          kind: 'quickfix',
-          isPreferred: false,
-          command: {
-            id: 'orion-fix-with-ai',
-            title: 'Fix with AI',
-            arguments: [lineNumber, lineContent],
-          },
-        })
-
         return {
           actions,
           dispose: () => {},
@@ -1585,30 +1573,4 @@ export function registerCodeActionProviders(monaco: Monaco, editor: MonacoEditor
       },
     })
   }
-
-  // Register "Fix with AI" command handler
-  editor.addAction({
-    id: 'orion-fix-with-ai',
-    label: 'Fix with AI',
-    run: (_ed, ...args) => {
-      const [lineNum, lineText] = args as [number, string]
-      const model = _ed.getModel()
-      if (!model) return
-      const startCtx = Math.max(1, (lineNum as number) - 5)
-      const endCtx = Math.min(model.getLineCount(), (lineNum as number) + 5)
-      const contextLines: string[] = []
-      for (let i = startCtx; i <= endCtx; i++) {
-        contextLines.push(`${i === lineNum ? '>' : ' '} ${model.getLineContent(i)}`)
-      }
-      const context = contextLines.join('\n')
-      window.dispatchEvent(
-        new CustomEvent('orion:send-chat-message', {
-          detail: {
-            message: `Fix the issue on the highlighted line in this code:\n\n\`\`\`\n${context}\n\`\`\`\n\nFile: ${model.uri.toString()}\nLine ${lineNum}: ${lineText}`,
-          },
-        }),
-      )
-      window.dispatchEvent(new Event('orion:toggle-chat'))
-    },
-  })
 }

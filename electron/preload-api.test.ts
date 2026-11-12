@@ -108,13 +108,23 @@ describe('createElectronApi — argument forwarding', () => {
     const fake = createFakeIpc()
     const api = createElectronApi(fake.ipc)
     await api.gitPush('/repo')
+    await api.gitPush('/repo', 'origin', 'feature', false, true)
     await api.gitPull('/repo')
     await api.gitCommit('/repo', 'msg')
     expect(fake.invoked).toEqual([
-      { channel: 'git:push', args: ['/repo', 'origin', undefined, false] },
-      { channel: 'git:pull', args: ['/repo', 'origin', undefined] },
+      // No remote: main runs plain `git push`/`git pull`, following the upstream.
+      { channel: 'git:push', args: ['/repo', undefined, undefined, false, false] },
+      { channel: 'git:push', args: ['/repo', 'origin', 'feature', false, true] },
+      { channel: 'git:pull', args: ['/repo', undefined, undefined] },
       { channel: 'git:commit', args: ['/repo', 'msg', false] },
     ])
+  })
+
+  it('forwards the remote ref a checkout should track', async () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    await api.gitCheckout('/repo', 'feature', 'origin/feature')
+    expect(fake.invoked).toEqual([{ channel: 'git:checkout', args: ['/repo', 'feature', 'origin/feature'] }])
   })
 
   it('defaults createFile content to an empty string', async () => {
@@ -128,6 +138,15 @@ describe('createElectronApi — argument forwarding', () => {
     const fake = createFakeIpc()
     const api = createElectronApi(fake.ipc)
     await expect(api.gitStatus('/repo')).resolves.toBe('result:git:status')
+  })
+
+  it('forwards the initial terminal size with term:create', async () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    await api.termCreate('term-1', { shellPath: '/bin/bash' }, { cols: 140, rows: 12 })
+    expect(fake.invoked).toEqual([
+      { channel: 'term:create', args: ['term-1', { shellPath: '/bin/bash' }, { cols: 140, rows: 12 }] },
+    ])
   })
 
   it('sends the chat cancel message on omo:send', () => {
@@ -146,6 +165,15 @@ describe('createElectronApi — event subscriptions', () => {
     api.onTermData(onData)
     fake.dispatch('term:data', 'term-1', 'hello')
     expect(onData).toHaveBeenCalledWith('term-1', 'hello')
+  })
+
+  it('forwards the terminal id and exit code of term:exit', () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    const onExit = vi.fn()
+    api.onTermExit(onExit)
+    fake.dispatch('term:exit', 'term-1', 130)
+    expect(onExit).toHaveBeenCalledWith('term-1', 130)
   })
 
   it('calls argument-less menu callbacks without leaking payloads', () => {

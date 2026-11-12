@@ -53,7 +53,6 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   search:    ['--type', '--max', '--no-ai'],
   diff:      ['--staged'],
   refactor:  ['--rename', '--extract', '--simplify', '--unused'],
-  plan:      ['--execute'],
   generate:  ['--force'],
   todo:      ['--fix', '--prioritize'],
   fetch:     ['--raw'],

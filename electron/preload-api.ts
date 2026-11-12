@@ -30,9 +30,11 @@ import type {
   OmoBridgeMessage,
   OmoPrompts,
   InlineCompletionRequest,
+  InlineEditRequest,
   ApiKeyPatch,
   TaskRunArgs,
   TerminalShellOptions,
+  TerminalSize,
   AppSettings,
   WorkspaceSettingsFile,
 } from '../shared/ipc-contract'
@@ -97,6 +99,7 @@ export function createElectronApi(ipc: IpcRendererLike, host?: PreloadHost) {
     readDir: (dirPath: string) => invoke('fs:read-dir', dirPath),
     openFolder: () => invoke('fs:open-folder'),
     openFileDialog: () => invoke('fs:open-file-dialog'),
+    saveFileDialog: (suggestedName?: string) => invoke('fs:save-file-dialog', suggestedName),
     createFile: (filePath: string, content = '') => invoke('fs:create-file', filePath, content),
     createDir: (dirPath: string) => invoke('fs:create-dir', dirPath),
     searchFiles: (rootPath: string, query: string, options?: FileSearchOptions) =>
@@ -164,21 +167,21 @@ export function createElectronApi(ipc: IpcRendererLike, host?: PreloadHost) {
     gitFileLog: (cwd: string, options?: GitLogPageOptions) => invoke('git:file-log', cwd, options),
     gitDiffCommits: (cwd: string, commitA: string, commitB: string) =>
       invoke('git:diff-commits', cwd, commitA, commitB),
-    gitDiff: (cwd: string, filePath?: string) => invoke('git:diff', cwd, filePath),
+    gitDiff: (cwd: string, filePath?: string, staged?: boolean) => invoke('git:diff', cwd, filePath, staged),
     gitStage: (cwd: string, filePath: string) => invoke('git:stage', cwd, filePath),
     gitUnstage: (cwd: string, filePath: string) => invoke('git:unstage', cwd, filePath),
     gitCommit: (cwd: string, message: string, amend = false) => invoke('git:commit', cwd, message, amend),
     gitCommitAmend: (cwd: string, message?: string) => invoke('git:commit-amend', cwd, message),
     gitDiscard: (cwd: string, filePath: string) => invoke('git:discard', cwd, filePath),
     gitBranches: (cwd: string) => invoke('git:branches', cwd),
-    gitCheckout: (cwd: string, branch: string) => invoke('git:checkout', cwd, branch),
+    gitCheckout: (cwd: string, branch: string, track?: string) => invoke('git:checkout', cwd, branch, track),
     gitShow: (cwd: string, hash: string) => invoke('git:show', cwd, hash),
     gitBlame: (cwd: string, filePath: string) => invoke('git:blame', cwd, filePath),
     gitFileDiff: (cwd: string, filePath: string) => invoke('git:file-diff', cwd, filePath),
     gitDiffFile: (cwd: string, filePath: string) => invoke('git:diff-file', cwd, filePath),
-    gitPush: (cwd: string, remote = 'origin', branch?: string, force = false) =>
-      invoke('git:push', cwd, remote, branch, force),
-    gitPull: (cwd: string, remote = 'origin', branch?: string) => invoke('git:pull', cwd, remote, branch),
+    gitPush: (cwd: string, remote?: string, branch?: string, force = false, setUpstream = false) =>
+      invoke('git:push', cwd, remote, branch, force, setUpstream),
+    gitPull: (cwd: string, remote?: string, branch?: string) => invoke('git:pull', cwd, remote, branch),
     gitFetch: (cwd: string) => invoke('git:fetch', cwd),
     gitStash: (cwd: string) => invoke('git:stash', cwd),
     gitStashPop: (cwd: string, index?: number) => invoke('git:stash-pop', cwd, index),
@@ -224,11 +227,13 @@ export function createElectronApi(ipc: IpcRendererLike, host?: PreloadHost) {
     // =====================================================================
     // Terminal (electron/ipc/terminal.ts)
     // =====================================================================
-    termCreate: (id: string, shellOptions?: TerminalShellOptions) => invoke('term:create', id, shellOptions),
+    termCreate: (id: string, shellOptions?: TerminalShellOptions, size?: TerminalSize) =>
+      invoke('term:create', id, shellOptions, size),
     termWrite: (id: string, data: string) => send('term:write', id, data),
     termResize: (id: string, cols: number, rows: number) => send('term:resize', id, cols, rows),
     termKill: (id: string) => send('term:kill', id),
     onTermData: (callback: (...args: IpcEventArgs<'term:data'>) => void) => subscribe('term:data', callback),
+    onTermExit: (callback: (...args: IpcEventArgs<'term:exit'>) => void) => subscribe('term:exit', callback),
 
     // =====================================================================
     // Settings (electron/ipc/settings.ts)
@@ -253,6 +258,7 @@ export function createElectronApi(ipc: IpcRendererLike, host?: PreloadHost) {
     omoGetApiKeyStatus: () => invoke('omo:get-api-key-status'),
     omoSetPrompts: (prompts: OmoPrompts) => invoke('omo:set-prompts', prompts),
     aiComplete: (request: InlineCompletionRequest) => invoke('ai:complete', request),
+    aiEdit: (request: InlineEditRequest) => invoke('ai:edit', request),
     onOmoMessage: (callback: (...args: IpcEventArgs<'omo:message'>) => void) => subscribe('omo:message', callback),
 
     // =====================================================================

@@ -5,6 +5,7 @@ import { useFileWatcher, useExternalFileWatcher } from './hooks/useIpc'
 import { useOmo } from './hooks/useOmo'
 import { loadLayout, useLayoutPersistence } from './hooks/useLayoutPersistence'
 import { useRecoveryCheck, clearRecovery } from './hooks/useAutoSave'
+import { useGitCommands } from './hooks/useGitCommands'
 import { useEditorStore } from '@/store/editor'
 import { useFileStore } from '@/store/files'
 import { useWorkspaceStore } from '@/store/workspace'
@@ -18,7 +19,7 @@ import StatusBar from './components/StatusBar'
 import CommandPalette from '@/components/CommandPalette'
 import ToastContainer from '@/components/Toast'
 import { ipcErrorMessage, writeFileChecked } from '@/utils/ipcResult'
-import { confirmOverwriteIfChangedOnDisk } from '@/utils/saveGuards'
+import { confirmOverwriteIfChangedOnDisk, needsSaveLocation } from '@/utils/saveGuards'
 import { openFileInEditor } from '@/utils/openFileInEditor'
 import { migrateLegacyApiKeys } from '@/utils/apiKeys'
 import FileExplorer from './panels/FileExplorer'
@@ -55,7 +56,6 @@ const SettingsModal = React.lazy(() => import('./components/SettingsModal'))
 const KeyboardShortcuts = React.lazy(() => import('./components/KeyboardShortcuts'))
 const AboutDialog = React.lazy(() => import('./components/AboutDialog'))
 const SnippetManager = React.lazy(() => import('@/components/SnippetManager'))
-const TerminalProfileManager = React.lazy(() => import('./components/TerminalProfileManager'))
 
 /** Workspace trust key prefix in localStorage */
 const WORKSPACE_TRUST_KEY = 'orion-workspace-trust'
@@ -151,7 +151,6 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const [snippetsOpen, setSnippetsOpen] = useState(false)
-  const [terminalProfilesOpen, setTerminalProfilesOpen] = useState(false)
   const [sidebarVisible, setSidebarVisible] = useState(initialLayout.sidebarVisible)
   const [bottomVisible, setBottomVisible] = useState(initialLayout.bottomVisible)
   const [chatVisible, setChatVisible] = useState(initialLayout.chatVisible)
@@ -494,6 +493,8 @@ export default function App() {
   useFileWatcher()
   useExternalFileWatcher()
   useOmo()
+  // Command palette Git commands; they work whether or not the panel is open.
+  useGitCommands()
   useRecoveryCheck()
 
   // API keys are stored encrypted by the main process, which loads them
@@ -590,6 +591,11 @@ export default function App() {
     const handlers: Record<string, (event: Event) => void> = {
       'orion:toggle-sidebar': () => { setSidebarVisible((v) => !v); announce(sidebarVisible ? 'Sidebar collapsed' : 'Sidebar expanded') },
       'orion:toggle-terminal': () => { setBottomVisible((v) => !v); announce(bottomVisible ? 'Terminal panel closed' : 'Terminal panel opened') },
+      // The bottom panel creates the terminal or runs the task; show it.
+      'orion:new-terminal': () => setBottomVisible(true),
+      'orion:split-terminal': () => setBottomVisible(true),
+      'orion:run-task': () => setBottomVisible(true),
+      'orion:run-build': () => setBottomVisible(true),
       'orion:toggle-chat': () => { setChatVisible((v) => !v); announce(chatVisible ? 'Chat panel closed' : 'Chat panel opened') },
       'orion:open-folder': handleOpenFolderEvent,
       'orion:open-settings': () => openModal(setSettingsOpen),
@@ -619,7 +625,9 @@ export default function App() {
         void (async () => {
           const { openFiles, markSaved } = useEditorStore.getState()
           const { addToast } = useToastStore.getState()
-          const modified = openFiles.filter((f: OpenFile) => f.isModified)
+          // Untitled buffers have no file yet; each needs Save As.
+          const modified = openFiles.filter((f: OpenFile) => f.isModified && !needsSaveLocation(f.path))
+          const untitled = openFiles.filter((f: OpenFile) => f.isModified && needsSaveLocation(f.path)).length
           let savedCount = 0
           let failedCount = 0
 
@@ -640,6 +648,9 @@ export default function App() {
           }
           if (failedCount > 0) {
             addToast({ type: 'error', message: `Failed to save ${failedCount} file(s)` })
+          }
+          if (untitled > 0) {
+            addToast({ type: 'info', message: `${untitled} untitled file(s) need Save As` })
           }
         })()
       },
@@ -678,42 +689,11 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey
 
-      // Ctrl+Shift+S -> save all
+      // Ctrl+Shift+S -> Save As, as the menus and the command palette show it.
+      // (It used to run a second copy of Save All.) The editor handles it.
       if (ctrl && e.shiftKey && e.key === 'S') {
         e.preventDefault()
-        void (async () => {
-          const { openFiles, markSaved } = useEditorStore.getState()
-          const { addToast } = useToastStore.getState()
-          const modified = openFiles.filter((f: OpenFile) => f.isModified)
-          let savedCount = 0
-          let failedCount = 0
-
-          for (const file of modified) {
-            if (!confirmOverwriteIfChangedOnDisk(file)) continue
-            try {
-              await writeFileChecked(file.path, file.content, `Save ${file.name}`)
-              markSaved(file.path)
-              clearRecovery(file.path)
-              savedCount++
-            } catch {
-              failedCount++
-            }
-          }
-
-          if (savedCount > 0) {
-            addToast({ type: 'success', message: `Saved ${savedCount} file(s)` })
-          }
-          if (failedCount > 0) {
-            addToast({ type: 'error', message: `Failed to save ${failedCount} file(s)` })
-          }
-        })()
-        return
-      }
-
-      // Ctrl+Shift+N -> new window
-      if (ctrl && e.shiftKey && e.key === 'N') {
-        e.preventDefault()
-        window.dispatchEvent(new Event('orion:new-window'))
+        window.dispatchEvent(new Event('orion:save-file-as'))
         return
       }
 
@@ -1159,25 +1139,25 @@ export default function App() {
             )}
           </div>
           {bottomVisible && !zenMode && (
-            <>
-              <Resizer
-                direction="vertical"
-                onResize={handleBottomResize}
-                currentSize={bottomPanelHeight}
-                constraints={bottomConstraints}
-                onCollapse={() => setBottomVisible(false)}
-                onReset={() => setBottomPanelHeight(DEFAULT_BOTTOM_PANEL_HEIGHT)}
-              />
-              <div
-                role="region"
-                aria-label="Terminal and Output Panel"
-                aria-expanded={bottomVisible}
-                style={{ height: bottomPanelHeight }}
-              >
-                <BottomPanel />
-              </div>
-            </>
+            <Resizer
+              direction="vertical"
+              onResize={handleBottomResize}
+              currentSize={bottomPanelHeight}
+              constraints={bottomConstraints}
+              onCollapse={() => setBottomVisible(false)}
+              onReset={() => setBottomPanelHeight(DEFAULT_BOTTOM_PANEL_HEIGHT)}
+            />
           )}
+          {/* Hidden, not unmounted: a terminal's shell lives as long as its view
+              is mounted, so unmounting the panel killed every running shell. */}
+          <div
+            role="region"
+            aria-label="Terminal and Output Panel"
+            aria-expanded={bottomVisible && !zenMode}
+            style={{ height: bottomPanelHeight, display: bottomVisible && !zenMode ? undefined : 'none' }}
+          >
+            <BottomPanel />
+          </div>
           {!bottomVisible && !zenMode && (
             <Resizer
               direction="vertical"
@@ -1283,15 +1263,12 @@ export default function App() {
       )}
 
       {snippetsOpen && (
-        <Suspense fallback={null}>
-          <SnippetManager open={snippetsOpen} onClose={() => closeModal(setSnippetsOpen)} />
-        </Suspense>
-      )}
-
-      {terminalProfilesOpen && (
-        <Suspense fallback={null}>
-          <TerminalProfileManager open={terminalProfilesOpen} onClose={() => closeModal(setTerminalProfilesOpen)} />
-        </Suspense>
+        // Its own boundary: a render error closes this dialog, not the whole IDE.
+        <ErrorBoundary>
+          <Suspense fallback={null}>
+            <SnippetManager open={snippetsOpen} onClose={() => closeModal(setSnippetsOpen)} />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       <CommandPalette

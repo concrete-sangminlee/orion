@@ -6,12 +6,20 @@ import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
 import { useProblemsStore } from '@/store/problems'
 import { useThemeStore } from '@/store/theme'
-import { useSnippetStore } from '@/store/snippets'
 import { useAutoSave, clearRecovery } from '@/hooks/useAutoSave'
 import TabBar from '@/components/TabBar'
 import WelcomeTab from '@/components/WelcomeTab'
 import InlineEdit from '@/components/InlineEdit'
-import InlineDiff from '@/components/InlineDiff'
+import { useChatStore } from '@/store/chat'
+import {
+  applyInlineEdit,
+  buildInlineEditRequest,
+  canApplyInlineEdit,
+  createRequestGate,
+  onInlineEditCommand,
+  registerInlineEditActions,
+  requestInlineEdit,
+} from '@/utils/inlineEdit'
 import GhostTextProvider from '@/components/GhostTextProvider'
 import EmmetProvider from '@/components/EmmetProvider'
 import MarkdownPreview, { markdownPreviewStyles } from '@/components/MarkdownPreview'
@@ -30,70 +38,21 @@ import { useEditorStore as useBreadcrumbEditorStore } from '@/store/editor'
 import { useFileStore } from '@/store/files'
 import { useWorkspaceStore } from '@/store/workspace'
 import { useFileHistoryStore } from '@/store/fileHistory'
-import { writeFileChecked } from '@/utils/ipcResult'
-import { confirmOverwriteIfChangedOnDisk } from '@/utils/saveGuards'
+import type { OpenFile } from '@shared/types'
+import { ipcErrorMessage, writeFileChecked } from '@/utils/ipcResult'
+import { confirmOverwriteIfChangedOnDisk, needsSaveLocation } from '@/utils/saveGuards'
 import TimelinePanel from '@/components/TimelinePanel'
 import FileIcon, { FolderIcon } from '@/components/FileIcon'
-import { registerCodeActionProviders } from '@/providers/codeActions'
-import { registerLanguageProviders } from '@/providers/languageProviders'
+import { detectColors } from '@/providers/colors'
+import { syncProblemsWithMonaco } from '@/providers/diagnostics'
+import { registerEditorProviders } from '@/providers/editorProviders'
+import { loadEditorConfig, monacoOptionsFor, type EditorConfig } from '@/providers/editorOptions'
 
 // ── Types for git gutter decorations ──────────────────
 interface DiffHunk {
   type: 'added' | 'modified' | 'deleted'
   startLine: number
   count: number
-}
-
-// ── Named CSS colors (top 20) for inline color decorators ──────────────────
-const NAMED_CSS_COLORS: Record<string, string> = {
-  red: '#ff0000', blue: '#0000ff', green: '#008000', yellow: '#ffff00',
-  orange: '#ffa500', purple: '#800080', white: '#ffffff', black: '#000000',
-  gray: '#808080', pink: '#ffc0cb', brown: '#a52a2a', cyan: '#00ffff',
-  magenta: '#ff00ff', lime: '#00ff00', navy: '#000080', teal: '#008080',
-  silver: '#c0c0c0', gold: '#ffd700', coral: '#ff7f50', tomato: '#ff6347',
-}
-const NAMED_COLOR_PATTERN = Object.keys(NAMED_CSS_COLORS).join('|')
-
-// ── CSS color regex for inline color decorators ──────────────────
-const CSS_COLOR_REGEX = new RegExp(
-  `#(?:[0-9a-fA-F]{3,4}){1,2}\\b` +
-  `|rgba?\\(\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*\\d+\\s*(?:,\\s*[\\d.]+\\s*)?\\)` +
-  `|hsla?\\(\\s*\\d+\\s*,\\s*\\d+%?\\s*,\\s*\\d+%?\\s*(?:,\\s*[\\d.]+\\s*)?\\)` +
-  `|\\b(?:${NAMED_COLOR_PATTERN})\\b`,
-  'gi'
-)
-
-interface ColorMatch {
-  line: number
-  startCol: number
-  endCol: number
-  color: string
-}
-
-/**
- * Detect color values in source text.
- * Returns an array of { line, startCol, endCol, color } objects.
- */
-function detectColors(content: string): ColorMatch[] {
-  const results: ColorMatch[] = []
-  const lines = content.split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    const lineContent = lines[i]
-    CSS_COLOR_REGEX.lastIndex = 0
-    let m: RegExpExecArray | null
-    while ((m = CSS_COLOR_REGEX.exec(lineContent)) !== null) {
-      const raw = m[0]
-      // For named colors, resolve to hex; otherwise use raw value
-      const resolved = NAMED_CSS_COLORS[raw.toLowerCase()] || raw
-      results.push({
-        line: i + 1,
-        startCol: m.index + 1,
-        endCol: m.index + 1 + raw.length,
-        color: resolved,
-      })
-    }
-  }
-  return results
 }
 
 /** Simple string hash for generating unique class names */
@@ -103,76 +62,6 @@ function colorHash(color: string): string {
     h = ((h << 5) - h + color.charCodeAt(i)) | 0
   }
   return (h >>> 0).toString(36)
-}
-
-/** Convert various color formats to an rgba() string for the color picker */
-function colorToRGBA(color: string): { r: number; g: number; b: number; a: number } | null {
-  // Hex
-  const hexMatch = color.match(/^#([0-9a-fA-F]{3,8})$/)
-  if (hexMatch) {
-    const hex = hexMatch[1]
-    let r: number, g: number, b: number, a = 1
-    if (hex.length === 3) {
-      r = parseInt(hex[0] + hex[0], 16) / 255
-      g = parseInt(hex[1] + hex[1], 16) / 255
-      b = parseInt(hex[2] + hex[2], 16) / 255
-    } else if (hex.length === 4) {
-      r = parseInt(hex[0] + hex[0], 16) / 255
-      g = parseInt(hex[1] + hex[1], 16) / 255
-      b = parseInt(hex[2] + hex[2], 16) / 255
-      a = parseInt(hex[3] + hex[3], 16) / 255
-    } else if (hex.length === 6) {
-      r = parseInt(hex.slice(0, 2), 16) / 255
-      g = parseInt(hex.slice(2, 4), 16) / 255
-      b = parseInt(hex.slice(4, 6), 16) / 255
-    } else if (hex.length === 8) {
-      r = parseInt(hex.slice(0, 2), 16) / 255
-      g = parseInt(hex.slice(2, 4), 16) / 255
-      b = parseInt(hex.slice(4, 6), 16) / 255
-      a = parseInt(hex.slice(6, 8), 16) / 255
-    } else {
-      return null
-    }
-    return { r, g, b, a }
-  }
-  // rgb/rgba
-  const rgbMatch = color.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/)
-  if (rgbMatch) {
-    return {
-      r: parseInt(rgbMatch[1]) / 255,
-      g: parseInt(rgbMatch[2]) / 255,
-      b: parseInt(rgbMatch[3]) / 255,
-      a: rgbMatch[4] !== undefined ? parseFloat(rgbMatch[4]) : 1,
-    }
-  }
-  // hsl/hsla – convert to rgb
-  const hslMatch = color.match(/^hsla?\(\s*(\d+)\s*,\s*(\d+)%?\s*,\s*(\d+)%?\s*(?:,\s*([\d.]+)\s*)?\)$/)
-  if (hslMatch) {
-    const h = parseInt(hslMatch[1]) / 360
-    const s = parseInt(hslMatch[2]) / 100
-    const l = parseInt(hslMatch[3]) / 100
-    const a = hslMatch[4] !== undefined ? parseFloat(hslMatch[4]) : 1
-    let r: number, g: number, b: number
-    if (s === 0) {
-      r = g = b = l
-    } else {
-      const hue2rgb = (p: number, q: number, t: number) => {
-        if (t < 0) t += 1
-        if (t > 1) t -= 1
-        if (t < 1 / 6) return p + (q - p) * 6 * t
-        if (t < 1 / 2) return q
-        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
-        return p
-      }
-      const q2 = l < 0.5 ? l * (1 + s) : l + s - l * s
-      const p2 = 2 * l - q2
-      r = hue2rgb(p2, q2, h + 1 / 3)
-      g = hue2rgb(p2, q2, h)
-      b = hue2rgb(p2, q2, h - 1 / 3)
-    }
-    return { r, g, b, a }
-  }
-  return null
 }
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'])
@@ -207,8 +96,8 @@ export default function EditorPanel() {
   const closeAllFiles = useEditorStore((s) => s.closeAllFiles)
   const reloadFileContent = useEditorStore((s) => s.reloadFileContent)
   const dismissExternalChange = useEditorStore((s) => s.dismissExternalChange)
+  const renamePath = useEditorStore((s) => s.renamePath)
   const addToast = useToastStore((s) => s.addToast)
-  const getSnippetsForLanguage = useSnippetStore((s) => s.getSnippetsForLanguage)
   const activeFile = useMemo(() => openFiles.find((f) => f.path === activeFilePath), [openFiles, activeFilePath])
   const [saving, setSaving] = useState(false)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null)
@@ -222,30 +111,10 @@ export default function EditorPanel() {
   const { scheduleAutoSave } = useAutoSave()
 
   // Editor config state – initialised from saved settings, if any
-  interface EditorConfig {
-    fontSize: number; minimap: boolean; wordWrap: boolean;
-    fontFamily: string; lineHeight: number;
-    fontLigatures: boolean; cursorStyle: string;
-    renderWhitespace: string; letterSpacing: number;
-    formatOnSave: boolean; trimTrailingWhitespace: boolean; insertFinalNewline: boolean;
-  }
-  const [editorConfig, setEditorConfig] = useState<EditorConfig>(() => {
-    const defaults: EditorConfig = {
-      fontSize: 14, minimap: true, wordWrap: false,
-      fontFamily: 'Cascadia Code', lineHeight: 1.5,
-      fontLigatures: true, cursorStyle: 'line-thin',
-      renderWhitespace: 'selection', letterSpacing: 0,
-      formatOnSave: false, trimTrailingWhitespace: true, insertFinalNewline: true,
-    }
-    try {
-      const stored = localStorage.getItem('orion-editor-settings')
-      if (stored) {
-        const parsed = JSON.parse(stored)
-        return { ...defaults, ...parsed }
-      }
-    } catch { /* ignore */ }
-    return defaults
-  })
+  const [editorConfig, setEditorConfig] = useState<EditorConfig>(loadEditorConfig)
+  // Save handlers live in long-lived listeners; they read the current settings here.
+  const editorConfigRef = useRef(editorConfig)
+  editorConfigRef.current = editorConfig
   const minimapRef = useRef(editorConfig.minimap)
 
   // Inline edit (Ctrl+K) state
@@ -256,13 +125,9 @@ export default function EditorPanel() {
   const [inlineEditSelRange, setInlineEditSelRange] = useState<{ startLine: number; endLine: number } | null>(null)
   const [inlineEditAiResponse, setInlineEditAiResponse] = useState<string | null>(null)
   const inlineEditSelectionRef = useRef<import('monaco-editor').Selection | null>(null)
-
-  // Inline diff preview state (shown after AI responds to Ctrl+K)
-  const [diffVisible, setDiffVisible] = useState(false)
-  const [diffOriginalCode, setDiffOriginalCode] = useState('')
-  const [diffSuggestedCode, setDiffSuggestedCode] = useState('')
-  const [diffPos, setDiffPos] = useState({ top: 60, left: 100 })
-  const diffSelectionRef = useRef<import('monaco-editor').Selection | null>(null)
+  // The model the widget was opened on: the editor swaps models on tab switches.
+  const inlineEditModelRef = useRef<MonacoEditor.ITextModel | null>(null)
+  const [inlineEditGate] = useState(createRequestGate)
 
   // Decoration refs for active line highlight, git gutter, and color decorators
   const activeLineDecorationsRef = useRef<string[]>([])
@@ -271,8 +136,6 @@ export default function EditorPanel() {
   const colorStyleElRef = useRef<HTMLStyleElement | null>(null)
   const colorDecoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const errorLensDecorationsRef = useRef<string[]>([])
-  // Track recent edits per function for "Modified N minutes ago" CodeLens
-  const recentEditsMapRef = useRef<Map<string, number>>(new Map())
   const rootPath = useFileStore((s) => s.rootPath)
 
   // Markdown preview state
@@ -322,6 +185,15 @@ export default function EditorPanel() {
   const [diffOriginalPath, setDiffOriginalPath] = useState<string | null>(null)
   const [diffModifiedPath, setDiffModifiedPath] = useState<string | null>(null)
   const [diffFilePickerOpen, setDiffFilePickerOpen] = useState(false)
+  // Compare on the "changed on disk" bar: the disk version is the original
+  // side, the buffer the modified side.
+  const [diffDiskContent, setDiffDiskContent] = useState<string | null>(null)
+
+  // Pane 2 only receives saves while it is on screen.
+  const activePaneRef = useRef(activePane)
+  activePaneRef.current = activePane
+  const visibleSplitFileRef = useRef(splitFile)
+  visibleSplitFileRef.current = splitMode !== 'single' && !diffEditorMode ? splitFile : null
 
   // Drag-and-drop state for OS file drops
   const [isDragOver, setIsDragOver] = useState(false)
@@ -431,8 +303,6 @@ export default function EditorPanel() {
     }
   }, [openFile, addToast])
 
-  const scanFile = useProblemsStore((s) => s.scanFile)
-
   // Current Monaco theme (synced from the theme store)
   const currentMonacoTheme = useThemeStore((s) => s.activeTheme().monacoTheme)
 
@@ -448,28 +318,33 @@ export default function EditorPanel() {
     return () => window.removeEventListener('orion:theme-changed', handler)
   }, [])
 
-  // Scan the active file for problems when it changes
-  useEffect(() => {
-    if (activeFile) {
-      scanFile(activeFile.path, activeFile.content)
-    }
-  }, [activeFilePath]) // eslint-disable-line react-hooks/exhaustive-deps
-
   const handleChange = (value: string | undefined) => {
     if (activeFilePath && value !== undefined) {
       updateFileContent(activeFilePath, value)
-
-      // Scan for problems on content change
-      scanFile(activeFilePath, value)
 
       // Auto-save (mode & delay handled by the hook)
       scheduleAutoSave(activeFilePath, value)
     }
   }
 
+  // Both editors pass keepCurrentModel: two panes showing one file share its
+  // model, and unmounting either one used to dispose it under the other
+  // (closing the split blanked pane 1). A kept model can miss buffer changes
+  // made while no editor showed it (Reload during a diff, JSON tree edits),
+  // so a newly mounted editor first catches its model up with the buffer.
+  const syncModelWithBuffer = (editor: MonacoEditor.IStandaloneCodeEditor) => {
+    const model = editor.getModel()
+    if (!model) return
+    const file = openFilesRef.current.find((f) => modelPathFor(f.path) === model.uri.toString())
+    if (!file || model.getValue() === file.content) return
+    editor.executeEdits('', [{ range: model.getFullModelRange(), text: file.content, forceMoveMarkers: true }])
+    editor.pushUndoStop()
+  }
+
   const handleEditorMount = (editor: MonacoEditor.IStandaloneCodeEditor, monaco: Monaco) => {
     editorRef.current = editor
     monacoRef.current = monaco
+    setLensEditor(editor)
 
     // Register custom Monaco themes from the theme registry
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -585,98 +460,57 @@ export default function EditorPanel() {
       })
     }
 
-    // Register snippet completions for TS/JS languages
-    if (monaco) {
-      const snippetLanguages = ['typescript', 'typescriptreact', 'javascript', 'javascriptreact']
-      for (const lang of snippetLanguages) {
-        monaco.languages.registerCompletionItemProvider(lang, {
-          provideCompletionItems: (model, position) => {
-            const word = model.getWordUntilPosition(position)
-            const range = {
-              startLineNumber: position.lineNumber,
-              endLineNumber: position.lineNumber,
-              startColumn: word.startColumn,
-              endColumn: word.endColumn,
-            }
+    // Open the inline edit widget (Cursor-style) on the editor's selection
+    const openInlineEdit = (ed: MonacoEditor.ICodeEditor): boolean => {
+      const selection = ed.getSelection()
+      const model = ed.getModel()
+      if (!selection || !model) return false
 
-            return {
-              suggestions: [
-                {
-                  label: 'useState',
-                  kind: monaco.languages.CompletionItemKind.Snippet,
-                  insertText: 'const [${1:state}, set${1/(.*)/${1:/capitalize}/}] = useState(${2:initialValue})',
-                  insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-                  documentation: 'React useState hook',
-                  range,
-                },
-                {
-                  label: 'useEffect',
-                  kind: monaco.languages.CompletionItemKind.Snippet,
-                  insertText: 'useEffect(() => {\n\t${1}\n}, [${2}])',
-                  insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-                  documentation: 'React useEffect hook',
-                  range,
-                },
-                {
-                  label: 'comp',
-                  kind: monaco.languages.CompletionItemKind.Snippet,
-                  insertText: 'export default function ${1:Component}() {\n\treturn (\n\t\t<div>\n\t\t\t${2}\n\t\t</div>\n\t)\n}',
-                  insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-                  documentation: 'React functional component',
-                  range,
-                },
-              ],
-            }
-          },
+      // A reply to an earlier opening must not land on this one.
+      inlineEditGate.cancel()
+      setInlineProcessing(false)
+
+      const selectedText = model.getValueInRange(selection)
+      setInlineEditText(selectedText)
+      inlineEditSelectionRef.current = selection
+      inlineEditModelRef.current = model
+
+      // Capture selection range for display
+      if (selectedText) {
+        setInlineEditSelRange({
+          startLine: selection.startLineNumber,
+          endLine: selection.endLineNumber,
         })
+      } else {
+        setInlineEditSelRange(null)
       }
+
+      // Reset any previous AI response
+      setInlineEditAiResponse(null)
+
+      // Position the inline edit widget relative to the editor container
+      const pos = ed.getScrolledVisiblePosition(selection.getStartPosition())
+      const domNode = ed.getDomNode()
+      if (pos && domNode) {
+        const editorWidth = domNode.getBoundingClientRect().width
+        // Position widget below the selection line within the editor
+        setInlineEditPos({
+          top: pos.top + 24,
+          left: Math.min(Math.max(pos.left, 40), Math.max(editorWidth - 540, 40)),
+        })
+      } else {
+        setInlineEditPos({ top: 100, left: 40 })
+      }
+
+      setInlineEditVisible(true)
+      return true
     }
 
-    // Register Ctrl+K for inline edit (Cursor-style)
-    editor.addAction({
-      id: 'orion-inline-edit',
-      label: 'Edit with AI (Ctrl+K)',
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
-      run: (ed) => {
-        const selection = ed.getSelection()
-        const model = ed.getModel()
-        if (!selection || !model) return
-
-        const selectedText = model.getValueInRange(selection)
-        setInlineEditText(selectedText)
-
-        // Store the selection for later use
-        inlineEditSelectionRef.current = selection
-
-        // Capture selection range for display
-        if (selectedText) {
-          setInlineEditSelRange({
-            startLine: selection.startLineNumber,
-            endLine: selection.endLineNumber,
-          })
-        } else {
-          setInlineEditSelRange(null)
-        }
-
-        // Reset any previous AI response
-        setInlineEditAiResponse(null)
-
-        // Position the inline edit widget relative to the editor container
-        const pos = ed.getScrolledVisiblePosition(selection.getStartPosition())
-        const domNode = ed.getDomNode()
-        if (pos && domNode) {
-          const editorWidth = domNode.getBoundingClientRect().width
-          // Position widget below the selection line within the editor
-          setInlineEditPos({
-            top: pos.top + 24,
-            left: Math.min(Math.max(pos.left, 40), Math.max(editorWidth - 540, 40)),
-          })
-        } else {
-          setInlineEditPos({ top: 100, left: 40 })
-        }
-
-        setInlineEditVisible(true)
-      },
+    // Ctrl+K, and the Refactor / Add Comments / Fix Issues context-menu items,
+    // which open the same widget with their instruction already submitted.
+    registerInlineEditActions(editor, monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, {
+      open: openInlineEdit,
+      submit: (instruction) => void handleInlineEditSubmit(instruction),
     })
 
     // Register Ctrl+H for find and replace (Monaco built-in)
@@ -749,131 +583,6 @@ export default function EditorPanel() {
               selectedText: text,
               filePath: activeFilePath,
               language: activeFile?.language || '',
-            },
-          }),
-        )
-      },
-    })
-
-    editor.addAction({
-      id: 'orion-ai-refactor',
-      label: 'AI: Refactor Selection',
-      contextMenuGroupId: '9_ai',
-      contextMenuOrder: 2,
-      precondition: 'editorHasSelection',
-      run: (ed) => {
-        const sel = ed.getSelection()
-        const mdl = ed.getModel()
-        if (!sel || !mdl) return
-        const text = mdl.getValueInRange(sel)
-        if (!text.trim()) return
-
-        // Store selection for diff preview
-        diffSelectionRef.current = sel
-
-        // Position diff near selection
-        const vPos = ed.getScrolledVisiblePosition(sel.getStartPosition())
-        const domNode = ed.getDomNode()
-        if (vPos && domNode) {
-          const rect = domNode.getBoundingClientRect()
-          setDiffPos({
-            top: vPos.top + rect.top - 10,
-            left: Math.max(vPos.left + rect.left, rect.left + 40),
-          })
-        } else {
-          setDiffPos({ top: 100, left: 100 })
-        }
-
-        window.dispatchEvent(
-          new CustomEvent('orion:ai-context-action', {
-            detail: {
-              action: 'refactor',
-              selectedText: text,
-              filePath: activeFilePath,
-              language: activeFile?.language || '',
-              fullContext: mdl.getValue().substring(0, 2000),
-            },
-          }),
-        )
-      },
-    })
-
-    editor.addAction({
-      id: 'orion-ai-add-comments',
-      label: 'AI: Add Comments',
-      contextMenuGroupId: '9_ai',
-      contextMenuOrder: 3,
-      precondition: 'editorHasSelection',
-      run: (ed) => {
-        const sel = ed.getSelection()
-        const mdl = ed.getModel()
-        if (!sel || !mdl) return
-        const text = mdl.getValueInRange(sel)
-        if (!text.trim()) return
-
-        diffSelectionRef.current = sel
-
-        const vPos = ed.getScrolledVisiblePosition(sel.getStartPosition())
-        const domNode = ed.getDomNode()
-        if (vPos && domNode) {
-          const rect = domNode.getBoundingClientRect()
-          setDiffPos({
-            top: vPos.top + rect.top - 10,
-            left: Math.max(vPos.left + rect.left, rect.left + 40),
-          })
-        } else {
-          setDiffPos({ top: 100, left: 100 })
-        }
-
-        window.dispatchEvent(
-          new CustomEvent('orion:ai-context-action', {
-            detail: {
-              action: 'add-comments',
-              selectedText: text,
-              filePath: activeFilePath,
-              language: activeFile?.language || '',
-              fullContext: mdl.getValue().substring(0, 2000),
-            },
-          }),
-        )
-      },
-    })
-
-    editor.addAction({
-      id: 'orion-ai-fix-issues',
-      label: 'AI: Fix Issues',
-      contextMenuGroupId: '9_ai',
-      contextMenuOrder: 4,
-      precondition: 'editorHasSelection',
-      run: (ed) => {
-        const sel = ed.getSelection()
-        const mdl = ed.getModel()
-        if (!sel || !mdl) return
-        const text = mdl.getValueInRange(sel)
-        if (!text.trim()) return
-
-        diffSelectionRef.current = sel
-
-        const vPos = ed.getScrolledVisiblePosition(sel.getStartPosition())
-        const domNode = ed.getDomNode()
-        if (vPos && domNode) {
-          const rect = domNode.getBoundingClientRect()
-          setDiffPos({
-            top: vPos.top + rect.top - 10,
-            left: Math.max(vPos.left + rect.left, rect.left + 40),
-          })
-        } else {
-          setDiffPos({ top: 100, left: 100 })
-        }
-
-        window.dispatchEvent(
-          new CustomEvent('orion:ai-context-action', {
-            detail: {
-              action: 'fix-issues',
-              selectedText: text,
-              filePath: activeFilePath,
-              language: activeFile?.language || '',
-              fullContext: mdl.getValue().substring(0, 2000),
             },
           }),
         )
@@ -1044,393 +753,10 @@ export default function EditorPanel() {
       debouncedUpdateColorDecorations()
     })
 
-    // ── Color picker: register a DocumentColorProvider so Monaco shows native color picker ──
-    const colorProviderLanguages = [
-      'css', 'scss', 'less', 'html', 'javascript', 'typescript',
-      'javascriptreact', 'typescriptreact', 'json', 'jsonc',
-    ]
-    for (const lang of colorProviderLanguages) {
-      monaco.languages.registerColorProvider(lang, {
-        provideDocumentColors: (model) => {
-          const text = model.getValue()
-          const colorMatches = detectColors(text)
-          const results: { range: InstanceType<typeof monaco.Range>; color: { red: number; green: number; blue: number; alpha: number } }[] = []
-          for (const cm of colorMatches) {
-            const rgba = colorToRGBA(cm.color)
-            if (!rgba) continue
-            results.push({
-              range: new monaco.Range(cm.line, cm.startCol, cm.line, cm.endCol),
-              color: { red: rgba.r, green: rgba.g, blue: rgba.b, alpha: rgba.a },
-            })
-          }
-          return results
-        },
-        provideColorPresentations: (model, colorInfo) => {
-          const { red, green, blue, alpha } = colorInfo.color
-          const r = Math.round(red * 255)
-          const g = Math.round(green * 255)
-          const b = Math.round(blue * 255)
-          const presentations: { label: string; textEdit?: { range: import('monaco-editor').IRange; text: string } }[] = []
-
-          // Hex presentation
-          const hexR = r.toString(16).padStart(2, '0')
-          const hexG = g.toString(16).padStart(2, '0')
-          const hexB = b.toString(16).padStart(2, '0')
-          if (alpha < 1) {
-            const hexA = Math.round(alpha * 255).toString(16).padStart(2, '0')
-            presentations.push({
-              label: `#${hexR}${hexG}${hexB}${hexA}`,
-              textEdit: { range: colorInfo.range, text: `#${hexR}${hexG}${hexB}${hexA}` },
-            })
-          } else {
-            presentations.push({
-              label: `#${hexR}${hexG}${hexB}`,
-              textEdit: { range: colorInfo.range, text: `#${hexR}${hexG}${hexB}` },
-            })
-          }
-
-          // RGBA presentation
-          if (alpha < 1) {
-            presentations.push({
-              label: `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(2)})`,
-              textEdit: { range: colorInfo.range, text: `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(2)})` },
-            })
-          } else {
-            presentations.push({
-              label: `rgb(${r}, ${g}, ${b})`,
-              textEdit: { range: colorInfo.range, text: `rgb(${r}, ${g}, ${b})` },
-            })
-          }
-
-          return presentations
-        },
-      })
-    }
-
-    // ── Register snippet completion providers ──────────────────
-    const snippetLanguages = ['typescript', 'javascript', 'typescriptreact', 'javascriptreact', 'python']
-    for (const lang of snippetLanguages) {
-      monaco.languages.registerCompletionItemProvider(lang, {
-        triggerCharacters: [],
-        provideCompletionItems: (model, position) => {
-          const word = model.getWordUntilPosition(position)
-          const range = {
-            startLineNumber: position.lineNumber,
-            endLineNumber: position.lineNumber,
-            startColumn: word.startColumn,
-            endColumn: word.endColumn,
-          }
-          const langSnippets = getSnippetsForLanguage(lang)
-          const suggestions = langSnippets.map((snippet) => ({
-            label: snippet.prefix,
-            kind: monaco.languages.CompletionItemKind.Snippet,
-            documentation: snippet.description,
-            insertText: snippet.body,
-            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-            detail: `Snippet: ${snippet.description}`,
-            range,
-            sortText: `!${snippet.prefix}`,
-          }))
-          return { suggestions }
-        },
-      })
-    }
-
-    // ── CodeLens provider: references, implementations, tests, AI, recent changes ──
-    const codeLensLanguages = ['typescript', 'javascript', 'typescriptreact', 'javascriptreact']
-    const CL_FUNC_DEF = /^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?(?:\(|(?:\w+)\s*=>)|class\s+(\w+))/
-    const CL_IFACE = /^[ \t]*(?:export\s+)?(?:interface|type)\s+(\w+)/
-    const CL_EXPORT = /^[ \t]*export\s+(?:default\s+)?(?:function|const|let|var|class|interface|type|enum|abstract)\s+(\w+)/
-    const CL_TEST_BLOCK = /^[ \t]*(?:describe|it|test)\s*\(\s*['"`](.+?)['"`]/
-
-    // Helper: count references across all open editor models
-    const countRefsAcrossModels = (sym: string): number => {
-      const re = new RegExp(`\\b${sym.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')
-      let n = 0
-      for (const m of monaco.editor.getModels()) { const hits = m.getValue().match(re); if (hits) n += hits.length }
-      return n
-    }
-
-    // Helper: count implementations (implements/extends) across all open models
-    const countImpl = (iface: string): number => {
-      const re = new RegExp(`\\b(?:implements|extends)\\s+(?:[\\w,\\s]*\\b)?${iface.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')
-      let n = 0
-      for (const m of monaco.editor.getModels()) { const hits = m.getValue().match(re); if (hits) n += hits.length }
-      return n
-    }
-
-    // Helper: find the closing brace line for a block starting at startLine
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const findBlockEnd = (mdl: any, startLine: number): number => {
-      const lc = mdl.getLineCount()
-      let depth = 0; let opened = false
-      for (let ln = startLine; ln <= lc; ln++) {
-        const c = mdl.getLineContent(ln)
-        for (const ch of c) {
-          if (ch === '{') { depth++; opened = true } else if (ch === '}') { depth-- }
-          if (opened && depth === 0) return ln
-        }
-      }
-      return startLine
-    }
-
-    // Track edits for "Modified N minutes ago" CodeLens
-    editor.onDidChangeModelContent(() => {
-      const mdl = editor.getModel()
-      if (!mdl) return
-      const pos = editor.getPosition()
-      if (!pos) return
-      const curLine = mdl.getLineContent(pos.lineNumber)
-      const curMatch = CL_FUNC_DEF.exec(curLine)
-      if (curMatch) {
-        const nm = curMatch[1] || curMatch[2] || curMatch[3]
-        if (nm) recentEditsMapRef.current.set(`${mdl.uri.toString()}:${nm}`, Date.now())
-      }
-      // Check above lines to find enclosing function
-      for (let off = 1; off <= 30; off++) {
-        const ln = pos.lineNumber - off
-        if (ln < 1) break
-        const above = mdl.getLineContent(ln)
-        const am = CL_FUNC_DEF.exec(above)
-        if (am) {
-          const nm = am[1] || am[2] || am[3]
-          if (nm && pos.lineNumber <= findBlockEnd(mdl, ln)) {
-            recentEditsMapRef.current.set(`${mdl.uri.toString()}:${nm}`, Date.now())
-          }
-          break
-        }
-      }
-    })
-
-    // Register CodeLens command actions for click handlers
-    editor.addAction({
-      id: 'orion-codelens-show-references',
-      label: 'Show References',
-      run: (ed) => { ed.getAction('editor.action.referenceSearch.trigger')?.run() },
-    })
-    editor.addAction({
-      id: 'orion-codelens-run-test',
-      label: 'Run Test',
-      run: () => { /* dispatched via event */ },
-    })
-    editor.addAction({
-      id: 'orion-codelens-debug-test',
-      label: 'Debug Test',
-      run: () => { /* dispatched via event */ },
-    })
-    editor.addAction({
-      id: 'orion-codelens-explain',
-      label: 'AI: Explain Function',
-      run: () => { /* dispatched via event */ },
-    })
-
-    for (const lang of codeLensLanguages) {
-      monaco.languages.registerCodeLensProvider(lang, {
-        provideCodeLenses: (model) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const lenses: { range: any; id: string; command: { id: string; title: string; arguments?: any[] } }[] = []
-          const lineCount = model.getLineCount()
-          const uri = model.uri.toString()
-          const isTestFile = /\.(test|spec)\.[jt]sx?$/.test(uri)
-
-          // ── 1. Scan for definitions (functions, classes, interfaces/types, exports) ──
-          const definitions: { name: string; line: number; kind: 'function' | 'class' | 'interface' | 'type' | 'export' }[] = []
-
-          for (let lineNum = 1; lineNum <= lineCount; lineNum++) {
-            const lineContent = model.getLineContent(lineNum)
-
-            // Check interface/type first (more specific)
-            const ifaceMatch = CL_IFACE.exec(lineContent)
-            if (ifaceMatch && ifaceMatch[1]) {
-              const kind = lineContent.includes('interface') ? 'interface' as const : 'type' as const
-              definitions.push({ name: ifaceMatch[1], line: lineNum, kind })
-              continue
-            }
-
-            // Check function/class/const declarations
-            const funcMatch = CL_FUNC_DEF.exec(lineContent)
-            if (funcMatch) {
-              const name = funcMatch[1] || funcMatch[2] || funcMatch[3]
-              if (name) {
-                if (CL_EXPORT.test(lineContent)) {
-                  definitions.push({ name, line: lineNum, kind: 'export' })
-                } else {
-                  definitions.push({ name, line: lineNum, kind: funcMatch[3] ? 'class' : 'function' })
-                }
-              }
-            }
-          }
-
-          // ── 2. Reference count CodeLens for each definition ──
-          for (const def of definitions) {
-            const totalRefs = countRefsAcrossModels(def.name)
-            const refCount = Math.max(0, totalRefs - 1)
-
-            lenses.push({
-              range: new monaco.Range(def.line, 1, def.line, 1),
-              id: `codelens-ref-${def.name}-${def.line}`,
-              command: {
-                id: 'orion-codelens-show-references',
-                title: `${refCount} reference${refCount !== 1 ? 's' : ''}`,
-                arguments: [def.name, def.line],
-              },
-            })
-
-            // ── 3. Implementation count for interfaces/types ──
-            if (def.kind === 'interface' || def.kind === 'type') {
-              const ic = countImpl(def.name)
-              lenses.push({
-                range: new monaco.Range(def.line, 1, def.line, 1),
-                id: `codelens-impl-${def.name}-${def.line}`,
-                command: {
-                  id: 'orion-codelens-show-references',
-                  title: `${ic} implementation${ic !== 1 ? 's' : ''}`,
-                  arguments: [def.name, def.line],
-                },
-              })
-            }
-
-            // ── 4. AI "Explain" CodeLens for complex functions (>20 lines) ──
-            if (def.kind === 'function' || def.kind === 'class' || def.kind === 'export') {
-              const endLine = findBlockEnd(model, def.line)
-              const blockLen = endLine - def.line + 1
-              if (blockLen > 20) {
-                lenses.push({
-                  range: new monaco.Range(def.line, 1, def.line, 1),
-                  id: `codelens-explain-${def.name}-${def.line}`,
-                  command: {
-                    id: 'orion-codelens-explain',
-                    title: 'Explain',
-                    arguments: [def.name, def.line, endLine, uri],
-                  },
-                })
-              }
-            }
-
-            // ── 5. Recent changes CodeLens ──
-            const editKey = `${uri}:${def.name}`
-            const lastEdit = recentEditsMapRef.current.get(editKey)
-            if (lastEdit) {
-              const minsAgo = Math.round((Date.now() - lastEdit) / 60000)
-              if (minsAgo < 60) {
-                const label = minsAgo < 1 ? 'just now' : `${minsAgo} minute${minsAgo !== 1 ? 's' : ''} ago`
-                lenses.push({
-                  range: new monaco.Range(def.line, 1, def.line, 1),
-                  id: `codelens-recent-${def.name}-${def.line}`,
-                  command: {
-                    id: '',
-                    title: `Modified ${label}`,
-                  },
-                })
-              }
-            }
-          }
-
-          // ── 6. Test CodeLens for test files ──
-          if (isTestFile) {
-            for (let lineNum = 1; lineNum <= lineCount; lineNum++) {
-              const lineContent = model.getLineContent(lineNum)
-              const testMatch = CL_TEST_BLOCK.exec(lineContent)
-              if (testMatch && testMatch[1]) {
-                const testName = testMatch[1]
-                const blockType = lineContent.trim().startsWith('describe') ? 'describe' : 'test'
-
-                lenses.push({
-                  range: new monaco.Range(lineNum, 1, lineNum, 1),
-                  id: `codelens-run-test-${lineNum}`,
-                  command: {
-                    id: 'orion-codelens-run-test',
-                    title: 'Run Test',
-                    arguments: [testName, lineNum, uri, blockType],
-                  },
-                })
-
-                lenses.push({
-                  range: new monaco.Range(lineNum, 1, lineNum, 1),
-                  id: `codelens-debug-test-${lineNum}`,
-                  command: {
-                    id: 'orion-codelens-debug-test',
-                    title: 'Debug Test',
-                    arguments: [testName, lineNum, uri, blockType],
-                  },
-                })
-              }
-            }
-          }
-
-          return { lenses, dispose: () => {} }
-        },
-        resolveCodeLens: (_model, codeLens) => codeLens,
-      })
-    }
-
-    // ── CodeLens click event handlers ──
-    const handleRunTest = (e: Event) => {
-      const { testName, filePath } = (e as CustomEvent).detail || {}
-      if (testName && filePath) {
-        window.dispatchEvent(new CustomEvent('orion:run-task', {
-          detail: { command: `npx jest --testNamePattern="${testName}" "${filePath}"`, label: `Run: ${testName}` },
-        }))
-      }
-    }
-    window.addEventListener('orion:codelens-run-test', handleRunTest)
-
-    const handleDebugTest = (e: Event) => {
-      const { testName, filePath } = (e as CustomEvent).detail || {}
-      if (testName && filePath) {
-        window.dispatchEvent(new CustomEvent('orion:run-task', {
-          detail: { command: `node --inspect-brk node_modules/.bin/jest --testNamePattern="${testName}" "${filePath}"`, label: `Debug: ${testName}` },
-        }))
-      }
-    }
-    window.addEventListener('orion:codelens-debug-test', handleDebugTest)
-
-    const handleExplain = (e: Event) => {
-      const { startLine, endLine } = (e as CustomEvent).detail || {}
-      const mdl = editor.getModel()
-      if (mdl && startLine && endLine) {
-        const text = mdl.getValueInRange(new monaco.Range(startLine, 1, endLine, mdl.getLineMaxColumn(endLine)))
-        window.dispatchEvent(new CustomEvent('orion:ai-context-action', {
-          detail: { action: 'explain', selectedText: text, filePath: activeFilePath, language: activeFile?.language || '' },
-        }))
-      }
-    }
-    window.addEventListener('orion:codelens-explain', handleExplain)
-
-    // Wire Monaco command dispatching to custom events for CodeLens clicks
-    const origTrigger = editor.trigger.bind(editor)
-    const patchedTrigger: typeof editor.trigger = (source, handlerId, payload) => {
-      if (handlerId === 'orion-codelens-run-test' && payload?.arguments) {
-        const [testName, , filePath] = payload.arguments
-        window.dispatchEvent(new CustomEvent('orion:codelens-run-test', { detail: { testName, filePath } }))
-        return
-      }
-      if (handlerId === 'orion-codelens-debug-test' && payload?.arguments) {
-        const [testName, , filePath] = payload.arguments
-        window.dispatchEvent(new CustomEvent('orion:codelens-debug-test', { detail: { testName, filePath } }))
-        return
-      }
-      if (handlerId === 'orion-codelens-explain' && payload?.arguments) {
-        const [functionName, startLine, endLine] = payload.arguments
-        window.dispatchEvent(new CustomEvent('orion:codelens-explain', { detail: { functionName, startLine, endLine } }))
-        return
-      }
-      if (handlerId === 'orion-codelens-show-references') {
-        editor.getAction('editor.action.referenceSearch.trigger')?.run()
-        return
-      }
-      origTrigger(source, handlerId, payload)
-    }
-    editor.trigger = patchedTrigger
-
-    // ── Language providers: definition, references, hover, symbols, rename ──────────────────
-    registerLanguageProviders(monaco, editor, {
-      getActiveFilePath: () => activeFilePath,
-      getProblems: () => useProblemsStore.getState().problems,
-    })
-
-    // ── Code Actions / Quick Fix provider: lightbulb with fix suggestions ──────────────────
-    registerCodeActionProviders(monaco, editor)
+    // Providers, CodeLens commands and the Problems feed are global to Monaco,
+    // so they are registered once, not on every mount of this editor.
+    registerEditorProviders(monaco)
+    syncProblemsWithMonaco(monaco)
 
     // ── Go to Line (Ctrl+G) ──────────────────
     editor.addAction({
@@ -1597,7 +923,7 @@ export default function EditorPanel() {
       run: (ed) => {
         const model = ed.getModel()
         if (!model) return
-        const markers = monaco.editor.getModelMarkers({ resource: model.uri, owner: 'orion' })
+        const markers = monaco.editor.getModelMarkers({ resource: model.uri })
           .sort((a, b) => a.startLineNumber - b.startLineNumber || a.startColumn - b.startColumn)
         if (markers.length === 0) return
 
@@ -1627,7 +953,7 @@ export default function EditorPanel() {
       run: (ed) => {
         const model = ed.getModel()
         if (!model) return
-        const markers = monaco.editor.getModelMarkers({ resource: model.uri, owner: 'orion' })
+        const markers = monaco.editor.getModelMarkers({ resource: model.uri })
           .sort((a, b) => a.startLineNumber - b.startLineNumber || a.startColumn - b.startColumn)
         if (markers.length === 0) return
 
@@ -1648,339 +974,80 @@ export default function EditorPanel() {
         ed.getAction('editor.action.marker.prev')?.run()
       },
     })
-
-    // ── Fix with AI action (triggered from hover tooltip link) ──────────────────
-    editor.addAction({
-      id: 'orion-fix-with-ai',
-      label: 'Fix with AI',
-      run: (ed) => {
-        const pos = ed.getPosition()
-        if (!pos) return
-        const model = ed.getModel()
-        if (!model) return
-        const markers = monaco.editor.getModelMarkers({ resource: model.uri, owner: 'orion' })
-        const marker = markers.find(m =>
-          m.startLineNumber <= pos.lineNumber && m.endLineNumber >= pos.lineNumber
-        )
-        if (marker) {
-          window.dispatchEvent(new CustomEvent('orion:fix-with-ai', {
-            detail: {
-              message: marker.message,
-              source: marker.source,
-              line: marker.startLineNumber,
-              file: activeFilePath,
-            },
-          }))
-        }
-      },
-    })
-
-    // ── Linked editing for HTML/JSX tags ──────────────────
-    const linkedEditingLanguages = ['html', 'javascriptreact', 'typescriptreact']
-    for (const lang of linkedEditingLanguages) {
-      monaco.languages.registerLinkedEditingRangeProvider(lang, {
-        provideLinkedEditingRanges(model, position) {
-          const line = model.getLineContent(position.lineNumber)
-          const offset = position.column - 1
-
-          // Check if cursor is on a tag name (opening or closing)
-          // Match opening tag: <TagName or closing tag: </TagName
-          const tagPattern = /<\/?([a-zA-Z][a-zA-Z0-9._-]*)/g
-          let match: RegExpExecArray | null
-          while ((match = tagPattern.exec(line)) !== null) {
-            const tagStart = match.index + match[0].length - match[1].length
-            const tagEnd = tagStart + match[1].length
-            if (offset >= tagStart && offset <= tagEnd) {
-              const tagName = match[1]
-              const isClosing = match[0].startsWith('</')
-              const fullText = model.getValue()
-
-              // Find the matching tag
-              if (isClosing) {
-                // Find the matching opening tag by scanning backwards
-                const closingTagPos = model.getPositionAt(
-                  fullText.lastIndexOf(match[0], model.getOffsetAt(position))
-                )
-                const beforeClosing = fullText.substring(0, model.getOffsetAt(closingTagPos))
-                // Simple stack-based search for matching opening tag
-                let depth = 0
-                const openPattern = new RegExp(`</?${tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[\\s>/])`, 'g')
-                const allTags: { index: number; isClose: boolean }[] = []
-                let m2: RegExpExecArray | null
-                while ((m2 = openPattern.exec(beforeClosing)) !== null) {
-                  allTags.push({ index: m2.index, isClose: m2[0].startsWith('</') })
-                }
-                // Walk from end to find the matching open
-                for (let i = allTags.length - 1; i >= 0; i--) {
-                  if (allTags[i].isClose) {
-                    depth++
-                  } else {
-                    if (depth === 0) {
-                      // Found matching opening tag
-                      const openPos = model.getPositionAt(allTags[i].index + 1) // skip <
-                      const openRange = {
-                        startLineNumber: openPos.lineNumber,
-                        startColumn: openPos.column,
-                        endLineNumber: openPos.lineNumber,
-                        endColumn: openPos.column + tagName.length,
-                      }
-                      const closeRange = {
-                        startLineNumber: position.lineNumber,
-                        startColumn: tagStart + 1,
-                        endLineNumber: position.lineNumber,
-                        endColumn: tagEnd + 1,
-                      }
-                      return {
-                        ranges: [openRange, closeRange],
-                        wordPattern: /[a-zA-Z][a-zA-Z0-9._-]*/,
-                      }
-                    }
-                    depth--
-                  }
-                }
-              } else {
-                // Find the matching closing tag by scanning forwards
-                const openOffset = model.getOffsetAt(position)
-                const afterOpen = fullText.substring(openOffset)
-                let depth = 0
-                const closePattern = new RegExp(`</?${tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[\\s>/])`, 'g')
-                let m2: RegExpExecArray | null
-                while ((m2 = closePattern.exec(afterOpen)) !== null) {
-                  if (m2[0].startsWith('</')) {
-                    if (depth === 0) {
-                      // Found matching closing tag
-                      const closeAbsOffset = openOffset + m2.index + 2 // skip </
-                      const closePos = model.getPositionAt(closeAbsOffset)
-                      const openRange = {
-                        startLineNumber: position.lineNumber,
-                        startColumn: tagStart + 1,
-                        endLineNumber: position.lineNumber,
-                        endColumn: tagEnd + 1,
-                      }
-                      const closeRange = {
-                        startLineNumber: closePos.lineNumber,
-                        startColumn: closePos.column,
-                        endLineNumber: closePos.lineNumber,
-                        endColumn: closePos.column + tagName.length,
-                      }
-                      return {
-                        ranges: [openRange, closeRange],
-                        wordPattern: /[a-zA-Z][a-zA-Z0-9._-]*/,
-                      }
-                    }
-                    depth--
-                  } else {
-                    depth++
-                  }
-                }
-              }
-              break
-            }
-          }
-          return null
-        },
-      })
-    }
-
-    // ── Import block folding range provider ──────────────────
-    const foldingLanguages = [
-      'typescript', 'typescriptreact', 'javascript', 'javascriptreact',
-      'python', 'go', 'rust', 'java', 'css', 'scss', 'less',
-    ]
-    for (const lang of foldingLanguages) {
-      monaco.languages.registerFoldingRangeProvider(lang, {
-        provideFoldingRanges(model) {
-          const ranges: import('monaco-editor').languages.FoldingRange[] = []
-          const lineCount = model.getLineCount()
-          let importStart = -1
-          let importEnd = -1
-
-          for (let i = 1; i <= lineCount; i++) {
-            const lineText = model.getLineContent(i).trim()
-            // Match import/require statements across common languages
-            const isImport = /^(import\s|from\s|require\(|const\s+\w+\s*=\s*require|let\s+\w+\s*=\s*require|var\s+\w+\s*=\s*require|#include|use\s|using\s|@import)/.test(lineText)
-            if (isImport) {
-              if (importStart === -1) importStart = i
-              importEnd = i
-            } else if (lineText === '' && importStart !== -1) {
-              // Allow blank lines within import blocks
-              continue
-            } else if (importStart !== -1 && importEnd > importStart) {
-              // End of import block
-              ranges.push({
-                start: importStart,
-                end: importEnd,
-                kind: monaco.languages.FoldingRangeKind.Imports,
-              })
-              importStart = -1
-              importEnd = -1
-            } else {
-              importStart = -1
-              importEnd = -1
-            }
-          }
-          // Handle imports at end of scannable area
-          if (importStart !== -1 && importEnd > importStart) {
-            ranges.push({
-              start: importStart,
-              end: importEnd,
-              kind: monaco.languages.FoldingRangeKind.Imports,
-            })
-          }
-          return ranges
-        },
-      })
-    }
   }
 
+  // Uses only refs and store state: the context-menu actions call it from
+  // closures created when the editor mounted.
   const handleInlineEditSubmit = async (instruction: string) => {
-    if (!activeFile || !editorRef.current) return
+    const editor = editorRef.current
+    const model = inlineEditModelRef.current
+    const selection = inlineEditSelectionRef.current
+    if (!editor || !model || !selection || editor.getModel() !== model) return
+
+    const requestId = inlineEditGate.start()
+    setInlineEditAiResponse(null)
     setInlineProcessing(true)
-    setInlineEditAiResponse(null)
-
-    try {
-      // Use stored selection from when Ctrl+K was pressed, or get current
-      const selection = inlineEditSelectionRef.current || editorRef.current.getSelection()
-      const model = editorRef.current.getModel()
-      if (!selection || !model) return
-
-      const selectedCode = model.getValueInRange(selection) || ''
-      const fullContext = model.getValue()
-
-      // Also store in diffSelectionRef for backwards compat with InlineDiff
-      diffSelectionRef.current = selection
-
-      // Build the AI prompt
-      const hasSelection = selectedCode.trim().length > 0
-      const codeContext = fullContext.substring(0, 3000)
-      const fence = '`' + '`' + '`'
-      const message = hasSelection
-        ? 'Edit the following code according to the instruction: ' + instruction + '\n\nSelected code to edit:\n' + fence + (activeFile.language || '') + '\n' + selectedCode + '\n' + fence + '\n\nFull file context (for reference):\n' + fence + (activeFile.language || '') + '\n' + codeContext + '\n' + fence + '\n\nReturn ONLY the modified code that should replace the selection. No explanation, no markdown fences.'
-        : 'Generate code according to the instruction: ' + instruction + '\n\nFile context (cursor is at line ' + selection.startLineNumber + '):\n' + fence + (activeFile.language || '') + '\n' + codeContext + '\n' + fence + '\n\nReturn ONLY the code to insert. No explanation, no markdown fences.'
-
-      window.api?.omoSend({
-        type: 'chat',
-        payload: { message, mode: 'chat', model: 'inline-edit' },
-      })
-
-      // Listen for the response -- show diff preview inline in the widget
-      const handler = (event: any) => {
-        if (event?.detail?.type === 'inline-edit-response') {
-          const newCode = event.detail.content
-          if (newCode) {
-            // Show the AI response in the inline edit widget (preview phase)
-            setInlineEditAiResponse(newCode)
-            // Also populate the separate diff state for backwards compat
-            setDiffOriginalCode(selectedCode)
-            setDiffSuggestedCode(newCode)
-          }
-          setInlineProcessing(false)
-          window.removeEventListener('orion:inline-edit-response', handler)
-        }
-      }
-      window.addEventListener('orion:inline-edit-response', handler)
-
-      // Fallback timeout
-      setTimeout(() => {
-        if (inlineProcessing) {
-          setInlineProcessing(false)
-          setInlineEditAiResponse(null)
-          setInlineEditVisible(false)
-          addToast({ type: 'info', message: 'AI edit timed out - try from chat instead' })
-          window.removeEventListener('orion:inline-edit-response', handler)
-        }
-      }, 30000)
-    } catch (err) {
-      setInlineProcessing(false)
-      setInlineEditAiResponse(null)
-      addToast({ type: 'error', message: 'Failed to process inline edit' })
+    const result = await requestInlineEdit(
+      buildInlineEditRequest(model, selection, {
+        instruction,
+        filePath: model.uri.path,
+        chatModel: useChatStore.getState().selectedModel,
+      }),
+    )
+    // Closed, reopened or resubmitted while waiting: drop this reply.
+    if (!inlineEditGate.isCurrent(requestId)) return
+    setInlineProcessing(false)
+    if ('error' in result) {
+      addToast({ type: 'error', message: `AI edit failed: ${result.error}` })
+      return
     }
+    setInlineEditAiResponse(result.text)
   }
-
-  // Accept inline edit: apply the AI code to the editor
-  const handleInlineEditAccept = useCallback((newCode: string) => {
-    const sel = inlineEditSelectionRef.current || diffSelectionRef.current
-    if (sel && editorRef.current) {
-      editorRef.current.executeEdits('orion-inline-edit', [{
-        range: sel,
-        text: newCode,
-      }])
-      addToast({ type: 'success', message: 'AI edit applied' })
-    }
-    setInlineEditVisible(false)
-    setInlineEditAiResponse(null)
-    setInlineEditText('')
-    setInlineEditSelRange(null)
-    inlineEditSelectionRef.current = null
-  }, [addToast])
-
-  // Reject inline edit: dismiss AI response but keep widget open to refine
-  const handleInlineEditReject = useCallback(() => {
-    setInlineEditAiResponse(null)
-  }, [])
 
   // Close inline edit entirely
   const handleInlineEditClose = useCallback(() => {
+    inlineEditGate.cancel()
     setInlineEditVisible(false)
     setInlineEditAiResponse(null)
     setInlineEditText('')
     setInlineProcessing(false)
     setInlineEditSelRange(null)
     inlineEditSelectionRef.current = null
+    inlineEditModelRef.current = null
+  }, [inlineEditGate])
+
+  // The widget edits the file it was opened on. Left open over another tab,
+  // its submit was silently ignored and a late reply showed over that file.
+  useEffect(() => handleInlineEditClose, [activeFilePath, handleInlineEditClose])
+
+  // Accept inline edit: apply the AI code to the editor
+  const handleInlineEditAccept = useCallback((newCode: string) => {
+    const editor = editorRef.current
+    const sel = inlineEditSelectionRef.current
+    if (editor && sel && canApplyInlineEdit(editor.getModel(), inlineEditModelRef.current, sel, inlineEditText)) {
+      applyInlineEdit(editor, sel, newCode)
+      addToast({ type: 'success', message: 'AI edit applied' })
+    } else {
+      addToast({ type: 'error', message: 'The code changed after the edit was requested, so it was not applied' })
+    }
+    handleInlineEditClose()
+  }, [addToast, inlineEditText, handleInlineEditClose])
+
+  // Reject inline edit: drop the suggestion (the widget then closes itself)
+  const handleInlineEditReject = useCallback(() => {
+    setInlineEditAiResponse(null)
   }, [])
 
-  // Accept diff: apply the AI-suggested code to the editor
-  const handleDiffAccept = useCallback((newCode: string) => {
-    const sel = diffSelectionRef.current
-    if (sel && editorRef.current) {
-      // Snapshot before AI edit
-      if (activeFile) {
-        useFileHistoryStore.getState().addSnapshot(activeFile.path, activeFile.content, 'Before AI edit')
-      }
-      editorRef.current.executeEdits('orion-inline-edit', [{
-        range: sel,
-        text: newCode,
-      }])
-      addToast({ type: 'success', message: 'AI suggestion applied' })
+  // The command palette's "AI: Inline Edit" runs the Ctrl+K action.
+  useEffect(() => onInlineEditCommand(() => {
+    const editor = editorRef.current
+    if (!editor || !activeFileRef.current) {
+      addToast({ type: 'info', message: 'Open a file to edit it with AI' })
+      return
     }
-    setDiffVisible(false)
-    setDiffOriginalCode('')
-    setDiffSuggestedCode('')
-    diffSelectionRef.current = null
-  }, [addToast])
-
-  // Reject diff: dismiss without changes
-  const handleDiffReject = useCallback(() => {
-    setDiffVisible(false)
-    setDiffOriginalCode('')
-    setDiffSuggestedCode('')
-    diffSelectionRef.current = null
-    addToast({ type: 'info', message: 'AI suggestion dismissed' })
-  }, [addToast])
-
-  // Listen for AI context-action responses (refactor / add-comments / fix-issues)
-  // These come from the AI backend after a right-click context menu action
-  useEffect(() => {
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent).detail
-      if (!detail) return
-      const { action, suggestedCode, originalText } = detail as {
-        action: string
-        suggestedCode: string
-        originalText: string
-      }
-      if (!suggestedCode) return
-
-      // For refactor, add-comments, fix-issues: show inline diff
-      if (action === 'refactor' || action === 'add-comments' || action === 'fix-issues') {
-        setDiffOriginalCode(originalText)
-        setDiffSuggestedCode(suggestedCode)
-        setDiffVisible(true)
-      }
-    }
-    window.addEventListener('orion:ai-context-response', handler)
-    return () => window.removeEventListener('orion:ai-context-response', handler)
-  }, [])
+    editor.focus()
+    void editor.getAction('orion-inline-edit')?.run()
+  }), [addToast])
 
   // ── Git gutter decorations ──────────────────
   // Show colored indicators in the editor gutter for modified/added/deleted lines
@@ -2064,41 +1131,20 @@ export default function EditorPanel() {
   }, [activeFilePath, rootPath])
 
   // ── Error Lens - inline diagnostic decorations ──────────────────
+  // The editor it draws in. Monaco mounts <Editor> asynchronously, after this
+  // effect has run for the newly shown file, so it reruns on every mount
+  // (first file, and after a remount) instead of only on a tab switch.
+  const [lensEditor, setLensEditor] = useState<MonacoEditor.IStandaloneCodeEditor | null>(null)
   useEffect(() => {
-    if (!editorRef.current || !monacoRef.current || !activeFilePath) return
-
-    const editor = editorRef.current
     const monaco = monacoRef.current
+    if (!lensEditor || !monaco || !activeFilePath) return
 
-    // Helper to map problem severity to Monaco MarkerSeverity
-    const toMarkerSeverity = (sev: string) => {
-      switch (sev) {
-        case 'error': return monaco.MarkerSeverity.Error
-        case 'warning': return monaco.MarkerSeverity.Warning
-        default: return monaco.MarkerSeverity.Info
-      }
-    }
+    const editor = lensEditor
 
-    // Subscribe to problems store
-    const unsubscribe = useProblemsStore.subscribe((state) => {
+    // The problems store mirrors Monaco's markers (providers/diagnostics), so
+    // the squiggles are Monaco's own; this only adds the inline messages.
+    const showErrorLens = (state: ReturnType<typeof useProblemsStore.getState>) => {
       const problems = state.problems.filter(p => p.file === activeFilePath)
-
-      // ── Set Monaco markers for built-in squiggly underlines ──────────────────
-      const model = editor.getModel()
-      if (model) {
-        const markers = problems.map((problem) => ({
-          severity: toMarkerSeverity(problem.severity),
-          message: problem.message,
-          source: problem.source,
-          startLineNumber: problem.line,
-          startColumn: problem.column || 1,
-          endLineNumber: problem.endLine || problem.line,
-          endColumn: problem.endColumn || (problem.column ? problem.column + 1 : model.getLineMaxColumn(problem.line)),
-        }))
-        monaco.editor.setModelMarkers(model, 'orion', markers)
-      }
-
-      // ── Inline error-lens decorations ──────────────────
       const decorations: MonacoEditor.IModelDeltaDecoration[] = problems.map((problem) => {
         const isError = problem.severity === 'error'
         const isWarning = problem.severity === 'warning'
@@ -2136,44 +1182,91 @@ export default function EditorPanel() {
         errorLensDecorationsRef.current,
         decorations,
       )
-    })
-
-    // Clean up markers when switching files
-    return () => {
-      unsubscribe()
-      const model = editor.getModel()
-      if (model) {
-        monaco.editor.setModelMarkers(model, 'orion', [])
-      }
     }
-  }, [activeFilePath])
+    showErrorLens(useProblemsStore.getState())
+    return useProblemsStore.subscribe(showErrorLens)
+  }, [activeFilePath, lensEditor])
+
+  // The file a save applies to, and the editor showing it: the pane with
+  // keyboard focus, else the pane last clicked. Saves used to always take
+  // pane 1, so Ctrl+S typed in pane 2 wrote (and reported) the other file.
+  const getSaveTarget = useCallback((): { file: OpenFile; editor: MonacoEditor.IStandaloneCodeEditor | null } | null => {
+    const split = visibleSplitFileRef.current
+    const splitFocused = splitEditorRef.current?.hasTextFocus() ?? false
+    const primaryFocused = editorRef.current?.hasTextFocus() ?? false
+    if (split && (splitFocused || (!primaryFocused && activePaneRef.current === 2))) {
+      return { file: split, editor: splitEditorRef.current }
+    }
+    const primary = activeFileRef.current
+    return primary ? { file: primary, editor: editorRef.current } : null
+  }, [])
+
+  // Write a buffer to its file. A buffer with no file yet (Ctrl+N's
+  // untitled-<id>, which fs:write-file rejects), or a Save As, first asks
+  // where to write it and then moves the tab to that file. The content is
+  // produced only once the save goes ahead, so a cancelled save never
+  // reformats the buffer.
+  const saveBuffer = useCallback(async (
+    file: OpenFile,
+    prepareContent: () => string | Promise<string>,
+    saveAs = false,
+  ) => {
+    let targetPath = file.path
+    let language: string | undefined
+    if (saveAs || needsSaveLocation(file.path)) {
+      let chosen: Awaited<ReturnType<typeof window.api.saveFileDialog>>
+      try {
+        chosen = await window.api.saveFileDialog(file.name)
+      } catch (err) {
+        addToast({ type: 'error', message: `Failed to save ${file.name}: ${ipcErrorMessage(err)}` })
+        return
+      }
+      if (!chosen) return
+      const chosenPath = chosen.filePath
+      // Two tabs must never share a path.
+      if (chosenPath !== file.path && openFilesRef.current.some((f) => f.path === chosenPath)) {
+        addToast({ type: 'error', message: `${chosenPath} is open in another tab. Close it, then save again.` })
+        return
+      }
+      targetPath = chosenPath
+      language = chosen.language
+    }
+    // Also when Save As picked the buffer's own file: the native "replace?"
+    // prompt does not say that the file changed on disk.
+    if (targetPath === file.path && !confirmOverwriteIfChangedOnDisk(file)) return
+
+    const name = targetPath.split(/[\\/]/).pop() || file.name
+    setSaving(true)
+    try {
+      const content = await prepareContent()
+      useFileHistoryStore.getState().addSnapshot(targetPath, content, 'Saved')
+      await writeFileChecked(targetPath, content, `Save ${name}`)
+      if (targetPath !== file.path) {
+        renamePath(file.path, targetPath, language)
+        setSplitFilePath((current) => (current === file.path ? targetPath : current))
+      }
+      markSaved(targetPath)
+      clearRecovery(file.path)
+      addToast({ type: 'success', message: `Saved ${name}`, duration: 1500 })
+    } catch (err: unknown) {
+      addToast({ type: 'error', message: `Failed to save ${name}: ${ipcErrorMessage(err)}` })
+    } finally {
+      setTimeout(() => setSaving(false), 800)
+    }
+  }, [addToast, markSaved, renamePath])
 
   // Ctrl+S save handler
   useEffect(() => {
-    const handler = async (e: KeyboardEvent) => {
+    const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault()
-        if (activeFile) {
-          if (!confirmOverwriteIfChangedOnDisk(activeFile)) return
-          setSaving(true)
-          try {
-            useFileHistoryStore.getState().addSnapshot(activeFile.path, activeFile.content, 'Saved')
-            await writeFileChecked(activeFile.path, activeFile.content, `Save ${activeFile.name}`)
-            markSaved(activeFile.path)
-            clearRecovery(activeFile.path)
-            addToast({ type: 'success', message: `Saved ${activeFile.name}`, duration: 1500 })
-          } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : 'Failed to save file'
-            addToast({ type: 'error', message: `${message}` })
-          } finally {
-            setTimeout(() => setSaving(false), 800)
-          }
-        }
+        const target = getSaveTarget()
+        if (target) void saveBuffer(target.file, () => target.file.content)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [activeFile])
+  }, [getSaveTarget, saveBuffer])
 
   // Toggle split direction handler (for context menu and command palette)
   const handleToggleSplitDirection = useCallback(() => {
@@ -2238,6 +1331,8 @@ export default function EditorPanel() {
   // Handle opening diff editor
   const handleCompareFiles = useCallback(() => {
     if (!activeFilePath) return
+    // The disk text from a "changed on disk" Compare belongs to that file only.
+    setDiffDiskContent(null)
     setDiffOriginalPath(activeFilePath)
     setDiffFilePickerOpen(true)
   }, [activeFilePath])
@@ -2327,6 +1422,7 @@ export default function EditorPanel() {
 
   // Handle selecting the comparison file
   const handleSelectDiffFile = useCallback((path: string) => {
+    setDiffDiskContent(null)
     setDiffModifiedPath(path)
     setDiffFilePickerOpen(false)
     setDiffEditorMode(true)
@@ -2337,6 +1433,7 @@ export default function EditorPanel() {
     setDiffEditorMode(false)
     setDiffOriginalPath(null)
     setDiffModifiedPath(null)
+    setDiffDiskContent(null)
   }, [])
 
   // Move tab from one group to another
@@ -2428,44 +1525,53 @@ export default function EditorPanel() {
 
   // Command palette event handlers
   useEffect(() => {
+    // File > Save / Save As: format, trim and add the final newline in the
+    // pane being saved, once the save is going ahead.
+    const saveFocusedPane = async (saveAs: boolean) => {
+      const target = getSaveTarget()
+      if (!target) return
+      const { file: af, editor } = target
+      await saveBuffer(af, async () => {
+        // Format on save
+        if (editorConfigRef.current.formatOnSave && editor) {
+          try {
+            await editor.getAction('editor.action.formatDocument')?.run()
+          } catch { /* formatter may not be available for this language */ }
+        }
+
+        // Get latest content from editor model (may have been formatted)
+        let content = editor?.getModel()?.getValue() ?? af.content
+
+        // Trim trailing whitespace on save
+        if (editorConfigRef.current.trimTrailingWhitespace) {
+          content = content.replace(/[ \t]+$/gm, '')
+        }
+
+        // Insert final newline
+        if (editorConfigRef.current.insertFinalNewline && content.length > 0 && !content.endsWith('\n')) {
+          content = content + '\n'
+        }
+
+        // Update the editor model if content was modified by trim/newline
+        const model = editor?.getModel()
+        if (model && model.getValue() !== content) {
+          model.setValue(content)
+        }
+        return content
+      }, saveAs)
+    }
+
     const handlers: Record<string, () => void> = {
+      // The editors' options follow editorConfig (monacoOptionsFor).
       'orion:toggle-minimap': () => {
-        const current = minimapRef.current
-        const next = !current
+        const next = !minimapRef.current
         minimapRef.current = next
-        setEditorConfig(prev => {
-          editorRef.current?.updateOptions({ minimap: { enabled: next } })
-          return { ...prev, minimap: next }
-        })
+        setEditorConfig(prev => ({ ...prev, minimap: next }))
       },
-      'orion:toggle-wordwrap': () => {
-        setEditorConfig(prev => {
-          const next = { ...prev, wordWrap: !prev.wordWrap }
-          editorRef.current?.updateOptions({ wordWrap: next.wordWrap ? 'on' : 'off' })
-          return next
-        })
-      },
-      'orion:font-increase': () => {
-        setEditorConfig(prev => {
-          const next = { ...prev, fontSize: prev.fontSize + 1 }
-          editorRef.current?.updateOptions({ fontSize: next.fontSize })
-          return next
-        })
-      },
-      'orion:font-decrease': () => {
-        setEditorConfig(prev => {
-          const next = { ...prev, fontSize: Math.max(10, prev.fontSize - 1) }
-          editorRef.current?.updateOptions({ fontSize: next.fontSize })
-          return next
-        })
-      },
-      'orion:font-reset': () => {
-        setEditorConfig(prev => {
-          const next = { ...prev, fontSize: 13 }
-          editorRef.current?.updateOptions({ fontSize: 13 })
-          return next
-        })
-      },
+      'orion:toggle-wordwrap': () => setEditorConfig(prev => ({ ...prev, wordWrap: !prev.wordWrap })),
+      'orion:font-increase': () => setEditorConfig(prev => ({ ...prev, fontSize: prev.fontSize + 1 })),
+      'orion:font-decrease': () => setEditorConfig(prev => ({ ...prev, fontSize: Math.max(10, prev.fontSize - 1) })),
+      'orion:font-reset': () => setEditorConfig(prev => ({ ...prev, fontSize: 13 })),
       'orion:format-document': () => {
         editorRef.current?.getAction('editor.action.formatDocument')?.run()
       },
@@ -2483,54 +1589,8 @@ export default function EditorPanel() {
       'orion:close-all-tabs': () => {
         closeAllFiles()
       },
-      'orion:save-file': async () => {
-        const af = activeFileRef.current
-        if (af) {
-          if (!confirmOverwriteIfChangedOnDisk(af)) return
-          setSaving(true)
-
-          // Format on save
-          if (editorConfig.formatOnSave && editorRef.current) {
-            try {
-              await editorRef.current.getAction('editor.action.formatDocument')?.run()
-            } catch { /* formatter may not be available for this language */ }
-          }
-
-          // Get latest content from editor model (may have been formatted)
-          let content = editorRef.current?.getModel()?.getValue() ?? af.content
-
-          // Trim trailing whitespace on save
-          if (editorConfig.trimTrailingWhitespace) {
-            content = content.replace(/[ \t]+$/gm, '')
-          }
-
-          // Insert final newline
-          if (editorConfig.insertFinalNewline && content.length > 0 && !content.endsWith('\n')) {
-            content = content + '\n'
-          }
-
-          // Update the editor model if content was modified by trim/newline
-          if (editorRef.current) {
-            const model = editorRef.current.getModel()
-            if (model && model.getValue() !== content) {
-              model.setValue(content)
-            }
-          }
-
-          useFileHistoryStore.getState().addSnapshot(af.path, content, 'Saved')
-          try {
-            await writeFileChecked(af.path, content, `Save ${af.name}`)
-            markSaved(af.path)
-            clearRecovery(af.path)
-            addToast({ type: 'success', message: `Saved ${af.name}`, duration: 1500 })
-          } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : 'Failed to save file'
-            addToast({ type: 'error', message })
-          } finally {
-            setTimeout(() => setSaving(false), 800)
-          }
-        }
-      },
+      'orion:save-file': () => saveFocusedPane(false),
+      'orion:save-file-as': () => saveFocusedPane(true),
       // Multi-cursor & selection actions (from Command Palette)
       'orion:add-selection-next-match': () => {
         editorRef.current?.getAction('editor.action.addSelectionToNextFindMatch')?.run()
@@ -2692,31 +1752,14 @@ export default function EditorPanel() {
       }
     }
 
-    // Editor config update from Settings modal
+    // Editor config update from Settings modal. Both panes' options are
+    // derived from editorConfig (monacoOptionsFor), so updating it applies them.
     const editorConfigHandler = (e: Event) => {
       const detail = (e as CustomEvent).detail
-      if (detail) {
+      if (detail && typeof detail === 'object') {
         setEditorConfig(prev => {
           const next = { ...prev, ...detail }
-          if (editorRef.current) {
-            const cursorStyleMap: Record<string, string> = {
-              'line': 'line', 'block': 'block', 'underline': 'underline',
-              'line-thin': 'line-thin', 'block-outline': 'block-outline',
-              'underline-thin': 'underline-thin',
-            }
-            editorRef.current.updateOptions({
-              fontSize: next.fontSize,
-              fontFamily: `'${next.fontFamily}', monospace`,
-              lineHeight: Math.round(next.fontSize * next.lineHeight),
-              fontLigatures: next.fontLigatures,
-              cursorStyle: (cursorStyleMap[next.cursorStyle] || 'line') as 'line' | 'block' | 'underline' | 'line-thin' | 'block-outline' | 'underline-thin',
-              renderWhitespace: next.renderWhitespace,
-              letterSpacing: next.letterSpacing,
-              minimap: { enabled: next.minimap },
-              wordWrap: next.wordWrap ? 'on' : 'off',
-            })
-            minimapRef.current = next.minimap
-          }
+          minimapRef.current = next.minimap
           return next
         })
       }
@@ -2749,36 +1792,18 @@ export default function EditorPanel() {
       window.removeEventListener('orion:editor-config', editorConfigHandler)
       window.removeEventListener('orion:toggle-timeline', toggleTimelineHandler)
     }
-  }, [activeFilePath, closeFile, closeAllFiles, markSaved, addToast])
+  }, [activeFilePath, closeFile, closeAllFiles, addToast, getSaveTarget, saveBuffer])
 
   const editorOptions: MonacoEditor.IStandaloneEditorConstructionOptions = {
-    fontSize: editorConfig.fontSize,
-    fontFamily: `'${editorConfig.fontFamily}', monospace`,
-    fontLigatures: editorConfig.fontLigatures,
-    minimap: {
-      enabled: editorConfig.minimap,
-      maxColumn: 80,
-      renderCharacters: true,
-      showSlider: 'mouseover',
-      side: 'right',
-      scale: 1,
-    },
+    ...monacoOptionsFor(editorConfig),
     scrollBeyondLastLine: true,
     scrollBeyondLastColumn: 5,
-    smoothScrolling: true,
     mouseWheelScrollSensitivity: 1,
     fastScrollSensitivity: 5,
-    cursorBlinking: 'smooth',
     cursorSmoothCaretAnimation: 'on',
-    cursorStyle: editorConfig.cursorStyle as any,
     cursorWidth: 2,
-    renderWhitespace: (editorConfig.renderWhitespace || 'selection') as any,
-    bracketPairColorization: { enabled: true, independentColorPoolPerBracketType: true },
     padding: { top: 8, bottom: 8 },
-    lineNumbers: 'on',
     renderLineHighlight: 'line',
-    lineHeight: Math.round(editorConfig.fontSize * (editorConfig.lineHeight || 1.5)),
-    letterSpacing: editorConfig.letterSpacing ?? 0.3,
     guides: {
       bracketPairs: true,
       bracketPairsHorizontal: true,
@@ -2796,9 +1821,6 @@ export default function EditorPanel() {
       verticalSliderSize: 8,
       horizontalSliderSize: 8,
     },
-    stickyScroll: { enabled: true, maxLineCount: 5 },
-    wordWrap: editorConfig.wordWrap ? 'on' : 'off',
-    wordWrapColumn: 80,
     wrappingIndent: 'indent',
     wrappingStrategy: 'advanced',
     links: true,
@@ -2829,7 +1851,6 @@ export default function EditorPanel() {
     autoClosingQuotes: 'always',
     autoClosingOvertype: 'always',
     autoSurround: 'languageDefined',
-    formatOnPaste: true,
     linkedEditing: true,
   }
 
@@ -3141,12 +2162,18 @@ export default function EditorPanel() {
             Keep Mine
           </button>
           <button
-            onClick={() => {
-              if (activeFile) {
-                setDiffEditorMode(true)
+            onClick={async () => {
+              if (!activeFile) return
+              // Show the disk version against the buffer. The conflict stays
+              // flagged (so saves keep asking) until Reload or Keep Mine.
+              try {
+                const disk = await window.api.readFile(activeFile.path)
+                setDiffDiskContent(disk.content)
                 setDiffOriginalPath(activeFile.path)
                 setDiffModifiedPath(activeFile.path)
-                dismissExternalChange(activeFile.path)
+                setDiffEditorMode(true)
+              } catch (err) {
+                addToast({ type: 'error', message: `Failed to read ${activeFile.name} from disk: ${ipcErrorMessage(err)}` })
               }
             }}
             style={{
@@ -3185,12 +2212,12 @@ export default function EditorPanel() {
                   gap: 8,
                 }}>
                   <GitCompare size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-                  <span style={{ color: 'var(--text-muted)', fontSize: 10, opacity: 0.7 }}>Original:</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 10, opacity: 0.7 }}>{diffDiskContent !== null ? 'On disk:' : 'Original:'}</span>
                   <span style={{ color: 'var(--text-muted)' }}>
                     {diffOriginalPath.replace(/\\/g, '/').split('/').pop()}
                   </span>
                   <span style={{ color: 'var(--text-muted)', opacity: 0.5 }}>{'\u2194'}</span>
-                  <span style={{ color: 'var(--text-muted)', fontSize: 10, opacity: 0.7 }}>Modified:</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 10, opacity: 0.7 }}>{diffDiskContent !== null ? 'Yours:' : 'Modified:'}</span>
                   <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
                     {diffModifiedPath.replace(/\\/g, '/').split('/').pop()}
                   </span>
@@ -3220,7 +2247,7 @@ export default function EditorPanel() {
                   <MonacoDiffEditorComponent
                     theme={currentMonacoTheme}
                     language={activeFile.language}
-                    original={openFiles.find(f => f.path === diffOriginalPath)?.content || ''}
+                    original={diffDiskContent ?? openFiles.find(f => f.path === diffOriginalPath)?.content ?? ''}
                     modified={openFiles.find(f => f.path === diffModifiedPath)?.content || ''}
                     loading={<EditorLoading />}
                     options={{
@@ -3294,8 +2321,12 @@ export default function EditorPanel() {
                         theme={currentMonacoTheme}
                         language={activeFile.language}
                         value={activeFile.content}
+                        keepCurrentModel
                         onChange={handleChange}
-                        onMount={handleEditorMount}
+                        onMount={(editor, monaco) => {
+                          syncModelWithBuffer(editor)
+                          handleEditorMount(editor, monaco)
+                        }}
                         loading={<EditorLoading />}
                         options={editorOptions}
                       />
@@ -3320,18 +2351,6 @@ export default function EditorPanel() {
                           selectionRange={inlineEditSelRange}
                           aiResponse={inlineEditAiResponse}
                           language={activeFile?.language}
-                        />
-                      )}
-                      {/* Inline Diff Preview Overlay */}
-                      {diffVisible && (
-                        <InlineDiff
-                          visible={diffVisible}
-                          originalCode={diffOriginalCode}
-                          suggestedCode={diffSuggestedCode}
-                          language={activeFile.language}
-                          onAccept={handleDiffAccept}
-                          onReject={handleDiffReject}
-                          position={diffPos}
                         />
                       )}
                       {/* Go to Line Overlay */}
@@ -3592,12 +2611,15 @@ export default function EditorPanel() {
                           theme={currentMonacoTheme}
                           language={splitFile.language}
                           value={splitFile.content}
+                          keepCurrentModel
                           onChange={(val) => {
                             if (splitFilePath && val !== undefined) {
                               updateFileContent(splitFilePath, val)
+                              scheduleAutoSave(splitFilePath, val)
                             }
                           }}
                           onMount={(editor) => {
+                            syncModelWithBuffer(editor)
                             splitEditorRef.current = editor
                           }}
                           options={{

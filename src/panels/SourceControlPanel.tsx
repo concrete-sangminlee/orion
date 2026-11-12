@@ -1,13 +1,42 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useFileStore } from '@/store/files'
-import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
 import { useOutputStore } from '@/store/output'
+import { useScmStore } from '@/store/scm'
+import { pullCurrentBranch, pushCurrentBranch, stashChanges } from '@/hooks/useGitCommands'
+import { openFileInEditor } from '@/utils/openFileInEditor'
+import { ipcErrorMessage } from '@/utils/ipcResult'
+import type { GitBranch as GitBranchInfo } from '@shared/ipc-contract'
 import { GitBranch, Check, Plus, Minus, RotateCw, FileText, Trash2, ChevronRight, ChevronDown, X, Clock, GitCommit, User, ArrowUp, ArrowDown, Download, Archive, Plus as PlusIcon, AlertTriangle, Package, Play, XCircle, Tag, GitMerge, Copy, Bookmark, BookmarkPlus, Square, CheckSquare, List } from 'lucide-react'
 
 interface GitFile {
   path: string
   state: 'modified' | 'added' | 'deleted' | 'untracked' | 'renamed'
+}
+
+const inlineDiffKey = (filePath: string, isStaged: boolean) => `${isStaged ? 'staged' : 'unstaged'}:${filePath}`
+
+interface CheckoutTarget {
+  /** The local branch to switch to. */
+  branch: string
+  /** Remote-tracking ref to create `branch` from when it does not exist yet. */
+  track?: string
+}
+
+/** What checking out a picker entry should switch to. */
+function checkoutTargetFor(branch: GitBranchInfo, all: GitBranchInfo[]): CheckoutTarget {
+  if (!branch.remote) return { branch: branch.name }
+  // A remote-tracking ref checks out as a detached HEAD: switch to the local
+  // branch of that name, or create one that tracks this ref.
+  const local = branch.name.slice(branch.remote.length + 1)
+  return all.some((b) => !b.remote && b.name === local) ? { branch: local } : { branch: local, track: branch.name }
+}
+
+function checkoutTitle(branch: GitBranchInfo, target: CheckoutTarget): string | undefined {
+  if (!branch.remote) return undefined
+  return target.track
+    ? `Create local branch ${target.branch} tracking ${branch.name}`
+    : `Switch to the existing local branch ${target.branch}`
 }
 
 interface GitLogEntry {
@@ -88,20 +117,38 @@ const getBranchColor = (name: string): string => {
 const parseDiffIntoHunks = (diff: string): DiffHunk[] => {
   const hunks: DiffHunk[] = []
   const lines = diff.split('\n')
+  // An untracked folder's diff covers several files: name the file in each
+  // hunk header, and keep the next file's headers out of the previous hunk.
+  const multiFile = lines.filter((line) => line.startsWith('diff --git ')).length > 1
+  let file = ''
   let currentHunk: DiffHunk | null = null
 
   for (const line of lines) {
-    if (line.startsWith('@@')) {
+    if (line.startsWith('diff --git ')) {
+      if (currentHunk) hunks.push(currentHunk)
+      currentHunk = null
+      file = ''
+    } else if (!currentHunk && (line.startsWith('--- ') || line.startsWith('+++ '))) {
+      // "+++ b/<path>", or "--- a/<path>" when the file was deleted.
+      const name = line.slice(4)
+      if (name !== '/dev/null') file = name.replace(/^[ab]\//, '')
+    } else if (line.startsWith('@@')) {
       if (currentHunk) hunks.push(currentHunk)
       const match = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/)
+      const header = multiFile && file ? `${file} ${line}` : line
       currentHunk = {
-        header: line,
-        lines: [line],
+        header,
+        lines: [header],
         startLine: match ? parseInt(match[1]) : 0,
         endLine: match ? parseInt(match[1]) + parseInt(match[2] || '1') : 0,
       }
-    } else if (currentHunk) {
+    } else if (currentHunk && /^([ +\-\\]|$)/.test(line)) {
       currentHunk.lines.push(line)
+    } else if (currentHunk) {
+      // Not a diff line (e.g. main's "N more untracked files not shown"):
+      // show it as a heading, not as a line of the file above.
+      hunks.push(currentHunk, { header: line, lines: [line], startLine: 0, endLine: 0 })
+      currentHunk = null
     }
   }
   if (currentHunk) hunks.push(currentHunk)
@@ -128,7 +175,12 @@ type ActiveTab = 'changes' | 'history'
 
 export default function SourceControlPanel() {
   const [commitMessage, setCommitMessage] = useState('')
-  const [branch, setBranch] = useState<string>('main')
+  const commitInputRef = useRef<HTMLTextAreaElement>(null)
+  const [focusCommitTick, setFocusCommitTick] = useState(0)
+  const [branch, setBranch] = useState<string>('')
+  // A detached HEAD has no branch: commits made there are easy to lose.
+  const [detached, setDetached] = useState(false)
+  const [head, setHead] = useState('')
   const [stagedFiles, setStagedFiles] = useState<GitFile[]>([])
   const [unstagedFiles, setUnstagedFiles] = useState<GitFile[]>([])
   const [stagedExpanded, setStagedExpanded] = useState(true)
@@ -142,7 +194,7 @@ export default function SourceControlPanel() {
   // Branch management state
   const [showCreateBranch, setShowCreateBranch] = useState(false)
   const [newBranchName, setNewBranchName] = useState('')
-  const [branches, setBranches] = useState<{ name: string; current: boolean }[]>([])
+  const [branches, setBranches] = useState<GitBranchInfo[]>([])
   const [showBranchPicker, setShowBranchPicker] = useState(false)
   const branchPickerRef = useRef<HTMLDivElement>(null)
 
@@ -159,6 +211,9 @@ export default function SourceControlPanel() {
   const [stashExpanded, setStashExpanded] = useState(false)
   const [stashMessage, setStashMessage] = useState('')
   const [showStashInput, setShowStashInput] = useState(false)
+  // Stash indices shift after a pop or drop, so no second stash action may
+  // start (e.g. from a double click) until the list is refreshed.
+  const [stashBusy, setStashBusy] = useState(false)
 
   // Merge conflict state
   const [isMerging, setIsMerging] = useState(false)
@@ -178,8 +233,6 @@ export default function SourceControlPanel() {
   const [inlineDiffs, setInlineDiffs] = useState<Record<string, string>>({})
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set())
   const [loadingInlineDiffs, setLoadingInlineDiffs] = useState<Set<string>>(new Set())
-  // hunkSelections reserved for future granular hunk staging
-  const [_hunkSelections] = useState<Record<string, Set<number>>>({}); void _hunkSelections
 
   // Branch management enhancements
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
@@ -191,9 +244,10 @@ export default function SourceControlPanel() {
   const [tags, setTags] = useState<GitTag[]>([])
 
   const rootPath = useFileStore((s) => s.rootPath)
-  const openFile = useEditorStore((s) => s.openFile)
   const addToast = useToastStore((s) => s.addToast)
   const appendOutput = useOutputStore((s) => s.appendOutput)
+  const pendingRequest = useScmStore((s) => s.pendingRequest)
+  const scmRevision = useScmStore((s) => s.revision)
 
   const refreshStatus = useCallback(async () => {
     if (!rootPath) return
@@ -203,7 +257,19 @@ export default function SourceControlPanel() {
       if (status) {
         setStagedFiles(status.staged || [])
         setUnstagedFiles(status.unstaged || [])
+        // A row that left its list (staged, committed, discarded) must not come
+        // back expanded with the diff it had then.
+        const listed = new Set([
+          ...(status.staged || []).map((f) => inlineDiffKey(f.path, true)),
+          ...(status.unstaged || []).map((f) => inlineDiffKey(f.path, false)),
+        ])
+        setExpandedFiles((prev) => {
+          const kept = [...prev].filter((key) => listed.has(key))
+          return kept.length === prev.size ? prev : new Set(kept)
+        })
         if (status.branch) setBranch(status.branch)
+        setDetached(status.detached === true)
+        setHead(status.head || '')
         if (status.ahead !== undefined) setAhead(status.ahead)
         if (status.behind !== undefined) setBehind(status.behind)
         const total = (status.staged?.length || 0) + (status.unstaged?.length || 0)
@@ -279,12 +345,30 @@ export default function SourceControlPanel() {
     }
   }, [activeTab, fetchLog])
 
-  // Listen for command palette event to switch to history tab
+  // Requests from the command palette (useGitCommands). They wait in the store
+  // because the palette opens this panel in the same tick it asks for them.
   useEffect(() => {
-    const handler = () => setActiveTab('history')
-    window.addEventListener('orion:git-show-history', handler)
-    return () => window.removeEventListener('orion:git-show-history', handler)
-  }, [])
+    if (!pendingRequest) return
+    useScmStore.getState().clearRequest()
+    if (pendingRequest === 'history') {
+      setActiveTab('history')
+    } else {
+      setActiveTab('changes')
+      setFocusCommitTick((t) => t + 1)
+    }
+  }, [pendingRequest])
+
+  // Runs after the render that shows the Changes tab, so the box exists.
+  useEffect(() => {
+    if (focusCommitTick > 0) commitInputRef.current?.focus()
+  }, [focusCommitTick])
+
+  // A palette command changed the repository: show it now, not at the next poll.
+  useEffect(() => {
+    if (scmRevision === 0) return
+    refreshStatus()
+    refreshStashes()
+  }, [scmRevision, refreshStatus, refreshStashes])
 
   // Click outside handler for branch picker
   useEffect(() => {
@@ -301,6 +385,14 @@ export default function SourceControlPanel() {
 
   const handleCommit = async () => {
     if (!commitMessage.trim() || !rootPath) return
+    if (
+      detached &&
+      !window.confirm(
+        `HEAD is detached at ${head}. This commit will not be on any branch, and switching branches later can lose it. Commit anyway?`,
+      )
+    ) {
+      return
+    }
     appendOutput('Git', `[commit] Committing: "${commitMessage.trim()}"`, 'info')
     try {
       await window.api.gitCommit(rootPath, commitMessage.trim())
@@ -338,16 +430,23 @@ export default function SourceControlPanel() {
     }
   }
 
-  const handleDiscard = async (filePath: string) => {
+  const handleDiscard = async (file: GitFile) => {
     if (!rootPath) return
+    const filePath = file.path
+    // Discarding cannot be undone, and for an untracked row (which may be a
+    // whole new folder) it deletes from disk.
+    const question = file.state === 'untracked'
+      ? `Permanently delete the untracked ${filePath.endsWith('/') ? 'folder' : 'file'} ${filePath}? This cannot be undone.`
+      : `Discard your changes to ${filePath}? This cannot be undone.`
+    if (!window.confirm(question)) return
     try {
       await window.api.gitDiscard(rootPath, filePath)
       appendOutput('Git', `[discard] Discarded changes: ${filePath}`, 'warn')
       addToast({ type: 'info', message: `Discarded changes in ${filePath.split('/').pop()}` })
       refreshStatus()
-    } catch (err: any) {
-      appendOutput('Git', `[discard] Failed to discard ${filePath}: ${err?.message}`, 'error')
-      addToast({ type: 'error', message: err?.message || 'Failed to discard changes' })
+    } catch (err) {
+      appendOutput('Git', `[discard] Failed to discard ${filePath}: ${ipcErrorMessage(err)}`, 'error')
+      addToast({ type: 'error', message: ipcErrorMessage(err) || 'Failed to discard changes' })
     }
   }
 
@@ -394,13 +493,13 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     appendOutput('Git', '[push] Pushing to remote...', 'info')
     try {
-      await window.api.gitPush(rootPath)
-      appendOutput('Git', '[push] Push successful', 'success')
-      addToast({ type: 'success', message: 'Pushed to remote successfully' })
+      const summary = await pushCurrentBranch(rootPath)
+      appendOutput('Git', `[push] ${summary}`, 'success')
+      addToast({ type: 'success', message: summary })
       refreshStatus()
-    } catch (err: any) {
-      appendOutput('Git', `[push] Failed: ${err?.message || 'Unknown error'}`, 'error')
-      addToast({ type: 'error', message: err?.message || 'Push failed' })
+    } catch (err) {
+      appendOutput('Git', `[push] Failed: ${ipcErrorMessage(err)}`, 'error')
+      addToast({ type: 'error', message: ipcErrorMessage(err) || 'Push failed' })
     }
   }
 
@@ -408,13 +507,13 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     appendOutput('Git', '[pull] Pulling from remote...', 'info')
     try {
-      await window.api.gitPull(rootPath)
-      appendOutput('Git', '[pull] Pull successful', 'success')
-      addToast({ type: 'success', message: 'Pulled from remote successfully' })
+      const summary = await pullCurrentBranch(rootPath)
+      appendOutput('Git', `[pull] ${summary}`, 'success')
+      addToast({ type: 'success', message: summary })
       refreshStatus()
-    } catch (err: any) {
-      appendOutput('Git', `[pull] Failed: ${err?.message || 'Unknown error'}`, 'error')
-      addToast({ type: 'error', message: err?.message || 'Pull failed' })
+    } catch (err) {
+      appendOutput('Git', `[pull] Failed: ${ipcErrorMessage(err)}`, 'error')
+      addToast({ type: 'error', message: ipcErrorMessage(err) || 'Pull failed' })
     }
   }
 
@@ -456,16 +555,25 @@ export default function SourceControlPanel() {
     }
   }
 
-  const handleSwitchBranch = async (branchName: string) => {
+  const handleSwitchBranch = async ({ branch: branchName, track }: CheckoutTarget) => {
     if (!rootPath) return
+    if (
+      detached &&
+      !window.confirm(
+        `HEAD is detached at ${head}. Commits made here that are not on a branch become hard to find once you switch. Switch to ${branchName} anyway?`,
+      )
+    ) {
+      return
+    }
     try {
-      await window.api.gitCheckout(rootPath, branchName)
-      addToast({ type: 'success', message: `Switched to branch: ${branchName}` })
-      appendOutput('Git', `[checkout] Switched to: ${branchName}`, 'info')
+      await window.api.gitCheckout(rootPath, branchName, track)
+      const done = track ? `Created branch ${branchName} tracking ${track}` : `Switched to branch: ${branchName}`
+      addToast({ type: 'success', message: done })
+      appendOutput('Git', `[checkout] ${done}`, 'info')
       setShowBranchPicker(false)
       refreshStatus()
-    } catch (err: any) {
-      addToast({ type: 'error', message: err?.message || 'Failed to switch branch' })
+    } catch (err) {
+      addToast({ type: 'error', message: ipcErrorMessage(err) || 'Failed to switch branch' })
     }
   }
 
@@ -495,13 +603,11 @@ export default function SourceControlPanel() {
     if (!rootPath) return
     const msg = stashMessage.trim()
     try {
-      if (msg) {
-        await window.api.gitStashSave(rootPath, msg)
-        appendOutput('Git', `[stash] Stashed with message: "${msg}"`, 'info')
-      } else {
-        await window.api.gitStash(rootPath)
-        appendOutput('Git', '[stash] Stashed all changes', 'info')
+      if (!(await stashChanges(rootPath, msg || undefined))) {
+        addToast({ type: 'info', message: 'No local changes to stash' })
+        return
       }
+      appendOutput('Git', msg ? `[stash] Stashed with message: "${msg}"` : '[stash] Stashed changes', 'info')
       addToast({ type: 'success', message: 'Changes stashed' })
       setStashMessage('')
       setShowStashInput(false)
@@ -513,7 +619,19 @@ export default function SourceControlPanel() {
     }
   }
 
-  const handleStashApply = async (index: number) => {
+  /** Run one stash action at a time, until the list shows the new indices. */
+  const runStashAction = async (action: () => Promise<void>) => {
+    if (stashBusy) return
+    setStashBusy(true)
+    try {
+      await action()
+      await refreshStashes()
+    } finally {
+      setStashBusy(false)
+    }
+  }
+
+  const handleStashApply = (index: number) => runStashAction(async () => {
     if (!rootPath) return
     try {
       await window.api.gitStashApply(rootPath, index)
@@ -525,9 +643,9 @@ export default function SourceControlPanel() {
       appendOutput('Git', `[stash] Apply failed: ${err?.message || 'Unknown error'}`, 'error')
       addToast({ type: 'error', message: err?.message || 'Stash apply failed' })
     }
-  }
+  })
 
-  const handleStashPop = async (index: number) => {
+  const handleStashPop = (index: number) => runStashAction(async () => {
     if (!rootPath) return
     try {
       // Pop can be done by applying and dropping in one command.
@@ -535,26 +653,26 @@ export default function SourceControlPanel() {
       appendOutput('Git', `[stash] Popped stash@{${index}}`, 'info')
       addToast({ type: 'success', message: `Popped stash@{${index}}` })
       refreshStatus()
-      refreshStashes()
       refreshMergeStatus()
     } catch (err: any) {
       appendOutput('Git', `[stash] Pop failed: ${err?.message || 'Unknown error'}`, 'error')
       addToast({ type: 'error', message: err?.message || 'Stash pop failed' })
     }
-  }
+  })
 
-  const handleStashDrop = async (index: number) => {
+  const handleStashDrop = (stash: StashEntry) => runStashAction(async () => {
     if (!rootPath) return
+    const { index } = stash
+    if (!window.confirm(`Drop stash@{${index}} "${stash.message}"? Its changes are deleted and cannot be restored.`)) return
     try {
       await window.api.gitStashDrop(rootPath, index)
       appendOutput('Git', `[stash] Dropped stash@{${index}}`, 'warn')
       addToast({ type: 'info', message: `Dropped stash@{${index}}` })
-      refreshStashes()
-    } catch (err: any) {
-      appendOutput('Git', `[stash] Drop failed: ${err?.message || 'Unknown error'}`, 'error')
-      addToast({ type: 'error', message: err?.message || 'Stash drop failed' })
+    } catch (err) {
+      appendOutput('Git', `[stash] Drop failed: ${ipcErrorMessage(err)}`, 'error')
+      addToast({ type: 'error', message: ipcErrorMessage(err) || 'Stash drop failed' })
     }
-  }
+  })
 
   const handleMergeAbort = async () => {
     if (!rootPath) return
@@ -572,17 +690,9 @@ export default function SourceControlPanel() {
 
   const handleConflictFileClick = (filePath: string) => {
     if (!rootPath) return
-    const fullPath = rootPath + '/' + filePath
-    openFile({ path: fullPath, name: filePath.split('/').pop() || filePath, content: '', language: '', isModified: false, aiModified: false })
-  }
-
-  const handleConflictAction = (filePath: string, action: 'accept-current' | 'accept-incoming' | 'accept-both') => {
-    if (!rootPath) return
-    const fullPath = rootPath + '/' + filePath
-    window.dispatchEvent(new CustomEvent('orion:resolve-conflict', {
-      detail: { path: fullPath, action }
-    }))
-    openFile({ path: fullPath, name: filePath.split('/').pop() || filePath, content: '', language: '', isModified: false, aiModified: false })
+    // Read it from disk: an empty tab at this path would be saved over the
+    // conflicted file.
+    void openFileInEditor(rootPath + '/' + filePath)
   }
 
   // Load saved templates from localStorage
@@ -672,33 +782,32 @@ export default function SourceControlPanel() {
     refreshStatus()
   }
 
-  // Inline diff toggle for a file
-  const toggleInlineDiff = async (filePath: string) => {
-    if (expandedFiles.has(filePath)) {
+  // Inline diff toggle for a file. A file can be both staged and changed, so
+  // each list keeps its own diff (index vs HEAD, or worktree vs index). It is
+  // fetched on every expand: the file may have changed since the last one.
+  const toggleInlineDiff = async (filePath: string, isStaged: boolean) => {
+    const key = inlineDiffKey(filePath, isStaged)
+    if (expandedFiles.has(key)) {
       setExpandedFiles(prev => {
         const next = new Set(prev)
-        next.delete(filePath)
+        next.delete(key)
         return next
       })
       return
     }
-    if (inlineDiffs[filePath]) {
-      setExpandedFiles(prev => new Set(prev).add(filePath))
-      return
-    }
     if (!rootPath) return
-    setLoadingInlineDiffs(prev => new Set(prev).add(filePath))
+    setLoadingInlineDiffs(prev => new Set(prev).add(key))
     try {
-      const diff = await window.api.gitDiff(rootPath, filePath)
-      setInlineDiffs(prev => ({ ...prev, [filePath]: diff || 'No changes detected' }))
-      setExpandedFiles(prev => new Set(prev).add(filePath))
+      const diff = await window.api.gitDiff(rootPath, filePath, isStaged)
+      setInlineDiffs(prev => ({ ...prev, [key]: diff || 'No changes detected' }))
+      setExpandedFiles(prev => new Set(prev).add(key))
     } catch {
-      setInlineDiffs(prev => ({ ...prev, [filePath]: 'Failed to load diff' }))
-      setExpandedFiles(prev => new Set(prev).add(filePath))
+      setInlineDiffs(prev => ({ ...prev, [key]: 'Failed to load diff' }))
+      setExpandedFiles(prev => new Set(prev).add(key))
     } finally {
       setLoadingInlineDiffs(prev => {
         const next = new Set(prev)
-        next.delete(filePath)
+        next.delete(key)
         return next
       })
     }
@@ -824,8 +933,9 @@ export default function SourceControlPanel() {
   const renderFileItem = (file: GitFile, isStaged: boolean) => {
     const color = STATUS_COLORS[file.state]
     const label = STATUS_LABELS[file.state]
-    const isExpanded = expandedFiles.has(file.path)
-    const isLoadingDiff = loadingInlineDiffs.has(file.path)
+    const diffKey = inlineDiffKey(file.path, isStaged)
+    const isExpanded = expandedFiles.has(diffKey)
+    const isLoadingDiff = loadingInlineDiffs.has(diffKey)
     const isChecked = selectedFileChecks.has(file.path)
     const fileKey = `${isStaged ? 'staged' : 'unstaged'}-${file.path}`
 
@@ -843,7 +953,7 @@ export default function SourceControlPanel() {
             userSelect: 'none',
           }}
           className="source-control-file-item"
-          onClick={() => toggleInlineDiff(file.path)}
+          onClick={() => toggleInlineDiff(file.path, isStaged)}
         >
           {/* Checkbox for multi-select staging */}
           {!isStaged && (
@@ -953,8 +1063,8 @@ export default function SourceControlPanel() {
             ) : (
               <>
                 <button
-                  onClick={() => handleDiscard(file.path)}
-                  title="Discard Changes"
+                  onClick={() => handleDiscard(file)}
+                  title={file.state === 'untracked' ? 'Delete Untracked' : 'Discard Changes'}
                   style={{
                     background: 'none',
                     border: 'none',
@@ -994,7 +1104,7 @@ export default function SourceControlPanel() {
         </div>
 
         {/* Inline diff expansion */}
-        {isExpanded && inlineDiffs[file.path] && (
+        {isExpanded && inlineDiffs[diffKey] && (
           <div
             style={{
               marginLeft: 20,
@@ -1007,7 +1117,7 @@ export default function SourceControlPanel() {
             }}
           >
             {(() => {
-              const hunks = parseDiffIntoHunks(inlineDiffs[file.path])
+              const hunks = parseDiffIntoHunks(inlineDiffs[diffKey])
               if (hunks.length === 0) {
                 return (
                   <div style={{
@@ -1016,13 +1126,13 @@ export default function SourceControlPanel() {
                     color: 'var(--text-disabled, #545d68)',
                     fontFamily: 'var(--font-mono, "Cascadia Code", "Fira Code", Consolas, monospace)',
                   }}>
-                    {inlineDiffs[file.path]}
+                    {inlineDiffs[diffKey]}
                   </div>
                 )
               }
               return hunks.map((hunk, hunkIdx) => (
                 <div key={hunkIdx}>
-                  {/* Hunk header with stage hunk button */}
+                  {/* Hunk header. No per-hunk staging: no IPC applies a partial patch. */}
                   <div
                     style={{
                       display: 'flex',
@@ -1039,32 +1149,6 @@ export default function SourceControlPanel() {
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {hunk.header}
                     </span>
-                    {!isStaged && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          // Stage this hunk via patch (simulated - stages the full file as fallback)
-                          handleStage(file.path)
-                          addToast({ type: 'info', message: `Staged hunk ${hunkIdx + 1} of ${file.path.split('/').pop()}` })
-                        }}
-                        title={`Stage Hunk ${hunkIdx + 1}`}
-                        style={{
-                          background: 'rgba(63, 185, 80, 0.15)',
-                          border: '1px solid rgba(63, 185, 80, 0.3)',
-                          cursor: 'pointer',
-                          padding: '1px 6px',
-                          fontSize: 10,
-                          fontWeight: 600,
-                          borderRadius: 3,
-                          color: '#3fb950',
-                          flexShrink: 0,
-                          fontFamily: 'inherit',
-                        }}
-                        className="source-control-action-btn"
-                      >
-                        Stage Hunk
-                      </button>
-                    )}
                   </div>
                   {/* Hunk lines */}
                   {hunk.lines.slice(1).map((line, lineIdx) => {
@@ -1209,61 +1293,6 @@ export default function SourceControlPanel() {
                       <span style={{ opacity: 0.5, marginLeft: 4 }}>{dirName(file)}</span>
                     )}
                   </span>
-
-                  {/* Quick resolve actions */}
-                  <div style={{ display: 'flex', gap: 2, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-                    <button
-                      onClick={() => handleConflictAction(file, 'accept-current')}
-                      title="Accept Current"
-                      style={{
-                        background: 'none',
-                        border: '1px solid rgba(210, 153, 34, 0.3)',
-                        cursor: 'pointer',
-                        padding: '1px 5px',
-                        fontSize: 10,
-                        fontWeight: 500,
-                        borderRadius: 3,
-                        color: '#d29922',
-                      }}
-                      className="source-control-action-btn"
-                    >
-                      Current
-                    </button>
-                    <button
-                      onClick={() => handleConflictAction(file, 'accept-incoming')}
-                      title="Accept Incoming"
-                      style={{
-                        background: 'none',
-                        border: '1px solid rgba(56, 139, 253, 0.3)',
-                        cursor: 'pointer',
-                        padding: '1px 5px',
-                        fontSize: 10,
-                        fontWeight: 500,
-                        borderRadius: 3,
-                        color: '#388bfd',
-                      }}
-                      className="source-control-action-btn"
-                    >
-                      Incoming
-                    </button>
-                    <button
-                      onClick={() => handleConflictAction(file, 'accept-both')}
-                      title="Accept Both"
-                      style={{
-                        background: 'none',
-                        border: '1px solid rgba(139, 148, 158, 0.3)',
-                        cursor: 'pointer',
-                        padding: '1px 5px',
-                        fontSize: 10,
-                        fontWeight: 500,
-                        borderRadius: 3,
-                        color: '#8b949e',
-                      }}
-                      className="source-control-action-btn"
-                    >
-                      Both
-                    </button>
-                  </div>
                 </div>
               ))}
             </div>
@@ -1541,6 +1570,7 @@ export default function SourceControlPanel() {
 
         <div style={{ position: 'relative' }}>
           <textarea
+            ref={commitInputRef}
             value={commitMessage}
             onChange={(e) => setCommitMessage(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -1886,6 +1916,7 @@ export default function SourceControlPanel() {
               <div style={{ display: 'flex', gap: 2, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
                 <button
                   onClick={() => handleStashApply(stash.index)}
+                  disabled={stashBusy}
                   title="Apply (keep stash)"
                   style={{
                     background: 'none',
@@ -1904,6 +1935,7 @@ export default function SourceControlPanel() {
                 </button>
                 <button
                   onClick={() => handleStashPop(stash.index)}
+                  disabled={stashBusy}
                   title="Pop (apply & remove)"
                   style={{
                     background: 'none',
@@ -1921,7 +1953,8 @@ export default function SourceControlPanel() {
                   <ArrowUp size={12} />
                 </button>
                 <button
-                  onClick={() => handleStashDrop(stash.index)}
+                  onClick={() => handleStashDrop(stash)}
+                  disabled={stashBusy}
                   title="Drop (delete stash)"
                   style={{
                     background: 'none',
@@ -2652,11 +2685,12 @@ export default function SourceControlPanel() {
         <GitBranch size={14} style={{ color: 'var(--text-secondary)' }} />
         <button
           onClick={() => { setShowBranchPicker(!showBranchPicker); if (!showBranchPicker) fetchBranches() }}
+          title={detached ? `HEAD is detached at ${head}: new commits are not on any branch` : undefined}
           style={{
             background: 'none',
             border: 'none',
             cursor: 'pointer',
-            color: 'var(--text-primary)',
+            color: detached ? '#d29922' : 'var(--text-primary)',
             fontWeight: 500,
             fontSize: 12,
             padding: '2px 4px',
@@ -2667,7 +2701,7 @@ export default function SourceControlPanel() {
           }}
           className="source-control-action-btn"
         >
-          {branch}
+          {detached ? `detached @${head}` : branch}
           <ChevronDown size={10} />
         </button>
 
@@ -2820,7 +2854,7 @@ export default function SourceControlPanel() {
           }}>
             {branches.map((b) => (
               <div
-                key={b.name}
+                key={`${b.remote ? 'remote' : 'local'}:${b.name}`}
                 className="source-control-file-item"
                 style={{
                   padding: '5px 10px',
@@ -2837,19 +2871,21 @@ export default function SourceControlPanel() {
                 <GitBranch size={12} style={{ color: getBranchColor(b.name), opacity: 0.8 }} />
                 {/* Color-coded branch label */}
                 <span
-                  onClick={() => handleSwitchBranch(b.name)}
+                  onClick={() => handleSwitchBranch(checkoutTargetFor(b, branches))}
+                  title={checkoutTitle(b, checkoutTargetFor(b, branches))}
                   style={{
                     flex: 1,
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
+                    opacity: b.remote ? 0.75 : 1,
                   }}
                 >
                   {b.name}
                 </span>
                 {b.current && <Check size={12} style={{ color: 'var(--accent-green, #3fb950)', flexShrink: 0 }} />}
-                {/* Delete branch button (not for current branch) */}
-                {!b.current && (
+                {/* Delete branch button (local branches other than the current one) */}
+                {!b.current && !b.remote && (
                   <>
                     {showDeleteConfirm === b.name ? (
                       <div style={{ display: 'flex', gap: 2, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>

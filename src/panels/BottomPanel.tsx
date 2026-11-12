@@ -1,22 +1,24 @@
-import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import TerminalPanel from './TerminalPanel'
 import ProblemsPanel from './ProblemsPanel'
 import OutputPanel from './OutputPanel'
-
-const DebugConsolePanel = lazy(() => import('./DebugConsolePanel'))
-const PortsPanel = lazy(() => import('./PortsPanel'))
 import { useAgentStore } from '@/store/agents'
 import { useProblemsStore } from '@/store/problems'
 import { useOutputStore } from '@/store/output'
+import { useFileStore } from '@/store/files'
+import { useToastStore } from '@/store/toast'
+import { ipcErrorMessage } from '@/utils/ipcResult'
+import type { TaskScript } from '@shared/ipc-contract'
 import {
   Terminal, Activity, AlertTriangle, FileOutput,
   ChevronRight, AlertCircle, Info, Zap, Plus, X, Trash2,
-  ChevronDown, Columns2, Ban, Maximize2, Minimize2,
-  PanelBottom, PanelRight, PanelLeft, Bug, Globe,
+  ChevronDown, Columns2, Ban,
 } from 'lucide-react'
 import { v4 as uuid } from 'uuid'
 
-type Tab = 'terminal' | 'output' | 'problems' | 'debug-console' | 'ports'
+// Debug Console and Ports tabs were removed: they showed canned data and had
+// no debugger or port-scanning backend.
+type Tab = 'terminal' | 'output' | 'problems'
 
 interface TabDef {
   id: Tab
@@ -29,17 +31,14 @@ const defaultTabOrder: TabDef[] = [
   { id: 'terminal', label: 'Terminal', Icon: Terminal, shortcutLabel: 'Ctrl+`' },
   { id: 'output', label: 'Output', Icon: FileOutput, shortcutLabel: 'Ctrl+Shift+U' },
   { id: 'problems', label: 'Problems', Icon: AlertTriangle, shortcutLabel: 'Ctrl+Shift+M' },
-  { id: 'debug-console', label: 'Debug Console', Icon: Bug },
-  { id: 'ports', label: 'Ports', Icon: Globe },
 ]
-
-type PanelPosition = 'bottom' | 'right' | 'left'
 
 const STORAGE_KEY_TAB = 'orion-bottom-panel-active-tab'
 const STORAGE_KEY_TAB_ORDER = 'orion-bottom-panel-tab-order'
-const STORAGE_KEY_HEIGHT = 'orion-bottom-panel-height'
-const STORAGE_KEY_MAXIMIZED = 'orion-bottom-panel-maximized'
-const STORAGE_KEY_POSITION = 'orion-bottom-panel-position'
+
+// Typed into a shell after `npm run`; a name with shell syntax in it would
+// run more than the script the user picked, so such scripts are not offered.
+const SAFE_SCRIPT_NAME = /^[\w.:@/+-]+$/
 
 /* ── CSS keyframes injected once ──────────────────────── */
 
@@ -102,45 +101,6 @@ if (typeof document !== 'undefined' && !document.getElementById(styleId)) {
       width: 80px;
       font-family: inherit;
     }
-    .bp-resize-handle {
-      position: absolute;
-      z-index: 50;
-      transition: background 0.15s;
-    }
-    .bp-resize-handle:hover,
-    .bp-resize-handle.bp-resize-active {
-      background: var(--accent) !important;
-    }
-    .bp-resize-handle-top {
-      top: -3px; left: 0; right: 0; height: 6px;
-      cursor: ns-resize;
-    }
-    .bp-resize-handle-top::before {
-      content: '';
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      transform: translate(-50%, -50%);
-      width: 32px;
-      height: 2px;
-      border-radius: 1px;
-      background: var(--border);
-      opacity: 0;
-      transition: opacity 0.2s;
-    }
-    .bp-resize-handle-top:hover::before,
-    .bp-resize-handle-top.bp-resize-active::before {
-      opacity: 1;
-      background: var(--accent);
-    }
-    .bp-resize-handle-left {
-      top: 0; left: -2px; bottom: 0; width: 4px;
-      cursor: ew-resize;
-    }
-    .bp-resize-handle-right {
-      top: 0; right: -2px; bottom: 0; width: 4px;
-      cursor: ew-resize;
-    }
     .bp-main-tab {
       transition: color 0.15s, background 0.15s;
       user-select: none;
@@ -165,10 +125,10 @@ if (typeof document !== 'undefined' && !document.getElementById(styleId)) {
     .bp-main-tab[draggable="true"]:active {
       cursor: grabbing;
     }
-    .bp-position-menu-item {
+    .bp-menu-item {
       transition: background 0.12s, color 0.12s;
     }
-    .bp-position-menu-item:hover {
+    .bp-menu-item:hover {
       background: rgba(255,255,255,0.06);
       color: var(--text-primary);
     }
@@ -228,24 +188,11 @@ function loadTabOrder(): Tab[] {
   return defaultTabOrder.map(t => t.id)
 }
 
-function loadStoredString(key: string, fallback: string): string {
-  try {
-    return localStorage.getItem(key) ?? fallback
-  } catch { return fallback }
-}
-
-function loadStoredNumber(key: string, fallback: number): number {
-  try {
-    const v = localStorage.getItem(key)
-    return v != null ? Number(v) : fallback
-  } catch { return fallback }
-}
-
-function loadStoredBool(key: string, fallback: boolean): boolean {
-  try {
-    const v = localStorage.getItem(key)
-    return v != null ? v === 'true' : fallback
-  } catch { return fallback }
+function loadActiveTab(): Tab {
+  let stored: string | null = null
+  try { stored = localStorage.getItem(STORAGE_KEY_TAB) } catch { /* ignore */ }
+  // A tab saved by an older version (e.g. 'ports') must not leave the panel blank.
+  return defaultTabOrder.find(t => t.id === stored)?.id ?? 'terminal'
 }
 
 /* ── Main component ────────────────────────────────────── */
@@ -258,22 +205,17 @@ interface TermInstance {
   shellArgs?: string[]
   /** ID of the terminal this one is split with (shares a row) */
   splitParentId?: string
+  /** Named by the user; shell title escapes no longer rename it. */
+  renamed?: boolean
+  /** Typed into the shell once it has started (task runs). */
+  initialCommand?: string
 }
 
+/** Hide this panel with display:none rather than unmounting it: unmounting kills every terminal's shell. */
 export default function BottomPanel() {
   /* ── Panel state ────────────────────────────────────── */
-  const [activeTab, setActiveTabRaw] = useState<Tab>(
-    () => loadStoredString(STORAGE_KEY_TAB, 'terminal') as Tab
-  )
+  const [activeTab, setActiveTabRaw] = useState<Tab>(loadActiveTab)
   const [tabOrder, setTabOrderRaw] = useState<Tab[]>(loadTabOrder)
-  const [isMaximized, setIsMaximizedRaw] = useState(() => loadStoredBool(STORAGE_KEY_MAXIMIZED, false))
-  const [panelPosition, setPanelPositionRaw] = useState<PanelPosition>(
-    () => loadStoredString(STORAGE_KEY_POSITION, 'bottom') as PanelPosition
-  )
-  const [panelHeight, setPanelHeight] = useState(() => loadStoredNumber(STORAGE_KEY_HEIGHT, 260))
-  const [isResizing, setIsResizing] = useState(false)
-  const [showPositionMenu, setShowPositionMenu] = useState(false)
-  const positionMenuRef = useRef<HTMLDivElement>(null)
 
   /* ── Drag reorder state ─────────────────────────────── */
   const [dragTabId, setDragTabId] = useState<Tab | null>(null)
@@ -291,16 +233,6 @@ export default function BottomPanel() {
     try { localStorage.setItem(STORAGE_KEY_TAB_ORDER, JSON.stringify(order)) } catch { /* ignore */ }
   }, [])
 
-  const setIsMaximized = useCallback((v: boolean) => {
-    setIsMaximizedRaw(v)
-    try { localStorage.setItem(STORAGE_KEY_MAXIMIZED, String(v)) } catch { /* ignore */ }
-  }, [])
-
-  const setPanelPosition = useCallback((v: PanelPosition) => {
-    setPanelPositionRaw(v)
-    try { localStorage.setItem(STORAGE_KEY_POSITION, v) } catch { /* ignore */ }
-  }, [])
-
   /* ── Terminal state ─────────────────────────────────── */
   const [terminals, setTerminals] = useState<TermInstance[]>([
     { id: uuid(), name: 'Terminal 1' },
@@ -313,7 +245,8 @@ export default function BottomPanel() {
   const renameInputRef = useRef<HTMLInputElement>(null)
   const profileMenuRef = useRef<HTMLDivElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
-  const resizeRef = useRef<{ startY: number; startX: number; startSize: number } | null>(null)
+  const [taskScripts, setTaskScripts] = useState<TaskScript[] | null>(null)
+  const taskMenuRef = useRef<HTMLDivElement>(null)
   const logs = useAgentStore((s) => s.logs)
 
   /* ── Output unread tracking ─────────────────────────── */
@@ -332,16 +265,17 @@ export default function BottomPanel() {
     }
   }, [outputLineCount, activeTab, outputUnread])
 
-  /* ── Create terminal with optional profile ───────────── */
-  const addTerminal = useCallback((profile?: TerminalProfile) => {
+  /* ── Create terminal with optional profile or task ───── */
+  const addTerminal = useCallback((profile?: TerminalProfile, task?: { name: string; command: string }) => {
     const num = terminals.length + 1
-    const name = profile ? `${profile.name} ${num}` : `Terminal ${num}`
+    const name = task ? task.name : profile ? `${profile.name} ${num}` : `Terminal ${num}`
     const t: TermInstance = {
       id: uuid(),
       name,
       profileId: profile?.id,
       shellPath: profile?.shellPath,
       shellArgs: profile?.args,
+      initialCommand: task?.command,
     }
     setTerminals(prev => [...prev, t])
     setActiveTerminal(t.id)
@@ -371,8 +305,8 @@ export default function BottomPanel() {
   }, [activeTerminal])
 
   /* ── Split terminal ──────────────────────────────────── */
-  const splitTerminal = useCallback(() => {
-    const current = terminals.find(t => t.id === activeTerminal)
+  const splitTerminal = useCallback((targetId: string = activeTerminal) => {
+    const current = terminals.find(t => t.id === targetId)
     if (!current) return
     const parentId = current.splitParentId || current.id
     const num = terminals.length + 1
@@ -400,7 +334,7 @@ export default function BottomPanel() {
   const handleTitleChange = useCallback((sessionId: string, title: string) => {
     setTerminals(prev =>
       prev.map(t =>
-        t.id === sessionId ? { ...t, name: title || t.name } : t
+        t.id === sessionId && !t.renamed ? { ...t, name: title || t.name } : t
       )
     )
   }, [])
@@ -414,7 +348,7 @@ export default function BottomPanel() {
   const commitRename = useCallback(() => {
     if (renamingId && renameValue.trim()) {
       setTerminals(prev =>
-        prev.map(t => t.id === renamingId ? { ...t, name: renameValue.trim() } : t)
+        prev.map(t => t.id === renamingId ? { ...t, name: renameValue.trim(), renamed: true } : t)
       )
     }
     setRenamingId(null)
@@ -438,12 +372,83 @@ export default function BottomPanel() {
     window.dispatchEvent(new CustomEvent('terminal:clear', { detail: { sessionId: activeTerminal } }))
   }, [activeTerminal])
 
-  /* ── Kill terminal ──────────────────────────────────── */
+  /* ── Kill terminal (unmounting its TerminalPanel kills the ptys) ── */
   const killTerminal = useCallback((id: string) => {
-    window.api?.termKill?.(id)
     closeTerminal(id)
     setContextMenu(null)
   }, [closeTerminal])
+
+  /* ── Tasks: package.json scripts, each run in a new terminal ── */
+  // A new terminal starts in the workspace folder, whatever the others cd'd to.
+  const runScript = useCallback((name: string) => {
+    setTaskScripts(null)
+    addTerminal(undefined, { name: `npm: ${name}`, command: `npm run ${name}` })
+  }, [addTerminal])
+
+  const loadScripts = useCallback(async (): Promise<TaskScript[] | null> => {
+    const { addToast } = useToastStore.getState()
+    const rootPath = useFileStore.getState().rootPath
+    if (!rootPath) {
+      addToast({ type: 'info', message: 'Open a folder to run its tasks' })
+      return null
+    }
+    try {
+      const scripts = (await window.api.taskListScripts(rootPath)).filter(s => SAFE_SCRIPT_NAME.test(s.name))
+      if (scripts.length === 0) {
+        addToast({ type: 'info', message: 'No npm scripts found in package.json' })
+        return null
+      }
+      return scripts
+    } catch (err) {
+      addToast({ type: 'error', message: `Could not read package.json scripts: ${ipcErrorMessage(err)}` })
+      return null
+    }
+  }, [])
+
+  const runBuildTask = useCallback(async () => {
+    const scripts = await loadScripts()
+    if (!scripts) return
+    if (scripts.some(s => s.name === 'build')) runScript('build')
+    else useToastStore.getState().addToast({ type: 'info', message: 'No "build" script in package.json' })
+  }, [loadScripts, runScript])
+
+  const pickTask = useCallback(async () => {
+    const scripts = await loadScripts()
+    if (!scripts) return
+    setActiveTab('terminal')
+    setTaskScripts(scripts)
+  }, [loadScripts, setActiveTab])
+
+  /* ── Commands from the palette and menus ─────────────── */
+  useEffect(() => {
+    const handlers: Record<string, () => void> = {
+      'orion:new-terminal': () => addDefaultTerminal(),
+      'orion:split-terminal': () => splitTerminal(),
+      'orion:clear-terminal': () => clearTerminal(),
+      'orion:kill-terminal': () => killTerminal(activeTerminal),
+      'orion:run-build': () => { void runBuildTask() },
+      'orion:run-task': () => { void pickTask() },
+    }
+    for (const [name, handler] of Object.entries(handlers)) window.addEventListener(name, handler)
+    return () => {
+      for (const [name, handler] of Object.entries(handlers)) window.removeEventListener(name, handler)
+    }
+  }, [addDefaultTerminal, splitTerminal, clearTerminal, killTerminal, activeTerminal, runBuildTask, pickTask])
+
+  /* ── Close task picker on outside click / Escape ─────── */
+  useEffect(() => {
+    if (!taskScripts) return
+    const onMouseDown = (e: MouseEvent) => {
+      if (taskMenuRef.current && !taskMenuRef.current.contains(e.target as Node)) setTaskScripts(null)
+    }
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setTaskScripts(null) }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [taskScripts])
 
   /* ── Close context menu on outside click ─────────────── */
   useEffect(() => {
@@ -469,29 +474,19 @@ export default function BottomPanel() {
     return () => document.removeEventListener('mousedown', handler)
   }, [showProfileMenu])
 
-  /* ── Close position menu on outside click ────────────── */
-  useEffect(() => {
-    if (!showPositionMenu) return
-    const handler = (e: MouseEvent) => {
-      if (positionMenuRef.current && !positionMenuRef.current.contains(e.target as Node)) {
-        setShowPositionMenu(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showPositionMenu])
-
   /* ── Keyboard shortcuts ──────────────────────────────── */
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Ctrl+Shift+` = new terminal
-      if (e.ctrlKey && e.shiftKey && e.key === '`') {
+      // Ctrl+Shift+` = new terminal. Shift turns e.key into '~', so match
+      // the physical key. Sent as the palette command so that App, which
+      // owns the panel's visibility, also shows the panel.
+      if (e.ctrlKey && e.shiftKey && e.code === 'Backquote') {
         e.preventDefault()
-        addDefaultTerminal()
+        window.dispatchEvent(new CustomEvent('orion:new-terminal'))
         return
       }
       // Ctrl+` = toggle/focus terminal tab
-      if (e.ctrlKey && !e.shiftKey && e.key === '`') {
+      if (e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
         e.preventDefault()
         setActiveTab('terminal')
         return
@@ -511,51 +506,7 @@ export default function BottomPanel() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [addDefaultTerminal, setActiveTab])
-
-  /* ── Resize logic ────────────────────────────────────── */
-  const MIN_PANEL_SIZE = 100
-  const DEFAULT_HEIGHT = 260
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    setIsResizing(true)
-    resizeRef.current = {
-      startY: e.clientY,
-      startX: e.clientX,
-      startSize: panelHeight,
-    }
-
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!resizeRef.current) return
-      let newSize: number
-      if (panelPosition === 'bottom') {
-        newSize = resizeRef.current.startSize - (ev.clientY - resizeRef.current.startY)
-      } else if (panelPosition === 'right') {
-        newSize = resizeRef.current.startSize - (ev.clientX - resizeRef.current.startX)
-      } else {
-        newSize = resizeRef.current.startSize + (ev.clientX - resizeRef.current.startX)
-      }
-      newSize = Math.max(MIN_PANEL_SIZE, Math.min(newSize, window.innerHeight * 0.8))
-      setPanelHeight(newSize)
-    }
-
-    const onMouseUp = () => {
-      setIsResizing(false)
-      resizeRef.current = null
-      try { localStorage.setItem(STORAGE_KEY_HEIGHT, String(panelHeight)) } catch { /* ignore */ }
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-    }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-  }, [panelHeight, panelPosition])
-
-  // Persist height on change
-  useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY_HEIGHT, String(panelHeight)) } catch { /* ignore */ }
-  }, [panelHeight])
+  }, [setActiveTab])
 
   /* ── Tab drag reorder ────────────────────────────────── */
   const handleTabDragStart = useCallback((e: React.DragEvent, tabId: Tab) => {
@@ -613,13 +564,6 @@ export default function BottomPanel() {
     setDragOverSide(null)
   }, [dragTabId, dragOverSide, tabOrder, setTabOrder])
 
-  /* ── Double-click tab bar to maximize ────────────────── */
-  const handleTabBarDoubleClick = useCallback((e: React.MouseEvent) => {
-    // Only toggle if clicking the bar itself, not a tab button
-    if ((e.target as HTMLElement).closest('[data-tab-button]')) return
-    setIsMaximized(!isMaximized)
-  }, [setIsMaximized, isMaximized])
-
   /* ── Counts for badges ──────────────────────────────── */
   const problems = useProblemsStore((s) => s.problems)
   const problemsErrorCount = problems.filter((p) => p.severity === 'error').length
@@ -670,32 +614,18 @@ export default function BottomPanel() {
     .filter((t): t is TabDef => t != null)
 
   /* ── Render ──────────────────────────────────────────── */
-  const resizeHandleClass = panelPosition === 'bottom'
-    ? 'bp-resize-handle bp-resize-handle-top'
-    : panelPosition === 'right'
-      ? 'bp-resize-handle bp-resize-handle-left'
-      : 'bp-resize-handle bp-resize-handle-right'
-
+  // The app layout sizes this panel (its wrapper and Resizer own the height),
+  // so fill the wrapper instead of keeping a second, competing height.
   return (
     <div
       className="flex flex-col"
       style={{
-        height: isMaximized ? '100%' : panelHeight,
-        minHeight: MIN_PANEL_SIZE,
+        height: '100%',
         position: 'relative',
-        borderTop: panelPosition === 'bottom' ? '1px solid var(--border)' : 'none',
-        borderLeft: panelPosition === 'right' ? '1px solid var(--border)' : 'none',
-        borderRight: panelPosition === 'left' ? '1px solid var(--border)' : 'none',
+        borderTop: '1px solid var(--border)',
         background: 'var(--bg-primary)',
       }}
     >
-      {/* ── Resize handle ───────────────────────────────────── */}
-      <div
-        className={`${resizeHandleClass}${isResizing ? ' bp-resize-active' : ''}`}
-        onMouseDown={handleResizeStart}
-        style={{ background: 'transparent' }}
-      />
-
       {/* ── Tab Bar ─────────────────────────────────────────── */}
       <div
         className="shrink-0 flex items-center px-1 gap-0"
@@ -704,7 +634,6 @@ export default function BottomPanel() {
           background: 'var(--bg-tertiary)',
           borderBottom: '1px solid var(--border)',
         }}
-        onDoubleClick={handleTabBarDoubleClick}
       >
         {orderedTabs.map(({ id, label, Icon, shortcutLabel }) => {
           const isActive = activeTab === id
@@ -930,7 +859,7 @@ export default function BottomPanel() {
               {/* Split terminal button */}
               <button
                 className="bp-toolbar-btn"
-                onClick={splitTerminal}
+                onClick={() => splitTerminal()}
                 title="Split Terminal"
                 style={{
                   width: 24, height: 24,
@@ -1095,112 +1024,11 @@ export default function BottomPanel() {
           {/* ── Panel action buttons (always visible) ──────── */}
           <div style={{ width: 1, height: 14, background: 'var(--border)', margin: '0 3px', opacity: 0.4 }} />
 
-          {/* Panel position dropdown */}
-          <div style={{ position: 'relative' }} ref={positionMenuRef}>
-            <button
-              className="bp-toolbar-btn"
-              onClick={() => setShowPositionMenu(prev => !prev)}
-              title="Move Panel Position"
-              style={{
-                width: 24, height: 24,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                borderRadius: 4, border: 'none', cursor: 'pointer',
-                color: showPositionMenu ? 'var(--text-primary)' : 'var(--text-muted)',
-                background: showPositionMenu ? 'rgba(255,255,255,0.08)' : 'transparent',
-              }}
-            >
-              {panelPosition === 'bottom' && <PanelBottom size={13} />}
-              {panelPosition === 'right' && <PanelRight size={13} />}
-              {panelPosition === 'left' && <PanelLeft size={13} />}
-            </button>
-
-            {showPositionMenu && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 28,
-                  right: 0,
-                  minWidth: 150,
-                  background: 'var(--bg-secondary)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  padding: '4px 0',
-                  zIndex: 1000,
-                  boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-                  animation: 'bp-fade-in 0.12s ease',
-                }}
-              >
-                <div
-                  style={{
-                    padding: '4px 10px',
-                    fontSize: 10,
-                    color: 'var(--text-muted)',
-                    fontWeight: 600,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px',
-                  }}
-                >
-                  Panel Position
-                </div>
-                {([
-                  { pos: 'bottom' as PanelPosition, label: 'Bottom', Icon: PanelBottom },
-                  { pos: 'right' as PanelPosition, label: 'Right', Icon: PanelRight },
-                  { pos: 'left' as PanelPosition, label: 'Left', Icon: PanelLeft },
-                ]).map(({ pos, label, Icon: PosIcon }) => (
-                  <button
-                    key={pos}
-                    className="bp-position-menu-item"
-                    onClick={() => {
-                      setPanelPosition(pos)
-                      setShowPositionMenu(false)
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      width: '100%',
-                      padding: '6px 10px',
-                      fontSize: 11,
-                      color: panelPosition === pos ? 'var(--accent)' : 'var(--text-secondary)',
-                      background: panelPosition === pos ? 'rgba(88,166,255,0.06)' : 'transparent',
-                      border: 'none',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                    }}
-                  >
-                    <PosIcon size={13} />
-                    <span>{label}</span>
-                    {panelPosition === pos && (
-                      <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.6 }}>&#10003;</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Maximize/minimize button */}
-          <button
-            className="bp-toolbar-btn"
-            onClick={() => setIsMaximized(!isMaximized)}
-            title={isMaximized ? 'Restore Panel Size' : 'Maximize Panel'}
-            style={{
-              width: 24, height: 24,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              borderRadius: 4, border: 'none', cursor: 'pointer',
-              color: 'var(--text-muted)', background: 'transparent',
-            }}
-          >
-            {isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-          </button>
-
           {/* Close panel button */}
           <button
             className="bp-toolbar-btn"
-            onClick={() => {
-              // Dispatch a custom event so the parent layout can hide the panel
-              window.dispatchEvent(new CustomEvent('bottom-panel:close'))
-            }}
+            // App owns the panel's visibility; this is the event it toggles on.
+            onClick={() => window.dispatchEvent(new CustomEvent('orion:toggle-terminal'))}
             title="Close Panel"
             style={{
               width: 24, height: 24,
@@ -1215,145 +1043,195 @@ export default function BottomPanel() {
       </div>
 
       {/* ── Content area ───────────────────────────────────── */}
-      <div className="flex-1 overflow-hidden bp-content-animated" key={activeTab}>
-        {activeTab === 'terminal' && (
-          <div style={{ height: '100%' }}>
-            {terminalGroups.map(group => {
-              const parentId = group[0].splitParentId || group[0].id
-              const isGroupVisible = parentId === activeGroupParentId
-              if (!isGroupVisible) {
-                return (
-                  <div key={parentId} style={{ display: 'none' }}>
-                    {group.map(t => (
+      <div className="flex-1 overflow-hidden bp-content-animated" style={{ position: 'relative' }}>
+        {/* Terminals stay mounted (display:none) while another tab is shown:
+            unmounting a terminal kills its shell. */}
+        <div style={{ height: '100%', display: activeTab === 'terminal' ? 'block' : 'none' }}>
+          {terminalGroups.map(group => {
+            const parentId = group[0].splitParentId || group[0].id
+            const isGroupVisible = parentId === activeGroupParentId
+            // Hidden groups keep the visible element shape so that showing
+            // another group does not remount (and kill) these terminals.
+            return (
+              <div
+                key={parentId}
+                style={{
+                  display: isGroupVisible ? 'flex' : 'none',
+                  height: '100%',
+                  gap: 0,
+                }}
+              >
+                {group.map((t, idx) => (
+                  <div
+                    key={t.id}
+                    style={{
+                      flex: 1,
+                      height: '100%',
+                      position: 'relative',
+                      borderLeft: idx > 0 ? '1px solid var(--border)' : 'none',
+                      animation: group.length > 1 ? 'bp-split-slide 0.2s ease' : undefined,
+                    }}
+                    onClick={() => setActiveTerminal(t.id)}
+                  >
+                    {/* Split pane header */}
+                    {group.length > 1 && (
+                      <div
+                        style={{
+                          height: 24,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          padding: '0 8px',
+                          background: activeTerminal === t.id
+                            ? 'rgba(88,166,255,0.06)'
+                            : 'rgba(255,255,255,0.01)',
+                          borderBottom: `1px solid ${activeTerminal === t.id ? 'rgba(88,166,255,0.2)' : 'var(--border)'}`,
+                          fontSize: 10,
+                          color: activeTerminal === t.id ? 'var(--text-primary)' : 'var(--text-muted)',
+                          transition: 'background 0.15s, border-color 0.15s',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                        }}
+                      >
+                        <Terminal size={10} style={{ opacity: 0.6 }} />
+                        {renamingId === t.id ? (
+                          <input
+                            ref={renameInputRef}
+                            className="bp-rename-input"
+                            value={renameValue}
+                            onChange={e => setRenameValue(e.target.value)}
+                            onBlur={commitRename}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') commitRename()
+                              if (e.key === 'Escape') cancelRename()
+                            }}
+                            onClick={e => e.stopPropagation()}
+                          />
+                        ) : (
+                          <span
+                            onDoubleClick={() => startRename(t.id, t.name)}
+                            style={{
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {t.name}
+                          </span>
+                        )}
+                        <span style={{ flex: 1 }} />
+                        <span
+                          onClick={e => { e.stopPropagation(); closeTerminal(t.id) }}
+                          className="bp-toolbar-btn"
+                          style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            width: 18, height: 18,
+                            borderRadius: 3,
+                            cursor: 'pointer',
+                            color: 'var(--text-muted)',
+                            background: 'transparent',
+                            border: 'none',
+                          }}
+                          title="Close split"
+                        >
+                          <X size={10} />
+                        </span>
+                      </div>
+                    )}
+                    <div style={{ height: group.length > 1 ? 'calc(100% - 24px)' : '100%' }}>
                       <TerminalPanel
                         key={t.id}
                         sessionId={t.id}
                         shellPath={t.shellPath}
                         shellArgs={t.shellArgs}
+                        initialCommand={t.initialCommand}
                         onTitleChange={handleTitleChange}
                       />
-                    ))}
-                  </div>
-                )
-              }
-
-              return (
-                <div
-                  key={parentId}
-                  style={{
-                    display: 'flex',
-                    height: '100%',
-                    gap: 0,
-                  }}
-                >
-                  {group.map((t, idx) => (
-                    <div
-                      key={t.id}
-                      style={{
-                        flex: 1,
-                        height: '100%',
-                        position: 'relative',
-                        borderLeft: idx > 0 ? '1px solid var(--border)' : 'none',
-                        animation: group.length > 1 ? 'bp-split-slide 0.2s ease' : undefined,
-                      }}
-                      onClick={() => setActiveTerminal(t.id)}
-                    >
-                      {/* Split pane header */}
-                      {group.length > 1 && (
-                        <div
-                          style={{
-                            height: 24,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            padding: '0 8px',
-                            background: activeTerminal === t.id
-                              ? 'rgba(88,166,255,0.06)'
-                              : 'rgba(255,255,255,0.01)',
-                            borderBottom: `1px solid ${activeTerminal === t.id ? 'rgba(88,166,255,0.2)' : 'var(--border)'}`,
-                            fontSize: 10,
-                            color: activeTerminal === t.id ? 'var(--text-primary)' : 'var(--text-muted)',
-                            transition: 'background 0.15s, border-color 0.15s',
-                            cursor: 'pointer',
-                            userSelect: 'none',
-                          }}
-                        >
-                          <Terminal size={10} style={{ opacity: 0.6 }} />
-                          {renamingId === t.id ? (
-                            <input
-                              ref={renameInputRef}
-                              className="bp-rename-input"
-                              value={renameValue}
-                              onChange={e => setRenameValue(e.target.value)}
-                              onBlur={commitRename}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter') commitRename()
-                                if (e.key === 'Escape') cancelRename()
-                              }}
-                              onClick={e => e.stopPropagation()}
-                            />
-                          ) : (
-                            <span
-                              onDoubleClick={() => startRename(t.id, t.name)}
-                              style={{
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {t.name}
-                            </span>
-                          )}
-                          <span style={{ flex: 1 }} />
-                          <span
-                            onClick={e => { e.stopPropagation(); closeTerminal(t.id) }}
-                            className="bp-toolbar-btn"
-                            style={{
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              width: 18, height: 18,
-                              borderRadius: 3,
-                              cursor: 'pointer',
-                              color: 'var(--text-muted)',
-                              background: 'transparent',
-                              border: 'none',
-                            }}
-                            title="Close split"
-                          >
-                            <X size={10} />
-                          </span>
-                        </div>
-                      )}
-                      <div style={{ height: group.length > 1 ? 'calc(100% - 24px)' : '100%' }}>
-                        <TerminalPanel
-                          key={t.id}
-                          sessionId={t.id}
-                          shellPath={t.shellPath}
-                          shellArgs={t.shellArgs}
-                          onTitleChange={handleTitleChange}
-                        />
-                      </div>
                     </div>
-                  ))}
-                </div>
-              )
-            })}
-          </div>
-        )}
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
 
         {activeTab === 'problems' && <ProblemsPanel />}
 
         {activeTab === 'output' && <OutputPanel />}
 
-        {activeTab === 'debug-console' && (
-          <Suspense fallback={<EmptyTabContent Icon={Bug} message="Loading Debug Console..." sub="" />}>
-            <DebugConsolePanel />
-          </Suspense>
-        )}
-
-        {activeTab === 'ports' && (
-          <Suspense fallback={<EmptyTabContent Icon={Globe} message="Loading Ports..." sub="" />}>
-            <PortsPanel />
-          </Suspense>
+        {/* ── Run Task picker (package.json scripts) ─────── */}
+        {taskScripts && (
+          <div
+            ref={taskMenuRef}
+            role="menu"
+            aria-label="Run Task"
+            style={{
+              position: 'absolute',
+              top: 6,
+              right: 8,
+              minWidth: 240,
+              maxWidth: '60%',
+              maxHeight: '85%',
+              overflowY: 'auto',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '4px 0',
+              zIndex: 1000,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+              animation: 'bp-fade-in 0.12s ease',
+            }}
+          >
+            <div
+              style={{
+                padding: '4px 10px',
+                fontSize: 10,
+                color: 'var(--text-muted)',
+                fontWeight: 600,
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+              }}
+            >
+              Run Task
+            </div>
+            {taskScripts.map(script => (
+              <button
+                key={script.name}
+                role="menuitem"
+                className="bp-menu-item"
+                onClick={() => runScript(script.name)}
+                title={script.command}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  width: '100%',
+                  padding: '6px 10px',
+                  fontSize: 11,
+                  color: 'var(--text-secondary)',
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                }}
+              >
+                <span style={{ flexShrink: 0 }}>{script.name}</span>
+                <span
+                  style={{
+                    marginLeft: 'auto',
+                    fontSize: 10,
+                    color: 'var(--text-muted)',
+                    fontFamily: 'var(--font-mono, monospace)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {script.command}
+                </span>
+              </button>
+            ))}
+          </div>
         )}
       </div>
 
@@ -1382,8 +1260,7 @@ export default function BottomPanel() {
               setContextMenu(null)
             }},
             { label: 'Split Terminal', action: () => {
-              setActiveTerminal(contextMenu.termId)
-              setTimeout(() => splitTerminal(), 0)
+              splitTerminal(contextMenu.termId)
               setContextMenu(null)
             }},
             { label: 'Clear Terminal', action: () => {
@@ -1471,54 +1348,4 @@ function buildTerminalGroups(terminals: TermInstance[]): TermInstance[][] {
     groups.push(group)
   }
   return groups
-}
-
-/* ── Empty tab content ─────────────────────────────────── */
-
-function EmptyTabContent({
-  Icon,
-  message,
-  sub,
-}: {
-  Icon: typeof Terminal
-  message: string
-  sub: string
-}) {
-  return (
-    <div className="h-full flex flex-col items-center justify-center gap-2">
-      <div
-        style={{
-          width: 40,
-          height: 40,
-          borderRadius: 10,
-          background: 'rgba(255,255,255,0.02)',
-          border: '1px solid var(--border)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Icon size={18} style={{ color: 'var(--text-muted)', opacity: 0.4 }} />
-      </div>
-      <p
-        style={{
-          color: 'var(--text-muted)',
-          fontSize: 12,
-          fontWeight: 500,
-          marginTop: 4,
-        }}
-      >
-        {message}
-      </p>
-      <p
-        style={{
-          color: 'var(--text-muted)',
-          fontSize: 11,
-          opacity: 0.5,
-        }}
-      >
-        {sub}
-      </p>
-    </div>
-  )
 }

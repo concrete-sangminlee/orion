@@ -1,9 +1,9 @@
 import { useState, useMemo, useCallback, useRef, useEffect, type ReactNode } from 'react'
 import {
   AlertCircle, AlertTriangle, Info, CheckCircle2, Search, FileText,
-  ChevronRight, ChevronDown, Lightbulb, Copy, X, ChevronsDownUp,
-  ChevronsUpDown, FileCode2, Check, Trash2, ArrowUpDown, FolderOpen,
-  LayoutList, Filter, ArrowUp, ArrowDown, Layers, Tag, Ban,
+  ChevronRight, ChevronDown, Copy, X, ChevronsDownUp,
+  ChevronsUpDown, FileCode2, Check, ArrowUpDown, FolderOpen,
+  LayoutList, Filter, ArrowUp, ArrowDown, Layers, Tag,
 } from 'lucide-react'
 import {
   useProblemsStore, getProblemsCount,
@@ -59,14 +59,14 @@ const sevCfg: Record<
 
 /* ── Source badge colors ───────────────────────────────── */
 
+// Keyed by marker source/owner: the language services and the editor's lint hints.
 const srcBadge: Record<string, { bg: string; fg: string }> = {
-  eslint:            { bg: 'rgba(130,80,223,0.15)', fg: '#b392f0' },
-  typescript:        { bg: 'rgba(49,120,198,0.15)', fg: '#79b8ff' },
-  'todo-scanner':    { bg: 'rgba(227,179,65,0.12)', fg: '#e3b341' },
-  'code-quality':    { bg: 'rgba(248,81,73,0.12)',  fg: '#f97583' },
-  style:             { bg: 'rgba(88,166,255,0.10)', fg: '#58a6ff' },
-  'bracket-matcher': { bg: 'rgba(248,81,73,0.12)',  fg: '#f97583' },
-  imports:           { bg: 'rgba(227,179,65,0.12)', fg: '#e3b341' },
+  typescript:  { bg: 'rgba(49,120,198,0.15)', fg: '#79b8ff' },
+  javascript:  { bg: 'rgba(241,224,90,0.12)', fg: '#e3d26f' },
+  json:        { bg: 'rgba(88,166,255,0.10)', fg: '#58a6ff' },
+  css:         { bg: 'rgba(130,80,223,0.15)', fg: '#b392f0' },
+  todo:        { bg: 'rgba(227,179,65,0.12)', fg: '#e3b341' },
+  'lint-hint': { bg: 'rgba(248,81,73,0.12)',  fg: '#f97583' },
 }
 const getSrcColors = (s: string) => srcBadge[s] || { bg: 'rgba(139,148,158,0.12)', fg: '#8b949e' }
 
@@ -117,7 +117,6 @@ function fDir(filePath: string): string {
 
 export default function ProblemsPanel() {
   const problems = useProblemsStore((s) => s.problems)
-  const clearFile = useProblemsStore((s) => s.clearFile)
   const activeFilePath = useEditorStore((s) => s.activeFilePath)
   const { openFile } = useEditorStore()
 
@@ -140,14 +139,6 @@ export default function ProblemsPanel() {
   const groupMenuRef = useRef<HTMLDivElement>(null)
   const sortMenuRef = useRef<HTMLDivElement>(null)
 
-  // Auto-refresh on marker change events
-  const [, setTick] = useState(0)
-  useEffect(() => {
-    const h = () => setTick((t) => t + 1)
-    window.addEventListener('orion:markers-changed', h)
-    return () => window.removeEventListener('orion:markers-changed', h)
-  }, [])
-
   // Close dropdown menus on outside click
   useEffect(() => {
     if (!showGroupMenu && !showSortMenu) return
@@ -161,13 +152,7 @@ export default function ProblemsPanel() {
     return () => document.removeEventListener('mousedown', h)
   }, [showGroupMenu, showSortMenu])
 
-  // Status bar integration
   const counts = useMemo(() => getProblemsCount(problems), [problems])
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent('orion:status-bar-problems', {
-      detail: { errors: counts.errors, warnings: counts.warnings, info: counts.info },
-    }))
-  }, [counts])
 
   /* ── Filtering ───────────────────────────────────────── */
 
@@ -322,17 +307,6 @@ export default function ProblemsPanel() {
     navigator.clipboard.writeText(lines.join('\n'))
   }, [sorted])
 
-  const applyFix = useCallback((p: Problem) => {
-    if (!p.quickFix) return
-    window.dispatchEvent(new CustomEvent('orion:apply-quick-fix', {
-      detail: { file: p.file, line: p.line, column: p.column, fix: p.quickFix, problemId: p.id },
-    }))
-  }, [])
-
-  const clearAll = useCallback(() => {
-    for (const f of new Set(problems.map((p) => p.file))) clearFile(f)
-  }, [problems, clearFile])
-
   /* ── Keyboard navigation ─────────────────────────────── */
 
   const flatIds = useMemo(() => {
@@ -467,11 +441,6 @@ export default function ProblemsPanel() {
         <TbBtn Icon={allCollapsed ? ChevronsUpDown : ChevronsDownUp} active={false}
           onClick={allCollapsed ? expandAll : collapseAll}
           title={allCollapsed ? 'Expand all' : 'Collapse all'} />
-
-        <Sep />
-
-        <TbBtn Icon={Trash2} active={false} onClick={clearAll}
-          title="Clear all problems" disabled={!hasProblems} />
       </div>
 
       {/* ── Problem list ────────────────────────────────── */}
@@ -485,9 +454,8 @@ export default function ProblemsPanel() {
             <GroupSection key={g.key} group={g} groupBy={groupBy}
               isCollapsed={collapsed.has(g.key)}
               onToggle={() => toggleGroup(g.key)}
-              onNav={navigate} onCopy={copyProblem} onFix={applyFix}
+              onNav={navigate} onCopy={copyProblem}
               onCtx={(e, p) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, problem: p }) }}
-              onClear={(f) => clearFile(f)}
               copiedId={copiedId} selectedId={selectedId} onSelect={setSelectedId} />
           ))
         )}
@@ -525,11 +493,9 @@ export default function ProblemsPanel() {
 
       {/* ── Context menu ──────────────────────────────── */}
       {ctxMenu && (
-        <CtxMenuOverlay x={ctxMenu.x} y={ctxMenu.y} problem={ctxMenu.problem} groupBy={groupBy}
+        <CtxMenuOverlay x={ctxMenu.x} y={ctxMenu.y} problem={ctxMenu.problem}
           onCopy={() => { copyProblem(ctxMenu.problem); setCtxMenu(null) }}
           onNav={() => { navigate(ctxMenu.problem.file, ctxMenu.problem.line, ctxMenu.problem.column); setCtxMenu(null) }}
-          onFix={ctxMenu.problem.quickFix ? () => { applyFix(ctxMenu.problem); setCtxMenu(null) } : undefined}
-          onClearFile={groupBy === 'file' ? () => { clearFile(ctxMenu.problem.file); setCtxMenu(null) } : undefined}
           onClose={() => setCtxMenu(null)} />
       )}
     </div>
@@ -570,7 +536,7 @@ function EmptyState() {
         fontFamily: 'var(--font-sans, sans-serif)', maxWidth: 260,
         textAlign: 'center', lineHeight: 1.4,
       }}>
-        Errors and warnings from TypeScript, ESLint, and other language servers will appear here
+        Errors and warnings the editor reports for open files (TypeScript, JavaScript, JSON, CSS) and TODO / lint hints appear here
       </p>
     </div>
   )
@@ -629,21 +595,20 @@ function SumBadge({ Icon, label, count, color, bg }: {
 
 /* ── Toolbar button ────────────────────────────────────── */
 
-function TbBtn({ Icon, active, onClick, title, disabled = false }: {
-  Icon: typeof AlertCircle; active: boolean; onClick: () => void; title: string; disabled?: boolean
+function TbBtn({ Icon, active, onClick, title }: {
+  Icon: typeof AlertCircle; active: boolean; onClick: () => void; title: string
 }) {
   const [h, setH] = useState(false)
   return (
-    <button onClick={disabled ? undefined : onClick} title={title}
+    <button onClick={onClick} title={title}
       onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
       style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         width: 24, height: 22, border: 'none', borderRadius: 3,
-        cursor: disabled ? 'default' : 'pointer', flexShrink: 0,
-        color: disabled ? 'var(--text-muted)' : active ? 'var(--accent)' : 'var(--text-muted)',
-        background: active ? 'rgba(88,166,255,0.12)' : h && !disabled ? 'rgba(255,255,255,0.06)' : 'transparent',
-        opacity: disabled ? 0.35 : 1,
-        transition: 'background 0.1s, color 0.1s, opacity 0.1s',
+        cursor: 'pointer', flexShrink: 0,
+        color: active ? 'var(--accent)' : 'var(--text-muted)',
+        background: active ? 'rgba(88,166,255,0.12)' : h ? 'rgba(255,255,255,0.06)' : 'transparent',
+        transition: 'background 0.1s, color 0.1s',
       }}>
       <Icon size={14} />
     </button>
@@ -722,11 +687,11 @@ function DdItem({ icon, label, active, suffix, onClick }: {
 
 /* ── Group section ─────────────────────────────────────── */
 
-function GroupSection({ group, groupBy, isCollapsed, onToggle, onNav, onCopy, onFix, onCtx, onClear, copiedId, selectedId, onSelect }: {
+function GroupSection({ group, groupBy, isCollapsed, onToggle, onNav, onCopy, onCtx, copiedId, selectedId, onSelect }: {
   group: ProblemGroup; groupBy: GroupByMode; isCollapsed: boolean; onToggle: () => void
   onNav: (f: string, l: number, c?: number) => void; onCopy: (p: Problem) => void
-  onFix: (p: Problem) => void; onCtx: (e: React.MouseEvent, p: Problem) => void
-  onClear: (f: string) => void; copiedId: string | null; selectedId: string | null
+  onCtx: (e: React.MouseEvent, p: Problem) => void
+  copiedId: string | null; selectedId: string | null
   onSelect: (id: string) => void
 }) {
   const Chev = isCollapsed ? ChevronRight : ChevronDown
@@ -786,32 +751,13 @@ function GroupSection({ group, groupBy, isCollapsed, onToggle, onNav, onCopy, on
           }}>
             {group.problems.length}
           </span>
-          {groupBy === 'file' && hov && (
-            <button onClick={(e) => { e.stopPropagation(); onClear(group.key) }}
-              title="Clear problems for this file"
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                width: 18, height: 18, border: 'none', background: 'transparent',
-                color: 'var(--text-muted)', cursor: 'pointer', borderRadius: 3, padding: 0,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(248,81,73,0.15)'
-                e.currentTarget.style.color = 'var(--accent-red)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent'
-                e.currentTarget.style.color = 'var(--text-muted)'
-              }}>
-              <X size={11} />
-            </button>
-          )}
         </div>
       </div>
 
       {/* Problem rows */}
       {!isCollapsed && group.problems.map((p, i) => (
         <ProblemRow key={p.id} problem={p} idx={i} groupBy={groupBy}
-          onNav={onNav} onCopy={onCopy} onFix={onFix} onCtx={onCtx}
+          onNav={onNav} onCopy={onCopy} onCtx={onCtx}
           copied={copiedId === p.id} selected={selectedId === p.id}
           onSelect={() => onSelect(p.id)} />
       ))}
@@ -821,16 +767,15 @@ function GroupSection({ group, groupBy, isCollapsed, onToggle, onNav, onCopy, on
 
 /* ── Problem row ──────────────────────────────────────── */
 
-function ProblemRow({ problem, idx, groupBy, onNav, onCopy, onFix, onCtx, copied, selected, onSelect }: {
+function ProblemRow({ problem, idx, groupBy, onNav, onCopy, onCtx, copied, selected, onSelect }: {
   problem: Problem; idx: number; groupBy: GroupByMode
   onNav: (f: string, l: number, c?: number) => void; onCopy: (p: Problem) => void
-  onFix: (p: Problem) => void; onCtx: (e: React.MouseEvent, p: Problem) => void
+  onCtx: (e: React.MouseEvent, p: Problem) => void
   copied: boolean; selected: boolean; onSelect: () => void
 }) {
   const cfg = sevCfg[problem.severity]
   const sc = getSrcColors(problem.source)
   const [hov, setHov] = useState(false)
-  const hasFix = !!problem.quickFix
   const showFile = groupBy !== 'file'
   const fn = fName(problem.file)
 
@@ -851,7 +796,7 @@ function ProblemRow({ problem, idx, groupBy, onNav, onCopy, onFix, onCtx, copied
       {/* Severity icon */}
       <cfg.Icon size={13} style={{ color: cfg.color, flexShrink: 0, marginTop: 2 }} />
 
-      {/* Message + source + quick fix label */}
+      {/* Message + source */}
       <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
         <span style={{
           color: 'var(--text-secondary)', lineHeight: 1.5, wordBreak: 'break-word',
@@ -867,16 +812,6 @@ function ProblemRow({ problem, idx, groupBy, onNav, onCopy, onFix, onCtx, copied
         }}>
           {problem.source}
         </span>
-        {hasFix && (
-          <span style={{
-            marginLeft: 4, padding: '0px 4px', borderRadius: 3,
-            background: 'rgba(227,179,65,0.08)', color: 'var(--accent-orange)',
-            fontSize: 9, fontFamily: 'var(--font-sans, sans-serif)', fontWeight: 500,
-            whiteSpace: 'nowrap', verticalAlign: 'middle', opacity: 0.8,
-          }}>
-            Quick Fix
-          </span>
-        )}
         {showFile && (
           <div
             style={{ display: 'flex', alignItems: 'center', gap: 3, marginTop: 1, cursor: 'pointer' }}
@@ -916,21 +851,6 @@ function ProblemRow({ problem, idx, groupBy, onNav, onCopy, onFix, onCtx, copied
         opacity: hov ? 1 : 0, transition: 'opacity 0.12s',
       }}>
         <button
-          onClick={(e) => { e.stopPropagation(); if (hasFix) onFix(problem) }}
-          title={hasFix ? `Quick fix: ${problem.quickFix}` : 'No quick fixes available'}
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 20, height: 20, border: 'none', borderRadius: 3,
-            background: hasFix ? 'rgba(227,179,65,0.12)' : 'transparent',
-            color: hasFix ? 'var(--accent-orange)' : 'var(--text-muted)',
-            cursor: hasFix ? 'pointer' : 'default',
-            opacity: hasFix ? 1 : 0.4, transition: 'background 0.1s',
-          }}
-          onMouseEnter={(e) => { if (hasFix) e.currentTarget.style.background = 'rgba(227,179,65,0.22)' }}
-          onMouseLeave={(e) => { if (hasFix) e.currentTarget.style.background = 'rgba(227,179,65,0.12)' }}>
-          <Lightbulb size={12} />
-        </button>
-        <button
           onClick={(e) => { e.stopPropagation(); onCopy(problem) }}
           title={copied ? 'Copied!' : 'Copy problem text'}
           style={{
@@ -951,10 +871,9 @@ function ProblemRow({ problem, idx, groupBy, onNav, onCopy, onFix, onCtx, copied
 
 /* ── Context menu overlay ─────────────────────────────── */
 
-function CtxMenuOverlay({ x, y, problem, groupBy, onCopy, onNav, onFix, onClearFile, onClose }: {
-  x: number; y: number; problem: Problem; groupBy: GroupByMode
-  onCopy: () => void; onNav: () => void; onFix?: () => void
-  onClearFile?: () => void; onClose: () => void
+function CtxMenuOverlay({ x, y, problem, onCopy, onNav, onClose }: {
+  x: number; y: number; problem: Problem
+  onCopy: () => void; onNav: () => void; onClose: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x, y })
@@ -977,7 +896,6 @@ function CtxMenuOverlay({ x, y, problem, groupBy, onCopy, onNav, onFix, onClearF
   }, [onClose])
 
   const cfg = sevCfg[problem.severity]
-  const fn = fName(problem.file)
 
   return (
     <div ref={ref} onClick={(e) => e.stopPropagation()}
@@ -999,46 +917,22 @@ function CtxMenuOverlay({ x, y, problem, groupBy, onCopy, onNav, onFix, onClearF
 
       <CtxItem icon={<ChevronRight size={12} />} label="Go to Problem" shortcut="Enter" onClick={onNav} />
       <CtxItem icon={<Copy size={12} />} label="Copy Problem Text" shortcut="Ctrl+C" onClick={onCopy} />
-      <CtxSep />
-      {onFix
-        ? <CtxItem icon={<Lightbulb size={12} style={{ color: 'var(--accent-orange)' }} />}
-            label={`Quick Fix: ${problem.quickFix}`} onClick={onFix} />
-        : <CtxItem icon={<Lightbulb size={12} />}
-            label="No Quick Fix Available" onClick={onClose} disabled />
-      }
-      {onClearFile && (
-        <>
-          <CtxSep />
-          <CtxItem icon={<Trash2 size={12} style={{ color: 'var(--accent-red)' }} />}
-            label={`Clear Problems: ${fn}`} onClick={onClearFile} />
-        </>
-      )}
-      <CtxSep />
-      <CtxItem icon={<Ban size={12} />} label="Dismiss Problem" onClick={() => {
-        window.dispatchEvent(new CustomEvent('orion:dismiss-problem', { detail: { problemId: problem.id } }))
-        onClose()
-      }} />
     </div>
   )
 }
 
-function CtxSep() {
-  return <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
-}
-
-function CtxItem({ icon, label, shortcut, onClick, disabled = false }: {
-  icon?: ReactNode; label: string; shortcut?: string; onClick: () => void; disabled?: boolean
+function CtxItem({ icon, label, shortcut, onClick }: {
+  icon?: ReactNode; label: string; shortcut?: string; onClick: () => void
 }) {
   const [h, setH] = useState(false)
   return (
-    <div onClick={disabled ? undefined : onClick}
+    <div onClick={onClick}
       onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
       style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '5px 14px',
-        cursor: disabled ? 'default' : 'pointer',
-        color: disabled ? 'var(--text-muted)' : 'var(--text-primary)',
-        opacity: disabled ? 0.5 : 1,
-        background: h && !disabled ? 'rgba(255,255,255,0.06)' : 'transparent',
+        cursor: 'pointer',
+        color: 'var(--text-primary)',
+        background: h ? 'rgba(255,255,255,0.06)' : 'transparent',
         transition: 'background 0.08s',
       }}>
       {icon && <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0, color: 'var(--text-muted)' }}>{icon}</span>}

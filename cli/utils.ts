@@ -500,9 +500,11 @@ export function matchGlob(pattern: string, filePath: string): boolean {
   // Escape regex special chars except our wildcards
   let regexStr = normalizedPattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\//g, '\u0001')      // placeholder for **/
     .replace(/\*\*/g, '\u0000')        // placeholder for **
     .replace(/\*/g, '[^/]*')           // * matches within a single segment
     .replace(/\?/g, '[^/]')           // ? matches single non-separator char
+    .replace(/\u0001/g, '(?:.*/)?')    // **/ matches zero or more directories (src/**/*.ts matches src/a.ts)
     .replace(/\u0000/g, '.*');         // ** matches across separators
 
   // If pattern has no path separators, match against basename only
