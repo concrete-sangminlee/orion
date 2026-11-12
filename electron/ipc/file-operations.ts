@@ -5,6 +5,7 @@ import chokidar, { type FSWatcher } from 'chokidar'
 import { IPC } from '../../shared/ipc-channels'
 import { resolveActiveWorkspacePath, WorkspacePathAccessError } from './workspace-path-guard'
 import { handle, emit } from './typed-ipc'
+import { copyItem, renameItem } from '../filesystem/operations'
 
 // Track per-path watchers for file:watch
 const fileWatchers = new Map<string, FSWatcher>()
@@ -23,7 +24,7 @@ export function registerFileOperationHandlers(getWindow: () => BrowserWindow | n
     try {
       const safeOldPath = await resolveActiveWorkspacePath(oldPath, 'old path')
       const safeNewPath = await resolveActiveWorkspacePath(newPath, 'new path')
-      await fs.rename(safeOldPath, safeNewPath)
+      await renameItem(safeOldPath, safeNewPath)
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -35,9 +36,8 @@ export function registerFileOperationHandlers(getWindow: () => BrowserWindow | n
     try {
       const safeSourcePath = await resolveActiveWorkspacePath(sourcePath, 'source path')
       const safeDestPath = await resolveActiveWorkspacePath(destPath, 'destination path')
-      await fs.mkdir(path.dirname(safeDestPath), { recursive: true })
-      // fs.cp handles both files and directories (copyFolder in the renderer).
-      await fs.cp(safeSourcePath, safeDestPath, { recursive: true })
+      // Files and directories alike; refuses to copy over something that exists.
+      await copyItem(safeSourcePath, safeDestPath)
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -49,8 +49,7 @@ export function registerFileOperationHandlers(getWindow: () => BrowserWindow | n
     try {
       const safeSourcePath = await resolveActiveWorkspacePath(sourcePath, 'source path')
       const safeDestPath = await resolveActiveWorkspacePath(destPath, 'destination path')
-      await fs.mkdir(path.dirname(safeDestPath), { recursive: true })
-      await fs.rename(safeSourcePath, safeDestPath)
+      await renameItem(safeSourcePath, safeDestPath)
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message }

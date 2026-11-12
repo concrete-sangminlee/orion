@@ -47,11 +47,20 @@ describe('OwnWriteTracker', () => {
     expect(tracker.isOwnWrite(at('b.ts'), 'const a = 1\n')).toBe(false)
   })
 
+  it('reports a file that returns to the saved content after an external change', () => {
+    // Saved A; an external tool wrote B (reported, editor reloaded B); then the
+    // file went back to A (git checkout). The editor shows B, so A is a change.
+    const tracker = new OwnWriteTracker()
+    tracker.record(at('a.ts'), 'A')
+    expect(tracker.isOwnWrite(at('a.ts'), 'A')).toBe(true)
+    expect(tracker.isOwnWrite(at('a.ts'), 'B')).toBe(false)
+    expect(tracker.isOwnWrite(at('a.ts'), 'A')).toBe(false)
+  })
+
   it('tracks only the latest write per file', () => {
     const tracker = new OwnWriteTracker()
     tracker.record(at('a.ts'), 'v1')
     tracker.record(at('a.ts'), 'v2')
-    expect(tracker.isOwnWrite(at('a.ts'), 'v1')).toBe(false)
     expect(tracker.isOwnWrite(at('a.ts'), 'v2')).toBe(true)
     tracker.forget(at('a.ts'))
     expect(tracker.isOwnWrite(at('a.ts'), 'v2')).toBe(false)

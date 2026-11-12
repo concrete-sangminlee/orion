@@ -1,5 +1,6 @@
 import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
+import { ipcErrorMessage } from '@/utils/ipcResult'
 
 function baseName(filePath: string): string {
   const parts = filePath.split(/[\\/]/)
@@ -20,8 +21,7 @@ export async function openFileInEditor(filePath: string): Promise<boolean> {
     )
     return true
   } catch (err) {
-    const reason = err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(err)
-    useToastStore.getState().addToast({ type: 'error', message: `Failed to open ${baseName(filePath)}: ${reason}` })
+    useToastStore.getState().addToast({ type: 'error', message: `Failed to open ${baseName(filePath)}: ${ipcErrorMessage(err)}` })
     return false
   }
 }

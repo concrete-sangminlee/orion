@@ -17,7 +17,7 @@ import Resizer from './components/Resizer'
 import StatusBar from './components/StatusBar'
 import CommandPalette from '@/components/CommandPalette'
 import ToastContainer from '@/components/Toast'
-import { writeFileChecked } from '@/utils/ipcResult'
+import { ipcErrorMessage, writeFileChecked } from '@/utils/ipcResult'
 import { confirmOverwriteIfChangedOnDisk } from '@/utils/saveGuards'
 import { openFileInEditor } from '@/utils/openFileInEditor'
 import { migrateLegacyApiKeys } from '@/utils/apiKeys'
@@ -313,8 +313,13 @@ export default function App() {
   }, [])
 
   const openWorkspacePath = useCallback(async (folderPath: string, successMessage?: string) => {
-    const tree = await window.api.openWorkspace(folderPath)
-    await applyWorkspaceTree(folderPath, tree, successMessage)
+    try {
+      const tree = await window.api.openWorkspace(folderPath)
+      await applyWorkspaceTree(folderPath, tree, successMessage)
+    } catch (err) {
+      // Keep the current workspace; an unreadable folder must not look like an empty one.
+      useToastStore.getState().addToast({ type: 'error', message: `Could not open folder: ${ipcErrorMessage(err)}` })
+    }
   }, [applyWorkspaceTree])
 
   const promptOpenWorkspace = useCallback(async () => {
@@ -344,20 +349,17 @@ export default function App() {
     const { addToast } = useToastStore.getState()
     const { openFile } = useEditorStore.getState()
 
-    // Check if a single folder was dropped (Electron exposes .path on File objects)
-    // A dropped folder typically has no type or size=0 in Electron
+    // A single dropped folder becomes the workspace. openWorkspace rejects for
+    // anything that is not a folder, which then opens as a file below.
     if (files.length === 1) {
       const droppedFile = files[0]
-      const filePath = (droppedFile as any).path as string | undefined
+      const filePath = window.api.pathForDroppedFile(droppedFile)
       if (filePath) {
         try {
           // Try to read as directory first
           const tree = await window.api.openWorkspace(filePath)
-          if (tree && Array.isArray(tree) && tree.length >= 0) {
-            // It's a valid directory - set as workspace root
-            await applyWorkspaceTree(filePath, tree, `Opened folder: ${droppedFile.name}`)
-            return
-          }
+          await applyWorkspaceTree(filePath, tree, `Opened folder: ${droppedFile.name}`)
+          return
         } catch {
           // Not a directory, fall through to open as file
         }
@@ -368,7 +370,7 @@ export default function App() {
     let openedCount = 0
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
-      const filePath = (file as any).path as string | undefined
+      const filePath = window.api.pathForDroppedFile(file)
       if (!filePath) continue
 
       // Try opening as a folder first for multi-drops
@@ -397,7 +399,7 @@ export default function App() {
         )
         openedCount++
       } catch (err: any) {
-        addToast({ type: 'error', message: `Failed to open ${file.name}: ${err?.message || err}` })
+        addToast({ type: 'error', message: `Failed to open ${file.name}: ${ipcErrorMessage(err)}` })
       }
     }
 

@@ -11,11 +11,13 @@ let watcher: FSWatcher | null = null
 const pendingChanges = new Map<string, { type: string; timer: ReturnType<typeof setTimeout> }>()
 const DEBOUNCE_MS = 500
 
-// What the app itself last wrote to each file, so its own saves are not
-// reported back as external changes (compared by content, not by time).
+// The content the editor last read from or wrote to each file. A watcher event
+// whose file still holds exactly that is not news to the editor: its own save,
+// or a file that was created and then opened before the event arrived.
+// Compared by content, not by time.
 const ownWrites = new OwnWriteTracker()
 
-export function recordOwnWrite(filePath: string, content: string) {
+export function recordKnownContent(filePath: string, content: string | Buffer) {
   ownWrites.record(filePath, content)
 }
 

@@ -3,6 +3,7 @@ import { useFileStore } from '@/store/files'
 import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
 import { useWorkspaceStore } from '@/store/workspace'
+import { ipcErrorMessage } from '@/utils/ipcResult'
 import {
   ChevronDown, ChevronRight, ChevronsDownUp,
   File, FileCode, FileCode2, FileText,
@@ -696,7 +697,8 @@ function FileTreeNode({
         { preview },
       )
     } catch (e) {
-      console.error('Failed to open file:', e)
+      // For example a binary file: say why nothing opened.
+      useToastStore.getState().addToast({ type: 'error', message: `Failed to open ${node.name}: ${ipcErrorMessage(e)}` })
     }
   }
 
@@ -1283,19 +1285,27 @@ export default function FileExplorer() {
   const handleOpenFolder = async () => {
     const path = await window.api.openFolder()
     if (path) {
-      const tree = await window.api.openWorkspace(path)
-      setRootPath(path)
-      // Load workspace settings for the opened folder
-      await useWorkspaceStore.getState().loadWorkspaceSettings(path)
-      setFileTree(tree)
-      window.api.watchStart(path)
+      try {
+        const tree = await window.api.openWorkspace(path)
+        setRootPath(path)
+        // Load workspace settings for the opened folder
+        await useWorkspaceStore.getState().loadWorkspaceSettings(path)
+        setFileTree(tree)
+        window.api.watchStart(path)
+      } catch (err) {
+        addToast({ type: 'error', message: `Could not open folder: ${ipcErrorMessage(err)}` })
+      }
     }
   }
 
   const handleRefresh = async () => {
     if (!rootPath) return
-    const tree = await window.api.readDir(rootPath)
-    setFileTree(tree)
+    try {
+      setFileTree(await window.api.readDir(rootPath))
+    } catch (err) {
+      // Keep showing the last known tree rather than an empty workspace.
+      addToast({ type: 'error', message: `Could not refresh the file list: ${ipcErrorMessage(err)}` })
+    }
   }
 
   const handleCollapseAll = useCallback(() => {
@@ -1394,7 +1404,8 @@ export default function FileExplorer() {
     if (!deleteTarget) return
     const name = deleteTarget.name
     try {
-      await window.api.trashItem(deleteTarget.path)
+      const result = await window.api.trashItem(deleteTarget.path)
+      if (!result.success) throw new Error(result.error || 'the item could not be deleted')
       addToast({ type: 'success', message: `Deleted ${name}` })
       await handleRefresh()
     } catch (err: any) {
@@ -1564,22 +1575,33 @@ export default function FileExplorer() {
     if (!inlineInput) return
     const { mode, parentPath, existingPath } = inlineInput
 
+    // The main process reports failure in the result (for example a name that
+    // is already taken); it does not reject. Success must not be assumed.
+    const done = (result: { success: boolean; error?: string }) => {
+      if (!result.success) throw new Error(result.error || 'unknown error')
+    }
+
     try {
       if (mode === 'new-file') {
         const s = sep(parentPath)
         const filePath = parentPath + s + value
-        await window.api.createFile(filePath)
+        done(await window.api.createFile(filePath))
         addToast({ type: 'success', message: `Created ${value}` })
       } else if (mode === 'new-folder') {
         const s = sep(parentPath)
         const dirPath = parentPath + s + value
-        await window.api.createDir(dirPath)
+        done(await window.api.createDir(dirPath))
         addToast({ type: 'success', message: `Created folder ${value}` })
       } else if (mode === 'rename' && existingPath) {
         const s = sep(parentPath)
         const newPath = parentPath + s + value
-        await window.api.renameFile(existingPath, newPath)
-        addToast({ type: 'success', message: `Renamed to ${value}` })
+        if (newPath !== existingPath) {
+          done(await window.api.renameFile(existingPath, newPath))
+          // Open tabs follow the file; otherwise a save would recreate the old path.
+          const language = await window.api.readFile(newPath).then((file) => file.language, () => undefined)
+          useEditorStore.getState().renamePath(existingPath, newPath, language)
+          addToast({ type: 'success', message: `Renamed to ${value}` })
+        }
       }
       await handleRefresh()
     } catch (err: any) {
@@ -1641,7 +1663,7 @@ export default function FileExplorer() {
     let copiedCount = 0
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
-      const filePath = (file as any).path as string | undefined
+      const filePath = window.api.pathForDroppedFile(file)
       if (!filePath) continue
 
       try {

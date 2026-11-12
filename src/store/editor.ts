@@ -121,6 +121,14 @@ function loadSessions(): WorkspaceSession[] {
   return []
 }
 
+/** `path` rewritten if it is `oldPath` itself or lies inside it; otherwise unchanged. */
+export function retargetPath(path: string, oldPath: string, newPath: string): string {
+  if (path === oldPath) return newPath
+  const next = path.charAt(oldPath.length)
+  if (path.startsWith(oldPath) && (next === '/' || next === '\\')) return newPath + path.slice(oldPath.length)
+  return path
+}
+
 // ─── Default group helper ────────────────────────────────────────────────────
 
 function createDefaultGroup(): EditorGroup {
@@ -169,6 +177,12 @@ export interface EditorStore {
   markExternalChange: (path: string) => void
   dismissExternalChange: (path: string) => void
   markDeletedOnDisk: (path: string) => void
+  /**
+   * A file or folder was renamed or moved: point every open tab under it (and
+   * its cursor, history and recovery state) at the new location, keeping
+   * unsaved edits. `language` applies to the renamed file itself.
+   */
+  renamePath: (oldPath: string, newPath: string, language?: string) => void
 
   // === 1. Tab groups / Split editor state ===
   editorGroups: EditorGroup[]
@@ -582,6 +596,52 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         f.path === path ? { ...f, isDeletedOnDisk: true, hasExternalChange: false } : f
       ),
     })),
+
+  renamePath: (oldPath, newPath, language) =>
+    set((state) => {
+      const retarget = (path: string): string => retargetPath(path, oldPath, newPath)
+      const retargetOrNull = (path: string | null) => (path === null ? null : retarget(path))
+      const retargetFile = (file: OpenFile): OpenFile => {
+        const path = retarget(file.path)
+        if (path === file.path) return file
+        return {
+          ...file,
+          path,
+          name: path.split(/[\\/]/).pop() || file.name,
+          language: file.path === oldPath && language ? language : file.language,
+          isDeletedOnDisk: false,
+        }
+      }
+      const retargetKeys = <T,>(record: Record<string, T>, withPath?: (value: T, path: string) => T): Record<string, T> => {
+        const next: Record<string, T> = {}
+        for (const [key, value] of Object.entries(record)) {
+          const path = retarget(key)
+          next[path] = withPath && path !== key ? withPath(value, path) : value
+        }
+        return next
+      }
+      const unsavedSnapshots = retargetKeys(state.unsavedSnapshots, (snapshot, path) => ({ ...snapshot, path }))
+      const fileStates = retargetKeys(state.fileStates)
+      persistRecoverySnapshots(unsavedSnapshots)
+      debouncedPersist(fileStates)
+      return {
+        openFiles: state.openFiles.map(retargetFile),
+        activeFilePath: retargetOrNull(state.activeFilePath),
+        previewPath: retargetOrNull(state.previewPath),
+        pinnedTabs: state.pinnedTabs.map(retarget),
+        tabHistory: state.tabHistory.map(retarget),
+        editorGroups: state.editorGroups.map((group) => ({
+          ...group,
+          openFiles: group.openFiles.map(retargetFile),
+          activeFilePath: retargetOrNull(group.activeFilePath),
+          previewPath: retargetOrNull(group.previewPath),
+          pinnedTabs: group.pinnedTabs.map(retarget),
+        })),
+        recoveryNotifications: state.recoveryNotifications.map((n) => ({ ...n, path: retarget(n.path) })),
+        unsavedSnapshots,
+        fileStates,
+      }
+    }),
 
   // ─── 1. Tab groups / Split editor state ────────────────────────────────────
 

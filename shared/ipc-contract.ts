@@ -72,10 +72,15 @@ export interface OperationResultWithPath extends OperationResult {
 // Filesystem
 // ---------------------------------------------------------------------------
 
-/** `fs:read-file` rejects when the file cannot be read. */
+/**
+ * `fs:read-file` rejects when the file cannot be read or is not text the
+ * editor can save back unchanged (binary, or not UTF-8/UTF-16).
+ */
 export interface ReadFileResult {
   content: string
   language: string
+  /** An image shown as a preview: `content` is empty and the file cannot be saved. */
+  binary?: boolean
 }
 
 export interface FileSearchOptions {
@@ -389,7 +394,9 @@ export interface IpcInvokeContract {
   'fs:write-file': (filePath: string, content: string) => OperationResult
   'fs:delete': (itemPath: string) => OperationResult
   'fs:rename': (oldPath: string, newPath: string) => OperationResult
+  /** Rejects when `rootPath` is not a folder that can be listed. */
   'fs:open-workspace': (rootPath: string) => FileNode[]
+  /** Rejects when `dirPath` is not a listable folder inside the workspace. */
   'fs:read-dir': (dirPath: string) => FileNode[]
   'fs:open-folder': () => string | null
   /** Native multi-select file picker; the chosen files become readable/savable. */
@@ -518,6 +525,11 @@ export interface IpcInvokeContract {
 export interface IpcSendContract {
   'fs:watch-start': (dirPath: string) => void
   'fs:watch-stop': () => void
+  /**
+   * Sent by the preload (never by page code) with the real path of something
+   * the user dropped onto the window, so that one item can be opened.
+   */
+  'fs:grant-dropped-path': (itemPath: string) => void
   'term:write': (id: string, data: string) => void
   'term:resize': (id: string, cols: number, rows: number) => void
   'term:kill': (id: string) => void

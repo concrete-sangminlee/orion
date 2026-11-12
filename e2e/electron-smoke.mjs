@@ -235,6 +235,57 @@ try {
   })
   check(terminal.created.success === true && terminal.output.includes('orion-42'), `integrated terminal runs commands${terminal.created.error ? ` (${terminal.created.error})` : ''}`)
 
+  // File safety. "New File" used to truncate an existing file and a rename
+  // replaced its target; both now fail and leave the file alone.
+  const keepFile = path.join(workspaceDir, 'keep.md')
+  fs.writeFileSync(keepFile, 'a week of work\n')
+  await win.waitForFunction(() => document.body.innerText.includes('keep.md'), null, { timeout: 10_000 })
+  await win.locator('[title="New File"]').first().click()
+  await win.keyboard.type('keep.md')
+  await win.keyboard.press('Enter')
+  await win.waitForFunction(() => document.body.innerText.includes('already exists'), null, { timeout: 5_000 }).catch(() => {})
+  check(
+    fs.readFileSync(keepFile, 'utf8') === 'a week of work\n' && (await win.locator('text=already exists').count()) > 0,
+    'New File with the name of an existing file reports it and leaves the file intact',
+  )
+  const renamedOnto = await win.evaluate(([from, to]) => window.api.renameFile(from, to), [sampleFile, keepFile])
+  check(
+    renamedOnto.success === false && fs.existsSync(sampleFile) && fs.readFileSync(keepFile, 'utf8') === 'a week of work\n',
+    `renaming onto an existing file is refused (${renamedOnto.error})`,
+  )
+
+  // Encodings. A file is opened only if it can be saved back unchanged.
+  const latin1File = path.join(workspaceDir, 'legacy-latin1.txt')
+  const latin1Bytes = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a])
+  fs.writeFileSync(latin1File, latin1Bytes)
+  await openFile(latin1File)
+  await win.waitForFunction(() => document.body.innerText.includes('not UTF-8'), null, { timeout: 5_000 }).catch(() => {})
+  const tabsAfterLatin1 = await win.evaluate(() => window.monaco.editor.getModels().map((model) => model.uri.path))
+  check(
+    (await win.locator('text=not UTF-8').count()) > 0 && !tabsAfterLatin1.some((uri) => uri.endsWith('legacy-latin1.txt')) && fs.readFileSync(latin1File).equals(latin1Bytes),
+    'a file that is not UTF-8 is refused with a reason instead of opened as mangled text',
+  )
+  const utf16File = path.join(workspaceDir, 'wide.txt')
+  fs.writeFileSync(utf16File, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('héllo\n', 'utf16le')]))
+  await openFile(utf16File)
+  await win.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue().includes('héllo'), null, { timeout: 15_000 })
+  await typeAtEnd('wörld')
+  await win.waitForTimeout(2000)
+  const utf16Saved = fs.readFileSync(utf16File)
+  check(
+    utf16Saved[0] === 0xff && utf16Saved[1] === 0xfe && utf16Saved.subarray(2).toString('utf16le') === 'héllo\nwörld',
+    'a UTF-16 file edited in the editor is saved back as UTF-16',
+  )
+  // 1x1 PNG: opens as an image preview, and no save can write over it.
+  const pngFile = path.join(workspaceDir, 'pixel.png')
+  const pngBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+  fs.writeFileSync(pngFile, pngBytes)
+  await openFile(pngFile)
+  await win.waitForFunction(() => [...document.images].some((image) => image.src.endsWith('/pixel.png') && image.naturalWidth === 1), null, { timeout: 10_000 }).catch(() => {})
+  const pngShown = await win.evaluate(() => [...document.images].some((image) => image.src.endsWith('/pixel.png') && image.naturalWidth === 1))
+  const pngWrite = await win.evaluate((file) => window.api.writeFile(file, ''), pngFile)
+  check(pngShown && pngWrite.success === false && fs.readFileSync(pngFile).equals(pngBytes), `an image opens as a preview and cannot be overwritten (${pngWrite.error})`)
+
   const workerUrls = win.workers().map((worker) => worker.url())
   check(workerUrls.length > 0 && workerUrls.every((url) => url.startsWith('file:')), `Monaco workers come from the bundle (${workerUrls.length})`)
 

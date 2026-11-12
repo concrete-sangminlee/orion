@@ -282,6 +282,7 @@ export const IPC_INVOKE_CHANNELS = channelList({
 export const IPC_SEND_CHANNELS = channelList({
   'fs:watch-start': true,
   'fs:watch-stop': true,
+  'fs:grant-dropped-path': true,
   'term:write': true,
   'term:resize': true,
   'term:kill': true,

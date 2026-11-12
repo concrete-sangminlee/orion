@@ -39,7 +39,8 @@ describe('createElectronApi — contract coverage', () => {
   // Drive every exposed method once and record which channel it hits. This
   // proves the preload exposes every contract channel and nothing else.
   const fake = createFakeIpc()
-  const api = createElectronApi(fake.ipc) as unknown as Record<string, (...args: unknown[]) => unknown>
+  const host = { getPathForFile: () => '/dropped/item' }
+  const api = createElectronApi(fake.ipc, host) as unknown as Record<string, (...args: unknown[]) => unknown>
   const subscribed: string[] = []
 
   for (const [name, method] of Object.entries(api)) {
@@ -62,6 +63,34 @@ describe('createElectronApi — contract coverage', () => {
 
   it('subscribes to exactly the contract event channels', () => {
     expect(sorted(subscribed)).toEqual(sorted(IPC_EVENT_CHANNELS))
+  })
+})
+
+describe('createElectronApi — dropped files', () => {
+  it('reports the path Electron resolved for an OS file and returns it', () => {
+    const fake = createFakeIpc()
+    const file = { name: 'notes.md' }
+    const getPathForFile = vi.fn(() => '/home/me/notes.md')
+    const api = createElectronApi(fake.ipc, { getPathForFile })
+
+    expect(api.pathForDroppedFile(file)).toBe('/home/me/notes.md')
+    expect(getPathForFile).toHaveBeenCalledWith(file)
+    expect(fake.sent).toEqual([{ channel: 'fs:grant-dropped-path', args: ['/home/me/notes.md'] }])
+  })
+
+  it('grants nothing for a File that does not come from the OS', () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc, { getPathForFile: () => '' })
+    expect(api.pathForDroppedFile({})).toBe('')
+    expect(fake.sent).toEqual([])
+  })
+
+  it('never takes the path from page code', () => {
+    // The page passes a File; a forged `path` property on it is ignored.
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc, { getPathForFile: () => '' })
+    expect(api.pathForDroppedFile({ path: '/etc/shadow' })).toBe('')
+    expect(fake.sent).toEqual([])
   })
 })
 

@@ -370,19 +370,17 @@ export default function EditorPanel() {
     // Check if a single folder was dropped
     if (files.length === 1) {
       const droppedFile = files[0]
-      const filePath = (droppedFile as any).path as string | undefined
+      const filePath = window.api.pathForDroppedFile(droppedFile)
       if (filePath) {
         try {
+          // Rejects unless the dropped item is a folder.
           const tree = await window.api.openWorkspace(filePath)
-          if (tree && Array.isArray(tree) && tree.length >= 0) {
-            // It's a valid directory - set as workspace root
-            setRootPath(filePath)
-            await useWorkspaceStore.getState().loadWorkspaceSettings(filePath)
-            setFileTree(tree)
-            window.api.watchStart(filePath)
-            addToast({ type: 'success', message: `Opened folder: ${droppedFile.name}`, duration: 2000 })
-            return
-          }
+          setRootPath(filePath)
+          await useWorkspaceStore.getState().loadWorkspaceSettings(filePath)
+          setFileTree(tree)
+          window.api.watchStart(filePath)
+          addToast({ type: 'success', message: `Opened folder: ${droppedFile.name}`, duration: 2000 })
+          return
         } catch {
           // Not a directory, fall through to open as file
         }
@@ -392,8 +390,7 @@ export default function EditorPanel() {
     let openedCount = 0
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
-      // Electron exposes .path on dropped File objects
-      const filePath = (file as any).path as string | undefined
+      const filePath = window.api.pathForDroppedFile(file)
       if (!filePath) continue
 
       // Skip folders in multi-file drops
