@@ -117,7 +117,7 @@ export default function EditorPanel() {
   editorConfigRef.current = editorConfig
   const minimapRef = useRef(editorConfig.minimap)
 
-  // Inline edit (Ctrl+K) state
+  // Inline edit (Ctrl+I) state
   const [inlineEditVisible, setInlineEditVisible] = useState(false)
   const [inlineEditPos, setInlineEditPos] = useState({ top: 60, left: 100 })
   const [inlineEditText, setInlineEditText] = useState('')
@@ -506,9 +506,11 @@ export default function EditorPanel() {
       return true
     }
 
-    // Ctrl+K, and the Refactor / Add Comments / Fix Issues context-menu items,
-    // which open the same widget with their instruction already submitted.
-    registerInlineEditActions(editor, monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, {
+    // Ctrl+I (as in VS Code), and the Refactor / Add Comments / Fix Issues
+    // context-menu items, which open the same widget with their instruction
+    // already submitted. It was Ctrl+K, which Monaco and the app both use to
+    // start chords (Ctrl+K Ctrl+C, Ctrl+K Ctrl+S, ...), so it never fired.
+    registerInlineEditActions(editor, monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI, {
       open: openInlineEdit,
       submit: (instruction) => void handleInlineEditSubmit(instruction),
     })
@@ -785,13 +787,15 @@ export default function EditorPanel() {
     editor.addAction({
       id: 'orion-fold-all',
       label: 'Fold All',
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyMod.CtrlCmd | monaco.KeyCode.Digit0],
+      // One chord (Ctrl+K Ctrl+0). Listed as two entries it bound Ctrl+K and
+      // Ctrl+0 on their own, which took Ctrl+K from Inline Edit.
+      keybindings: [monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyMod.CtrlCmd | monaco.KeyCode.Digit0)],
       run: (ed) => ed.getAction('editor.foldAll')?.run(),
     })
     editor.addAction({
       id: 'orion-unfold-all',
       label: 'Unfold All',
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyJ],
+      keybindings: [monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyJ)],
       run: (ed) => ed.getAction('editor.unfoldAll')?.run(),
     })
 
@@ -1205,10 +1209,10 @@ export default function EditorPanel() {
   // untitled-<id>, which fs:write-file rejects), or a Save As, first asks
   // where to write it and then moves the tab to that file. The content is
   // produced only once the save goes ahead, so a cancelled save never
-  // reformats the buffer.
+  // reformats the buffer; it gets the language the file is saved as.
   const saveBuffer = useCallback(async (
     file: OpenFile,
-    prepareContent: () => string | Promise<string>,
+    prepareContent: (language: string) => string | Promise<string>,
     saveAs = false,
   ) => {
     let targetPath = file.path
@@ -1238,15 +1242,21 @@ export default function EditorPanel() {
     const name = targetPath.split(/[\\/]/).pop() || file.name
     setSaving(true)
     try {
-      const content = await prepareContent()
+      const content = await prepareContent(language ?? file.language)
+      const bufferOf = (path: string) => useEditorStore.getState().openFiles.find((f) => f.path === path)?.content
+      // The buffer this write saves, the save's own trim and format included.
+      const writtenBuffer = bufferOf(file.path)
       useFileHistoryStore.getState().addSnapshot(targetPath, content, 'Saved')
       await writeFileChecked(targetPath, content, `Save ${name}`)
       if (targetPath !== file.path) {
         renamePath(file.path, targetPath, language)
         setSplitFilePath((current) => (current === file.path ? targetPath : current))
       }
-      markSaved(targetPath)
-      clearRecovery(file.path)
+      // Edits typed while the write was in flight are still unsaved.
+      if (bufferOf(targetPath) === writtenBuffer) {
+        markSaved(targetPath)
+        clearRecovery(file.path)
+      }
       addToast({ type: 'success', message: `Saved ${name}`, duration: 1500 })
     } catch (err: unknown) {
       addToast({ type: 'error', message: `Failed to save ${name}: ${ipcErrorMessage(err)}` })
@@ -1255,18 +1265,71 @@ export default function EditorPanel() {
     }
   }, [addToast, markSaved, renamePath])
 
+  // Ctrl+S and File > Save / Save As: format, trim and add the final newline
+  // in the pane being saved, once the save is going ahead. Auto-save writes
+  // the buffer as typed.
+  const saveFocusedPane = useCallback(async (saveAs: boolean) => {
+    const target = getSaveTarget()
+    if (!target) return
+    const { file: af, editor } = target
+    await saveBuffer(af, async (language) => {
+      const { formatOnSave, insertFinalNewline } = editorConfigRef.current
+      // Trailing spaces are content in Markdown: two of them make a line break.
+      const trimTrailingWhitespace = editorConfigRef.current.trimTrailingWhitespace && language !== 'markdown'
+      const model = editor?.getModel()
+      if (!editor || !model) {
+        // No text editor shows the file (e.g. the JSON tree view).
+        let content = af.content
+        if (trimTrailingWhitespace) content = content.replace(/[ \t]+$/gm, '')
+        if (insertFinalNewline && content.length > 0 && !content.endsWith('\n')) content += '\n'
+        return content
+      }
+
+      if (formatOnSave) {
+        try {
+          await editor.getAction('editor.action.formatDocument')?.run()
+        } catch { /* formatter may not be available for this language */ }
+      }
+
+      // Trim and add the final newline as edits: model.setValue would also
+      // wipe the undo history and move the cursor on every Ctrl+S.
+      const edits: MonacoEditor.IIdentifiedSingleEditOperation[] = []
+      if (trimTrailingWhitespace || insertFinalNewline) {
+        const lastLine = model.getLineCount()
+        // The final newline alone only needs the last line.
+        for (let line = trimTrailingWhitespace ? 1 : lastLine; line <= lastLine; line++) {
+          const text = model.getLineContent(line)
+          const keep = trimTrailingWhitespace ? text.replace(/[ \t]+$/, '').length : text.length
+          // A last line with text has no line break after it.
+          const addNewline = insertFinalNewline && line === lastLine && keep > 0
+          if (keep < text.length || addNewline) {
+            edits.push({
+              range: { startLineNumber: line, startColumn: keep + 1, endLineNumber: line, endColumn: text.length + 1 },
+              text: addNewline ? model.getEOL() : '',
+            })
+          }
+        }
+      }
+      if (edits.length > 0) {
+        editor.pushUndoStop()
+        editor.executeEdits('orion-save', edits)
+        editor.pushUndoStop()
+      }
+      return model.getValue()
+    }, saveAs)
+  }, [getSaveTarget, saveBuffer])
+
   // Ctrl+S save handler
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault()
-        const target = getSaveTarget()
-        if (target) void saveBuffer(target.file, () => target.file.content)
+        void saveFocusedPane(false)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [getSaveTarget, saveBuffer])
+  }, [saveFocusedPane])
 
   // Toggle split direction handler (for context menu and command palette)
   const handleToggleSplitDirection = useCallback(() => {
@@ -1329,13 +1392,26 @@ export default function EditorPanel() {
   }, [])
 
   // Handle opening diff editor
-  const handleCompareFiles = useCallback(() => {
-    if (!activeFilePath) return
+  const handleCompareFiles = useCallback((path?: string) => {
+    // A tab's "Compare with..." names its file; otherwise the active one.
+    const original = path ?? activeFilePath
+    if (!original) return
     // The disk text from a "changed on disk" Compare belongs to that file only.
     setDiffDiskContent(null)
-    setDiffOriginalPath(activeFilePath)
+    setDiffOriginalPath(original)
     setDiffFilePickerOpen(true)
   }, [activeFilePath])
+
+  // Open `path` in the side pane, keeping the main pane's file. Used when the
+  // request names the file (Open to the Side, a tab's Split, a tab dropped on
+  // the edge): never guess it, and never close a split that is already open.
+  const openInSplit = useCallback((mode: 'horizontal' | 'vertical', path: string) => {
+    const mainPath = useEditorStore.getState().activeFilePath
+    setSplitMode(mode)
+    setSplitFilePath(path)
+    setGroup1Files(mainPath ? [mainPath] : [])
+    setGroup2Files([path])
+  }, [])
 
   // Ctrl+\ to toggle split editor
   useEffect(() => {
@@ -1489,27 +1565,33 @@ export default function EditorPanel() {
 
   // Listen for split toggle events
   useEffect(() => {
-    const handler = () => handleSplitToggle()
-    const handlerRight = () => handleSplitRight()
-    const handlerDown = () => handleSplitDown()
+    const pathOf = (e: Event) => (e as CustomEvent<{ path?: string } | undefined>).detail?.path
+    const handlerRight = (e: Event) => {
+      const path = pathOf(e)
+      if (path) openInSplit('horizontal', path)
+      else handleSplitRight()
+    }
+    const handlerDown = (e: Event) => {
+      const path = pathOf(e)
+      if (path) openInSplit('vertical', path)
+      else handleSplitDown()
+    }
     const handlerSyncScroll = () => handleToggleSyncScroll()
-    const handlerCompare = () => handleCompareFiles()
+    const handlerCompare = (e: Event) => handleCompareFiles(pathOf(e))
     const handlerToggleDir = () => handleToggleSplitDirection()
-    window.addEventListener('orion:split-editor', handler)
     window.addEventListener('orion:split-editor-right', handlerRight)
     window.addEventListener('orion:split-editor-down', handlerDown)
     window.addEventListener('orion:toggle-sync-scroll', handlerSyncScroll)
     window.addEventListener('orion:compare-files', handlerCompare)
     window.addEventListener('orion:toggle-split-direction', handlerToggleDir)
     return () => {
-      window.removeEventListener('orion:split-editor', handler)
       window.removeEventListener('orion:split-editor-right', handlerRight)
       window.removeEventListener('orion:split-editor-down', handlerDown)
       window.removeEventListener('orion:toggle-sync-scroll', handlerSyncScroll)
       window.removeEventListener('orion:compare-files', handlerCompare)
       window.removeEventListener('orion:toggle-split-direction', handlerToggleDir)
     }
-  }, [handleSplitToggle, handleSplitRight, handleSplitDown, handleToggleSyncScroll, handleCompareFiles, handleToggleSplitDirection])
+  }, [openInSplit, handleSplitRight, handleSplitDown, handleToggleSyncScroll, handleCompareFiles, handleToggleSplitDirection])
 
   // Listen for tab-to-group-drop events from TabBar
   useEffect(() => {
@@ -1525,42 +1607,6 @@ export default function EditorPanel() {
 
   // Command palette event handlers
   useEffect(() => {
-    // File > Save / Save As: format, trim and add the final newline in the
-    // pane being saved, once the save is going ahead.
-    const saveFocusedPane = async (saveAs: boolean) => {
-      const target = getSaveTarget()
-      if (!target) return
-      const { file: af, editor } = target
-      await saveBuffer(af, async () => {
-        // Format on save
-        if (editorConfigRef.current.formatOnSave && editor) {
-          try {
-            await editor.getAction('editor.action.formatDocument')?.run()
-          } catch { /* formatter may not be available for this language */ }
-        }
-
-        // Get latest content from editor model (may have been formatted)
-        let content = editor?.getModel()?.getValue() ?? af.content
-
-        // Trim trailing whitespace on save
-        if (editorConfigRef.current.trimTrailingWhitespace) {
-          content = content.replace(/[ \t]+$/gm, '')
-        }
-
-        // Insert final newline
-        if (editorConfigRef.current.insertFinalNewline && content.length > 0 && !content.endsWith('\n')) {
-          content = content + '\n'
-        }
-
-        // Update the editor model if content was modified by trim/newline
-        const model = editor?.getModel()
-        if (model && model.getValue() !== content) {
-          model.setValue(content)
-        }
-        return content
-      }, saveAs)
-    }
-
     const handlers: Record<string, () => void> = {
       // The editors' options follow editorConfig (monacoOptionsFor).
       'orion:toggle-minimap': () => {
@@ -1604,9 +1650,6 @@ export default function EditorPanel() {
       'orion:shrink-selection': () => {
         editorRef.current?.getAction('editor.action.smartSelect.shrink')?.run()
       },
-      'orion:add-next-occurrence': () => {
-        editorRef.current?.getAction('editor.action.addSelectionToNextFindMatch')?.run()
-      },
       'orion:add-cursor-above': () => {
         editorRef.current?.trigger('', 'editor.action.insertCursorAbove', {})
       },
@@ -1628,9 +1671,6 @@ export default function EditorPanel() {
       },
       'orion:transform-titlecase': () => {
         editorRef.current?.trigger('', 'editor.action.transformToTitlecase', {})
-      },
-      'orion:find-in-selection': () => {
-        editorRef.current?.trigger('', 'editor.action.startFindReplaceAction', {})
       },
       // Sort lines
       'orion:sort-lines-asc': () => {
@@ -1744,14 +1784,6 @@ export default function EditorPanel() {
       }
     }
 
-    // New window handler
-    const newWindowHandler = () => {
-      if (window.api) {
-        const { addToast } = useToastStore.getState()
-        addToast({ type: 'info', message: 'Opening new window...' })
-      }
-    }
-
     // Editor config update from Settings modal. Both panes' options are
     // derived from editorConfig (monacoOptionsFor), so updating it applies them.
     const editorConfigHandler = (e: Event) => {
@@ -1773,7 +1805,6 @@ export default function EditorPanel() {
     window.addEventListener('orion:set-indent', setIndentHandler)
     window.addEventListener('orion:set-eol', setEolHandler)
     window.addEventListener('orion:insert-at-cursor', insertAtCursorHandler)
-    window.addEventListener('orion:new-window', newWindowHandler)
     window.addEventListener('orion:editor-config', editorConfigHandler)
 
     const toggleTimelineHandler = () => setTimelineVisible(prev => !prev)
@@ -1788,11 +1819,10 @@ export default function EditorPanel() {
       window.removeEventListener('orion:set-indent', setIndentHandler)
       window.removeEventListener('orion:set-eol', setEolHandler)
       window.removeEventListener('orion:insert-at-cursor', insertAtCursorHandler)
-      window.removeEventListener('orion:new-window', newWindowHandler)
       window.removeEventListener('orion:editor-config', editorConfigHandler)
       window.removeEventListener('orion:toggle-timeline', toggleTimelineHandler)
     }
-  }, [activeFilePath, closeFile, closeAllFiles, addToast, getSaveTarget, saveBuffer])
+  }, [activeFilePath, closeFile, closeAllFiles, addToast, saveFocusedPane])
 
   const editorOptions: MonacoEditor.IStandaloneEditorConstructionOptions = {
     ...monacoOptionsFor(editorConfig),
@@ -1992,7 +2022,7 @@ export default function EditorPanel() {
             )}
             {/* Compare files button */}
             <button
-              onClick={handleCompareFiles}
+              onClick={() => handleCompareFiles()}
               title="Compare Active File With..."
               style={{
                 padding: '0 6px',
@@ -2337,7 +2367,7 @@ export default function EditorPanel() {
                         filePath={activeFilePath || ''}
                       />
                       <EmmetProvider monaco={monacoRef.current} />
-                      {/* Inline Edit Overlay (Ctrl+K - Cursor-style) */}
+                      {/* Inline Edit Overlay (Ctrl+I) */}
                       {inlineEditVisible && (
                         <InlineEdit
                           visible={inlineEditVisible}

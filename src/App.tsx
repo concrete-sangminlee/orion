@@ -4,8 +4,9 @@ import { Upload } from 'lucide-react'
 import { useFileWatcher, useExternalFileWatcher } from './hooks/useIpc'
 import { useOmo } from './hooks/useOmo'
 import { loadLayout, useLayoutPersistence } from './hooks/useLayoutPersistence'
-import { useRecoveryCheck, clearRecovery } from './hooks/useAutoSave'
+import { useRecoveryCheck } from './hooks/useAutoSave'
 import { useGitCommands } from './hooks/useGitCommands'
+import { installWindowCloseGuard } from './utils/closeGuard'
 import { useEditorStore } from '@/store/editor'
 import { useFileStore } from '@/store/files'
 import { useWorkspaceStore } from '@/store/workspace'
@@ -18,9 +19,12 @@ import Resizer from './components/Resizer'
 import StatusBar from './components/StatusBar'
 import CommandPalette from '@/components/CommandPalette'
 import ToastContainer from '@/components/Toast'
-import { ipcErrorMessage, writeFileChecked } from '@/utils/ipcResult'
-import { confirmOverwriteIfChangedOnDisk, needsSaveLocation } from '@/utils/saveGuards'
+import { ipcErrorMessage } from '@/utils/ipcResult'
 import { openFileInEditor } from '@/utils/openFileInEditor'
+import { runCommand } from '@/commands/registry'
+import { PALETTE_MODES, type PaletteMode } from '@/commands/appCommands'
+import { useCommandBridges } from '@/commands/useCommandBridges'
+import { appShortcutCommand, listenForChords } from '@/commands/shortcuts'
 import { migrateLegacyApiKeys } from '@/utils/apiKeys'
 import FileExplorer from './panels/FileExplorer'
 import BottomPanel from './panels/BottomPanel'
@@ -48,7 +52,6 @@ const OutlinePanel = React.lazy(() => import('@/panels/OutlinePanel'))
 const EditorPanel = React.lazy(() => import('./panels/EditorPanel'))
 
 // Lazy-loaded editor-area components
-const Breadcrumbs = React.lazy(() => import('./components/Breadcrumbs'))
 const DiffEditor = React.lazy(() => import('./components/DiffEditor'))
 
 // Lazy-loaded modal/dialog components (only shown on demand)
@@ -129,17 +132,6 @@ const initialLayout = loadLayout({
   chatVisible: true,
 })
 
-/** Wrapper that subscribes to editor store for Breadcrumbs props */
-function BreadcrumbsWrapper() {
-  const activeFilePath = useEditorStore((s: { activeFilePath: string | null }) => s.activeFilePath)
-  if (!activeFilePath) return null
-  return (
-    <Suspense fallback={null}>
-      <Breadcrumbs filePath={activeFilePath} />
-    </Suspense>
-  )
-}
-
 export default function App() {
   const [splashDone, setSplashDone] = useState(false)
   const [activeView, setActiveView] = useState<PanelView>('explorer')
@@ -148,6 +140,9 @@ export default function App() {
   const [bottomPanelHeight, setBottomPanelHeight] = useState(initialLayout.bottomPanelHeight)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // What the palette shows when it opens, and a counter that remounts it so
+  // a request made while it is open (Color Theme from its own list) applies.
+  const [palette, setPalette] = useState<{ mode: PaletteMode; request: number }>({ mode: 'files', request: 0 })
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const [snippetsOpen, setSnippetsOpen] = useState(false)
@@ -561,13 +556,10 @@ export default function App() {
     return () => window.removeEventListener('orion:show-diff', handler)
   }, [])
 
-  // ── Listen for app:open-about IPC from main process (native menu) ──
-  useEffect(() => {
-    const unsub = window.api?.onAppOpenAbout?.(() => {
-      openModal(setAboutOpen)
-    })
-    return () => { unsub?.() }
-  }, [openModal])
+  // Native menu items (and the Outline panel's symbol actions) run commands.
+  useCommandBridges()
+  // Closing, quitting or reloading the window asks before discarding unsaved edits.
+  useEffect(() => installWindowCloseGuard(), [])
 
   useEffect(() => {
     const unsub = window.api?.onAppOpenFolder?.((folderPath) => {
@@ -597,63 +589,30 @@ export default function App() {
       'orion:run-task': () => setBottomVisible(true),
       'orion:run-build': () => setBottomVisible(true),
       'orion:toggle-chat': () => { setChatVisible((v) => !v); announce(chatVisible ? 'Chat panel closed' : 'Chat panel opened') },
+      'orion:show-chat': () => setChatVisible(true),
       'orion:open-folder': handleOpenFolderEvent,
       'orion:open-settings': () => openModal(setSettingsOpen),
-      'orion:open-palette': () => openModal(setPaletteOpen),
+      'orion:open-palette': (event) => {
+        const mode = (event as CustomEvent<{ mode?: unknown } | undefined>).detail?.mode
+        setPalette((p) => ({
+          mode: PALETTE_MODES.includes(mode as PaletteMode) ? (mode as PaletteMode) : 'files',
+          request: p.request + 1,
+        }))
+        // Opened from the palette itself, it is closing in the same tick:
+        // open it again without taking it as the element to refocus.
+        if (!paletteOpen) modalTriggerRef.current = document.activeElement as HTMLElement | null
+        setPaletteOpen(true)
+      },
       'orion:keyboard-shortcuts': () => openModal(setShortcutsOpen),
-      'orion:zen-mode': () => toggleZenMode(),
       'orion:toggle-zen-mode': () => toggleZenMode(),
       'orion:about': () => openModal(setAboutOpen),
-      'orion:show-about': () => openModal(setAboutOpen),
       'orion:open-snippets': () => openModal(setSnippetsOpen),
       'orion:show-explorer': () => { setSidebarVisible(true); setActiveView('explorer') },
       'orion:show-search': () => { setSidebarVisible(true); setActiveView('search') },
       'orion:show-git': () => { setSidebarVisible(true); setActiveView('git') },
       'orion:show-outline': () => { setSidebarVisible(true); setActiveView('outline') },
-      'orion:close-tab': () => {
-        const { activeFilePath, closeFile } = useEditorStore.getState()
-        if (activeFilePath) closeFile(activeFilePath)
-      },
-      'orion:close-all-tabs': () => {
-        useEditorStore.getState().closeAllFiles()
-      },
-      'orion:toggle-auto-save': () => {
-        // Toggle auto-save in workspace settings
-        window.dispatchEvent(new Event('orion:open-settings'))
-      },
-      'orion:save-all': () => {
-        void (async () => {
-          const { openFiles, markSaved } = useEditorStore.getState()
-          const { addToast } = useToastStore.getState()
-          // Untitled buffers have no file yet; each needs Save As.
-          const modified = openFiles.filter((f: OpenFile) => f.isModified && !needsSaveLocation(f.path))
-          const untitled = openFiles.filter((f: OpenFile) => f.isModified && needsSaveLocation(f.path)).length
-          let savedCount = 0
-          let failedCount = 0
-
-          for (const file of modified) {
-            if (!confirmOverwriteIfChangedOnDisk(file)) continue
-            try {
-              await writeFileChecked(file.path, file.content, `Save ${file.name}`)
-              markSaved(file.path)
-              clearRecovery(file.path)
-              savedCount++
-            } catch {
-              failedCount++
-            }
-          }
-
-          if (savedCount > 0) {
-            addToast({ type: 'success', message: `Saved ${savedCount} file(s)` })
-          }
-          if (failedCount > 0) {
-            addToast({ type: 'error', message: `Failed to save ${failedCount} file(s)` })
-          }
-          if (untitled > 0) {
-            addToast({ type: 'info', message: `${untitled} untitled file(s) need Save As` })
-          }
-        })()
-      },
+      // (Close tab / close all are EditorPanel's: handling them here too
+      // closed the next tab as well.)
       'orion:focus-editor': () => {
         // Focus the Monaco editor instance when requested
         const editorEl = document.querySelector('#editor-main .monaco-editor textarea') as HTMLElement | null
@@ -668,7 +627,7 @@ export default function App() {
         window.removeEventListener(event, handler)
       })
     }
-  }, [toggleZenMode, openModal, announce, handleOpenFolderEvent, sidebarVisible, bottomVisible, chatVisible])
+  }, [toggleZenMode, openModal, announce, handleOpenFolderEvent, sidebarVisible, bottomVisible, chatVisible, paletteOpen])
 
   // Update window title based on active file
   useEffect(() => {
@@ -684,113 +643,17 @@ export default function App() {
     return unsubscribe
   }, [])
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts. They run the commands the menus and the palette run.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey
 
-      // Ctrl+Shift+S -> Save As, as the menus and the command palette show it.
-      // (It used to run a second copy of Save All.) The editor handles it.
-      if (ctrl && e.shiftKey && e.key === 'S') {
+      const command = appShortcutCommand(e)
+      if (command) {
         e.preventDefault()
-        window.dispatchEvent(new Event('orion:save-file-as'))
-        return
-      }
-
-      // Ctrl+N -> new untitled file
-      if (ctrl && e.key === 'n') {
-        e.preventDefault()
-        const { openFile } = useEditorStore.getState()
-        const id = Date.now()
-        openFile({
-          path: `untitled-${id}`,
-          name: `Untitled-${id}`,
-          content: '',
-          language: 'plaintext',
-          isModified: false,
-          aiModified: false,
-        })
-        return
-      }
-
-      // Ctrl+W -> close current tab
-      if (ctrl && e.key === 'w') {
-        e.preventDefault()
-        const { activeFilePath, closeFile } = useEditorStore.getState()
-        if (activeFilePath) {
-          closeFile(activeFilePath)
-        }
-        return
-      }
-
-      // Ctrl+Shift+P -> command palette
-      if (ctrl && e.shiftKey && e.key === 'P') {
-        e.preventDefault()
-        if (paletteOpen) closeModal(setPaletteOpen); else openModal(setPaletteOpen)
-        return
-      }
-      // Ctrl+P -> quick open (file mode)
-      if (ctrl && !e.shiftKey && e.key === 'p') {
-        e.preventDefault()
-        if (paletteOpen) closeModal(setPaletteOpen); else openModal(setPaletteOpen)
-        return
-      }
-      // Ctrl+B -> toggle sidebar
-      if (ctrl && e.key === 'b') {
-        e.preventDefault()
-        setSidebarVisible((v) => !v)
-        return
-      }
-      // Ctrl+` -> toggle terminal
-      if (ctrl && e.key === '`') {
-        e.preventDefault()
-        setBottomVisible((v) => !v)
-        return
-      }
-      // Ctrl+J -> toggle bottom panel
-      if (ctrl && e.key === 'j') {
-        e.preventDefault()
-        setBottomVisible((v) => !v)
-        return
-      }
-      // Ctrl+L -> focus chat
-      if (ctrl && e.key === 'l') {
-        e.preventDefault()
-        setChatVisible(true)
-        return
-      }
-      // Ctrl+, -> settings
-      if (ctrl && e.key === ',') {
-        e.preventDefault()
-        openModal(setSettingsOpen)
-        return
-      }
-      // Ctrl+Shift+E -> explorer
-      if (ctrl && e.shiftKey && e.key === 'E') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('explorer')
-        return
-      }
-      // Ctrl+Shift+F -> search
-      if (ctrl && e.shiftKey && e.key === 'F') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('search')
-        return
-      }
-      // Ctrl+Shift+G -> git
-      if (ctrl && e.shiftKey && e.key === 'G') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('git')
-        return
-      }
-      // Ctrl+Shift+O -> outline
-      if (ctrl && e.shiftKey && e.key === 'O') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('outline')
+        // The palette keys close an open palette instead of reopening it.
+        if (paletteOpen && (command === 'view.commandPalette' || command === 'go.file')) closeModal(setPaletteOpen)
+        else runCommand(command)
         return
       }
       // Ctrl+Shift+Y -> focus output panel (toggle bottom panel)
@@ -828,41 +691,14 @@ export default function App() {
       }
     }
 
-    // Ctrl+K, Ctrl+S chord for keyboard shortcuts
-    let chordPending = false
-    const handleChord = (e: KeyboardEvent) => {
-      const ctrl = e.ctrlKey || e.metaKey
-      if (ctrl && e.key === 'k') {
-        chordPending = true
-        // Allow a short window for the second key
-        setTimeout(() => { chordPending = false }, 1000)
-        return
-      }
-      if (chordPending && ctrl && e.key === 's') {
-        e.preventDefault()
-        chordPending = false
-        openModal(setShortcutsOpen)
-        return
-      }
-      // Ctrl+K Z -> toggle zen mode
-      if (chordPending && e.key === 'z') {
-        e.preventDefault()
-        chordPending = false
-        toggleZenMode()
-        return
-      }
-      if (chordPending && !(ctrl && e.key === 'k')) {
-        chordPending = false
-      }
-    }
-
     window.addEventListener('keydown', handleKeyDown)
-    window.addEventListener('keydown', handleChord)
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-      window.removeEventListener('keydown', handleChord)
-    }
-  }, [zenMode, toggleZenMode, settingsOpen, shortcutsOpen, aboutOpen, snippetsOpen, paletteOpen, openModal, closeModal])
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [zenMode, toggleZenMode, settingsOpen, shortcutsOpen, aboutOpen, snippetsOpen, paletteOpen, closeModal])
+
+  // Ctrl+K chords (Ctrl+K Ctrl+S shortcuts, Ctrl+K S save all, Ctrl+K Z zen,
+  // Ctrl+K Ctrl+O open folder). The second key is theirs alone: Ctrl+K
+  // Ctrl+S used to open the shortcuts and also save.
+  useEffect(() => listenForChords(window, runCommand), [])
 
   return (
     <ErrorBoundary>
@@ -1117,8 +953,8 @@ export default function App() {
 
         {/* Center - main content area (editor, breadcrumbs, bottom panel) */}
         <div role="main" aria-label="Editor content" id="editor-main" tabIndex={-1} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {/* Breadcrumbs - only shown when a file is open and not in diff view */}
-          {!diffView && <BreadcrumbsWrapper />}
+          {/* The editor panel shows the breadcrumbs. (An app-level bar listed
+              made-up sibling files and folders.) */}
           <div className={zenMode ? 'zen-editor-container' : undefined} style={{ flex: 1, overflow: 'hidden' }}>
             {diffView ? (
               <ErrorBoundary>
@@ -1272,9 +1108,10 @@ export default function App() {
       )}
 
       <CommandPalette
+        key={palette.request}
         open={paletteOpen}
+        mode={palette.mode}
         onClose={() => closeModal(setPaletteOpen)}
-        onOpenSettings={() => openModal(setSettingsOpen)}
       />
 
       {/* Toast notifications - aria-live region for screen readers */}

@@ -36,13 +36,13 @@ export interface InlineEditHandlers {
 /** Register Ctrl+K and the context-menu edits on a Monaco editor. */
 export function registerInlineEditActions(
   editor: Pick<MonacoEditor.IStandaloneCodeEditor, 'addAction'>,
-  ctrlK: number,
+  shortcut: number,
   handlers: InlineEditHandlers,
 ): void {
   editor.addAction({
     id: 'orion-inline-edit',
-    label: 'Edit with AI (Ctrl+K)',
-    keybindings: [ctrlK],
+    label: 'Edit with AI (Ctrl+I)',
+    keybindings: [shortcut],
     run: (ed) => {
       handlers.open(ed)
     },

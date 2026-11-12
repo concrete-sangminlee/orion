@@ -47,11 +47,11 @@ function registeredActions() {
 const fakeEd = (text: string, sel: IRange) => ({ getSelection: () => sel, getModel: () => fakeModel(text) }) as unknown as MonacoEditor.ICodeEditor
 
 describe('registerInlineEditActions', () => {
-  it('binds Ctrl+K to opening the widget without submitting anything', () => {
+  it('binds its shortcut (Ctrl+I in the editor) to opening the widget without submitting anything', () => {
     const { actions, handlers } = registeredActions()
-    const ctrlK = actions.get('orion-inline-edit')!
-    expect(ctrlK.keybindings).toEqual([2089])
-    ctrlK.run(fakeEd('let x = 1', range(1, 1, 1, 1)))
+    const shortcut = actions.get('orion-inline-edit')!
+    expect(shortcut.keybindings).toEqual([2089])
+    shortcut.run(fakeEd('let x = 1', range(1, 1, 1, 1)))
     expect(handlers.open).toHaveBeenCalledTimes(1)
     expect(handlers.submit).not.toHaveBeenCalled()
   })

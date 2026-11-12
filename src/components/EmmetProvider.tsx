@@ -1049,8 +1049,9 @@ const HTML_SNIPPETS: Record<string, { label: string; snippet: string; detail: st
 
 // ── Emmet Pattern Parsers ───────────────────────────────────────────────────
 
-function isJsxLanguage(langId: string): boolean {
-  return ['javascriptreact', 'typescriptreact'].includes(langId)
+/** Monaco has no '*react' language ids: .tsx/.jsx models are 'typescript'/'javascript', so the file name decides. */
+function isJsxModel(model: editor.ITextModel): boolean {
+  return /\.[jt]sx$/i.test(model.uri.path)
 }
 
 function expandTag(tag: string, selfClosing: boolean, isJsx: boolean): string {
@@ -1609,7 +1610,7 @@ function wrapWithAbbreviation(abbr: string, selectedText: string, isJsx: boolean
 
 // ── Languages to register ───────────────────────────────────────────────────
 
-const HTML_LANGUAGES = ['html', 'javascript', 'javascriptreact', 'typescript', 'typescriptreact']
+const HTML_LANGUAGES = ['html', 'javascript', 'typescript']
 const CSS_LANGUAGES = ['css', 'scss', 'less']
 const ALL_LANGUAGES = [...HTML_LANGUAGES, ...CSS_LANGUAGES]
 
@@ -1634,7 +1635,7 @@ function createEmmetCompletionProvider(monaco: Monaco): languages.CompletionItem
       const langId = model.getLanguageId()
       const isHTML = HTML_LANGUAGES.includes(langId)
       const isCSS = CSS_LANGUAGES.includes(langId)
-      const isJsx = isJsxLanguage(langId)
+      const isJsx = isJsxModel(model)
 
       const range = {
         startLineNumber: position.lineNumber,
@@ -1652,7 +1653,8 @@ function createEmmetCompletionProvider(monaco: Monaco): languages.CompletionItem
 
       // ── HTML Snippet Shortcuts ────────────────────────────────────
       if (isHTML) {
-        for (const [key, value] of Object.entries(HTML_SNIPPETS)) {
+        // Written as HTML (class=, for=, unclosed <img>): not valid JSX.
+        for (const [key, value] of isJsx ? [] : Object.entries(HTML_SNIPPETS)) {
           if (key.startsWith(abbr) || key === abbr) {
             suggestions.push({
               label: `\u26A1 ${value.label}`,
@@ -1805,11 +1807,11 @@ function registerWrapWithAbbreviation(monaco: Monaco): IDisposable[] {
         const selection = ed.getSelection()
         if (!selection) return
 
-        const selectedText = ed.getModel()?.getValueInRange(selection)
-        if (!selectedText) return
+        const model = ed.getModel()
+        const selectedText = model?.getValueInRange(selection)
+        if (!model || !selectedText) return
 
-        const langId = ed.getModel()?.getLanguageId() || ''
-        const isJsx = isJsxLanguage(langId)
+        const isJsx = isJsxModel(model)
 
         // Use a quick input to ask for the abbreviation
         const inputEl = document.createElement('div')

@@ -2,10 +2,9 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
 import { useProblemsStore, getProblemsForFile } from '@/store/problems'
-import { clearRecovery } from '@/hooks/useAutoSave'
 import { X, ChevronLeft, ChevronRight, Pin, MoreHorizontal, Copy, FolderOpen, ArrowRightLeft, Columns, Rows } from 'lucide-react'
-import { writeFileChecked } from '@/utils/ipcResult'
-import { confirmOverwriteIfChangedOnDisk } from '@/utils/saveGuards'
+import { saveAndCloseRequested } from '@/utils/closeGuard'
+import { revealInExplorer } from '@/utils/revealInExplorer'
 
 // ─── CSS Variables & Keyframes (injected once) ─────────────────────────────
 
@@ -157,36 +156,21 @@ function TabPreviewTooltip({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Inline Close Confirmation Popover
+// Close Confirmation Dialog (every close of tabs with unsaved edits)
 // ═══════════════════════════════════════════════════════════════════════════
 
-function CloseConfirmPopover({
-  fileName,
-  filePath,
-  anchorRect,
+function CloseConfirmDialog({
+  fileNames,
   onSave,
   onDontSave,
   onCancel,
 }: {
-  fileName: string
-  filePath: string
-  anchorRect: DOMRect | null
+  fileNames: string[]
   onSave: () => void
   onDontSave: () => void
   onCancel: () => void
 }) {
-  const popoverRef = useRef<HTMLDivElement>(null)
   const [hoveredBtn, setHoveredBtn] = useState<string | null>(null)
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        onCancel()
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [onCancel])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -195,11 +179,6 @@ function CloseConfirmPopover({
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [onCancel])
-
-  if (!anchorRect) return null
-
-  const left = Math.max(4, anchorRect.left)
-  const top = anchorRect.bottom + 2
 
   const btnBase: React.CSSProperties = {
     padding: '3px 10px',
@@ -212,63 +191,87 @@ function CloseConfirmPopover({
   }
 
   return (
+    // Modal: the editor must not take keystrokes while the question is open.
     <div
-      ref={popoverRef}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel() }}
       style={{
         position: 'fixed',
-        left,
-        top,
+        inset: 0,
         zIndex: 9999,
-        background: 'var(--bg-secondary)',
-        border: '1px solid var(--border)',
-        borderRadius: 6,
-        padding: '10px 14px',
-        boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
-        minWidth: 240,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
       }}
     >
-      <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 10 }}>
-        Save changes to <strong>{fileName}</strong>?
-      </div>
-      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-        <button
-          onClick={onCancel}
-          onMouseEnter={() => setHoveredBtn('cancel')}
-          onMouseLeave={() => setHoveredBtn(null)}
-          style={{
-            ...btnBase,
-            color: 'var(--text-muted)',
-            background: hoveredBtn === 'cancel' ? 'rgba(255,255,255,0.08)' : 'transparent',
-          }}
-        >
-          Cancel
-        </button>
-        <button
-          onClick={onDontSave}
-          onMouseEnter={() => setHoveredBtn('dontsave')}
-          onMouseLeave={() => setHoveredBtn(null)}
-          style={{
-            ...btnBase,
-            color: hoveredBtn === 'dontsave' ? '#f85149' : 'var(--text-secondary)',
-            background: hoveredBtn === 'dontsave' ? 'rgba(248,81,73,0.1)' : 'transparent',
-          }}
-        >
-          Don't Save
-        </button>
-        <button
-          onClick={onSave}
-          onMouseEnter={() => setHoveredBtn('save')}
-          onMouseLeave={() => setHoveredBtn(null)}
-          style={{
-            ...btnBase,
-            color: '#fff',
-            background: hoveredBtn === 'save' ? 'var(--accent)' : 'var(--accent)',
-            borderColor: 'var(--accent)',
-            opacity: hoveredBtn === 'save' ? 1 : 0.9,
-          }}
-        >
-          Save
-        </button>
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label="Unsaved changes"
+        style={{
+          background: 'var(--bg-secondary)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          padding: '12px 16px',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+          minWidth: 280,
+          maxWidth: 420,
+        }}
+      >
+        <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 4 }}>
+          {fileNames.length === 1
+            ? <>Save changes to <strong>{fileNames[0]}</strong>?</>
+            : <>Save changes to these {fileNames.length} files?</>}
+        </div>
+        {fileNames.length > 1 && (
+          <ul style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '4px 0', paddingLeft: 18, maxHeight: 160, overflowY: 'auto' }}>
+            {fileNames.map((name, i) => <li key={i}>{name}</li>)}
+          </ul>
+        )}
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+          Your changes will be lost if you don't save them.
+        </div>
+        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+          <button
+            onClick={onCancel}
+            onMouseEnter={() => setHoveredBtn('cancel')}
+            onMouseLeave={() => setHoveredBtn(null)}
+            style={{
+              ...btnBase,
+              color: 'var(--text-muted)',
+              background: hoveredBtn === 'cancel' ? 'rgba(255,255,255,0.08)' : 'transparent',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onDontSave}
+            onMouseEnter={() => setHoveredBtn('dontsave')}
+            onMouseLeave={() => setHoveredBtn(null)}
+            style={{
+              ...btnBase,
+              color: hoveredBtn === 'dontsave' ? '#f85149' : 'var(--text-secondary)',
+              background: hoveredBtn === 'dontsave' ? 'rgba(248,81,73,0.1)' : 'transparent',
+            }}
+          >
+            Don't Save
+          </button>
+          <button
+            autoFocus
+            onClick={onSave}
+            onMouseEnter={() => setHoveredBtn('save')}
+            onMouseLeave={() => setHoveredBtn(null)}
+            style={{
+              ...btnBase,
+              color: '#fff',
+              background: 'var(--accent)',
+              borderColor: 'var(--accent)',
+              opacity: hoveredBtn === 'save' ? 1 : 0.9,
+            }}
+          >
+            {fileNames.length === 1 ? 'Save' : 'Save All'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -289,12 +292,12 @@ function TabContextMenu({
   filePath: string
   onClose: () => void
 }) {
-  const openFiles = useEditorStore((s) => s.openFiles)
   const closeFile = useEditorStore((s) => s.closeFile)
   const closeAllFiles = useEditorStore((s) => s.closeAllFiles)
   const closeOtherFiles = useEditorStore((s) => s.closeOtherFiles)
   const closeToRight = useEditorStore((s) => s.closeToRight)
   const closeSaved = useEditorStore((s) => s.closeSaved)
+  const setActiveFile = useEditorStore((s) => s.setActiveFile)
   const pinnedTabs = useEditorStore((s) => s.pinnedTabs)
   const pinTab = useEditorStore((s) => s.pinTab)
   const unpinTab = useEditorStore((s) => s.unpinTab)
@@ -302,7 +305,6 @@ function TabContextMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const [hoveredItem, setHoveredItem] = useState<string | null>(null)
   const isTabPinned = pinnedTabs.includes(filePath)
-  const fileName = openFiles.find(f => f.path === filePath)?.name || ''
 
   // Adjust menu position to stay within viewport
   const [adjustedPos, setAdjustedPos] = useState({ x, y })
@@ -365,14 +367,15 @@ function TabContextMenu({
     { id: 'divider0', label: '', action: () => {} },
     { id: 'copy-path', label: 'Copy Path', icon: <Copy size={12} />, action: () => copyToClipboard(filePath, 'path') },
     { id: 'copy-rel-path', label: 'Copy Relative Path', icon: <Copy size={12} />, action: () => copyToClipboard(getRelativePath(filePath), 'relative path') },
-    { id: 'reveal', label: 'Reveal in Explorer', icon: <FolderOpen size={12} />, action: () => dispatch('orion:reveal-in-explorer', { path: filePath }) },
+    { id: 'reveal', label: 'Reveal in Explorer', icon: <FolderOpen size={12} />, action: () => revealInExplorer(filePath) },
     { id: 'divider1', label: '', action: () => {} },
     { id: 'pin', label: isTabPinned ? 'Unpin Tab' : 'Pin Tab', icon: <Pin size={12} />, action: () => isTabPinned ? unpinTab(filePath) : pinTab(filePath) },
     { id: 'divider2', label: '', action: () => {} },
     { id: 'split-right', label: 'Split Right', shortcut: 'Ctrl+\\', icon: <Columns size={12} />, action: () => dispatch('orion:split-editor-right', { path: filePath }) },
     { id: 'split-down', label: 'Split Down', icon: <Rows size={12} />, action: () => dispatch('orion:split-editor-down', { path: filePath }) },
     { id: 'divider3', label: '', action: () => {} },
-    { id: 'compare', label: 'Compare with...', icon: <ArrowRightLeft size={12} />, action: () => dispatch('orion:compare-file', { path: filePath }) },
+    // The editor compares the file named in the event, not whichever tab is active.
+    { id: 'compare', label: 'Compare with...', icon: <ArrowRightLeft size={12} />, action: () => { setActiveFile(filePath); dispatch('orion:compare-files', { path: filePath }) } },
   ]
 
   return (
@@ -694,44 +697,6 @@ function TabSwitcherOverlay({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Drop Zone Indicator (for cross-group tab dragging)
-// ═══════════════════════════════════════════════════════════════════════════
-
-function DropZoneOverlay({
-  position,
-  isActive,
-}: {
-  position: 'left' | 'right' | 'top' | 'bottom' | 'center'
-  isActive: boolean
-}) {
-  if (!isActive) return null
-
-  const positionStyles: Record<string, React.CSSProperties> = {
-    left:   { left: 0, top: 0, width: '50%', height: '100%' },
-    right:  { right: 0, top: 0, width: '50%', height: '100%' },
-    top:    { left: 0, top: 0, width: '100%', height: '50%' },
-    bottom: { left: 0, bottom: 0, width: '100%', height: '50%' },
-    center: { left: '10%', top: '10%', width: '80%', height: '80%' },
-  }
-
-  return (
-    <div
-      className="orion-drop-zone-indicator"
-      style={{
-        position: 'absolute',
-        ...positionStyles[position],
-        background: 'var(--accent)',
-        opacity: 0.15,
-        borderRadius: 4,
-        border: '2px dashed var(--accent)',
-        pointerEvents: 'none',
-        zIndex: 100,
-      }}
-    />
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Main TabBar Component
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -744,15 +709,11 @@ export default function TabBar() {
   const reorderFiles = useEditorStore((s) => s.reorderFiles)
   const pinFile = useEditorStore((s) => s.pinFile)
   const previewPath = useEditorStore((s) => s.previewPath)
-  const markSaved = useEditorStore((s) => s.markSaved)
   const pinnedTabs = useEditorStore((s) => s.pinnedTabs)
-  const pinTab = useEditorStore((s) => s.pinTab)
   const unpinTab = useEditorStore((s) => s.unpinTab)
-  const editorGroups = useEditorStore((s) => s.editorGroups)
-  const activeGroupId = useEditorStore((s) => s.activeGroupId)
-  const createGroup = useEditorStore((s) => s.createGroup)
-  const moveTabToGroup = useEditorStore((s) => s.moveTabToGroup)
-  const splitEditor = useEditorStore((s) => s.splitEditor)
+  const closeRequest = useEditorStore((s) => s.closeRequest)
+  const confirmCloseRequest = useEditorStore((s) => s.confirmCloseRequest)
+  const cancelCloseRequest = useEditorStore((s) => s.cancelCloseRequest)
   const addToast = useToastStore((s) => s.addToast)
   const problems = useProblemsStore((s) => s.problems)
 
@@ -763,13 +724,6 @@ export default function TabBar() {
   const [draggingPath, setDraggingPath] = useState<string | null>(null)
   const [closeAllHovered, setCloseAllHovered] = useState(false)
   const dragIndexRef = useRef<number>(-1)
-
-  // Close confirmation state
-  const [confirmClose, setConfirmClose] = useState<{
-    path: string
-    name: string
-    anchorRect: DOMRect | null
-  } | null>(null)
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
@@ -802,8 +756,8 @@ export default function TabBar() {
   const [pulsingPaths, setPulsingPaths] = useState<Set<string>>(new Set())
   const prevModifiedRef = useRef<Set<string>>(new Set())
 
-  // Cross-group drag drop zone state
-  const [dragDropZone, setDragDropZone] = useState<'left' | 'right' | 'center' | null>(null)
+  // A tab dragged onto the right edge opens in a split to the right
+  const [splitDropActive, setSplitDropActive] = useState(false)
   const tabBarRef = useRef<HTMLDivElement>(null)
 
   // ─── Track newly modified files for pulse animation ──────────────────────
@@ -863,47 +817,16 @@ export default function TabBar() {
     }
   }, [activeFilePath])
 
-  // ─── Handle close tab (checks unsaved changes) ──────────────────────────
+  // ─── Close a tab (the store asks first when it has unsaved edits) ────────
   const handleCloseTab = useCallback(
-    (filePath: string, anchorEl?: HTMLElement) => {
-      // Pinned tabs cannot be closed
+    (filePath: string) => {
       if (pinnedTabs.includes(filePath)) {
         addToast({ type: 'info', message: 'Unpin the tab first to close it', duration: 2000 })
         return
       }
-      const file = openFiles.find((f) => f.path === filePath)
-      if (file && file.isModified) {
-        const rect = anchorEl?.getBoundingClientRect() ?? null
-        setConfirmClose({ path: filePath, name: file.name, anchorRect: rect })
-      } else {
-        closeFile(filePath)
-      }
-    },
-    [openFiles, closeFile, pinnedTabs, addToast]
-  )
-
-  // ─── Save then close ────────────────────────────────────────────────────
-  const handleSaveAndClose = useCallback(
-    async (filePath: string) => {
-      const file = openFiles.find((f) => f.path === filePath)
-      if (file) {
-        // Declining keeps the tab open so the user can compare or reload.
-        if (!confirmOverwriteIfChangedOnDisk(file)) return
-        try {
-          await writeFileChecked(filePath, file.content, `Save ${file.name}`)
-          markSaved(filePath)
-          clearRecovery(filePath)
-          addToast({ type: 'success', message: `Saved ${file.name}`, duration: 1500 })
-        } catch {
-          // best effort
-          addToast({ type: 'error', message: `Failed to save ${file.name}` })
-          return
-        }
-      }
       closeFile(filePath)
-      setConfirmClose(null)
     },
-    [openFiles, closeFile, markSaved, addToast]
+    [closeFile, pinnedTabs, addToast]
   )
 
   // ─── Hover preview handlers ──────────────────────────────────────────────
@@ -927,44 +850,28 @@ export default function TabBar() {
     setPreviewTooltip(null)
   }, [])
 
-  // ─── Cross-group drop zone handlers ──────────────────────────────────────
+  // ─── Split drop zone (right edge) ────────────────────────────────────────
   const handleTabBarDragOver = useCallback((e: React.DragEvent) => {
-    // Only activate drop zones if dragging from another group or to edges
     if (!e.dataTransfer.types.includes('application/x-orion-tab')) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
 
     const rect = tabBarRef.current?.getBoundingClientRect()
     if (!rect) return
-    const relX = e.clientX - rect.left
-    const zoneWidth = 40 // pixels from edge for split drop zones
-
-    if (relX < zoneWidth) {
-      setDragDropZone('left')
-    } else if (relX > rect.width - zoneWidth) {
-      setDragDropZone('right')
-    } else {
-      setDragDropZone(null)
-    }
+    const zoneWidth = 40 // pixels from the right edge
+    setSplitDropActive(e.clientX - rect.left > rect.width - zoneWidth)
   }, [])
 
   const handleTabBarDrop = useCallback((e: React.DragEvent) => {
     const droppedPath = e.dataTransfer.getData('application/x-orion-tab')
-    if (!droppedPath) return
-
-    if (dragDropZone === 'left' || dragDropZone === 'right') {
-      // Create a new split group and move the tab there
-      const position = dragDropZone === 'left' ? 'left' : 'right'
-      const newGroupId = splitEditor(position as any, droppedPath)
-      // Dispatch event so the editor layout knows to re-render
-      window.dispatchEvent(new CustomEvent('orion:split-editor-' + position, { detail: { path: droppedPath } }))
+    if (droppedPath && splitDropActive) {
+      window.dispatchEvent(new CustomEvent('orion:split-editor-right', { detail: { path: droppedPath } }))
     }
-
-    setDragDropZone(null)
-  }, [dragDropZone, splitEditor])
+    setSplitDropActive(false)
+  }, [splitDropActive])
 
   const handleTabBarDragLeave = useCallback(() => {
-    setDragDropZone(null)
+    setSplitDropActive(false)
   }, [])
 
   // ─── Tab switcher keyboard handler ───────────────────────────────────────
@@ -1038,25 +945,8 @@ export default function TabBar() {
           position: 'relative',
         }}
       >
-        {/* Cross-group drop zone indicators */}
-        {dragDropZone === 'left' && (
-          <div
-            className="orion-drop-zone-indicator"
-            style={{
-              position: 'absolute',
-              left: 0,
-              top: 0,
-              width: 40,
-              height: '100%',
-              background: 'var(--accent)',
-              opacity: 0.2,
-              zIndex: 50,
-              borderRight: '2px solid var(--accent)',
-              pointerEvents: 'none',
-            }}
-          />
-        )}
-        {dragDropZone === 'right' && (
+        {/* Split-right drop zone indicator */}
+        {splitDropActive && (
           <div
             className="orion-drop-zone-indicator"
             style={{
@@ -1364,7 +1254,7 @@ export default function TabBar() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation()
-                        handleCloseTab(file.path, e.currentTarget)
+                        handleCloseTab(file.path)
                       }}
                       className="flex items-center justify-center"
                       style={{
@@ -1534,18 +1424,13 @@ export default function TabBar() {
         </div>
       </div>
 
-      {/* Close confirmation popover */}
-      {confirmClose && (
-        <CloseConfirmPopover
-          fileName={confirmClose.name}
-          filePath={confirmClose.path}
-          anchorRect={confirmClose.anchorRect}
-          onSave={() => handleSaveAndClose(confirmClose.path)}
-          onDontSave={() => {
-            closeFile(confirmClose.path)
-            setConfirmClose(null)
-          }}
-          onCancel={() => setConfirmClose(null)}
+      {/* Asked for every close that would discard unsaved edits */}
+      {closeRequest && (
+        <CloseConfirmDialog
+          fileNames={closeRequest.unsaved.map((path) => openFiles.find((f) => f.path === path)?.name ?? path)}
+          onSave={() => { void saveAndCloseRequested() }}
+          onDontSave={confirmCloseRequest}
+          onCancel={cancelCloseRequest}
         />
       )}
 

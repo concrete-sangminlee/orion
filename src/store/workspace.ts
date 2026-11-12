@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import type { WorkspaceSettings } from '@shared/types'
+import type { WorkspaceSettingsFile, WorkspaceSettingsReadResult } from '@shared/ipc-contract'
+import { assertIpcSuccess, ipcErrorMessage } from '@/utils/ipcResult'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,7 +40,6 @@ export const DEFAULT_WORKSPACE_SETTINGS: WorkspaceSettings = {
 // Local-storage keys
 // ---------------------------------------------------------------------------
 
-const LOCAL_STORAGE_KEY = 'orion-workspace-settings'
 const RECENT_WORKSPACES_KEY = 'orion-recent-workspaces'
 const WORKSPACE_STATE_KEY = 'orion-workspace-state'
 
@@ -81,23 +82,12 @@ export interface RecentWorkspace {
   lastOpened: number
 }
 
-// ---------------------------------------------------------------------------
-// Helpers – user settings (localStorage)
-// ---------------------------------------------------------------------------
-
-function loadUserSettings(): Partial<WorkspaceSettings> {
-  try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch {}
-  return {}
-}
-
-function saveUserSettings(settings: WorkspaceSettings) {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(settings))
-  } catch {}
-}
+// Earlier versions copied the last saved folder's merged workspace settings
+// here and applied them to every folder opened later, so one project's
+// exclude patterns leaked into the others. Nothing reads it any more.
+try {
+  localStorage.removeItem('orion-workspace-settings')
+} catch {}
 
 // ---------------------------------------------------------------------------
 // Helpers – recent workspaces (localStorage)
@@ -161,18 +151,43 @@ function dispatchWorkspaceEvent(name: string, detail?: Record<string, unknown>) 
 }
 
 // ---------------------------------------------------------------------------
-// Helpers – settings merge  (default < user < workspace)
+// Helpers – settings merge  (default < workspace)
 // ---------------------------------------------------------------------------
 
-function mergeSettings(
-  workspaceOverrides: Record<string, any>,
-  userSettings: Partial<WorkspaceSettings>,
-): WorkspaceSettings {
-  return {
-    ...DEFAULT_WORKSPACE_SETTINGS,
-    ...userSettings,
-    ...workspaceOverrides,
+const isStringArray = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === 'string')
+
+/**
+ * Defaults overlaid with the overrides whose type is right. The file is
+ * hand-editable: `"excludePatterns": "dist"` (a string, not a list) used to
+ * reach `.map()` in the explorer and the settings dialog and crash both.
+ */
+export function mergeSettings(workspaceOverrides: Record<string, unknown>): WorkspaceSettings {
+  const o = workspaceOverrides
+  const merged: WorkspaceSettings = { ...DEFAULT_WORKSPACE_SETTINGS }
+  if (isStringArray(o.excludePatterns)) merged.excludePatterns = o.excludePatterns
+  if (isStringArray(o.searchExcludes)) merged.searchExcludes = o.searchExcludes
+  if (typeof o.autoSave === 'boolean') merged.autoSave = o.autoSave
+  if (typeof o.formatOnSave === 'boolean') merged.formatOnSave = o.formatOnSave
+  if (typeof o.tabSize === 'number' && Number.isInteger(o.tabSize) && o.tabSize >= 1 && o.tabSize <= 16) merged.tabSize = o.tabSize
+  if (typeof o.insertSpaces === 'boolean') merged.insertSpaces = o.insertSpaces
+  const associations = o.fileAssociations
+  if (associations && typeof associations === 'object' && !Array.isArray(associations)) {
+    merged.fileAssociations = Object.fromEntries(
+      Object.entries(associations).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    )
   }
+  return merged
+}
+
+/**
+ * Write .orion/settings.json. Refused while the file could not be read: it
+ * may hold settings this store never saw (JSON with comments, say), and
+ * writing would replace them.
+ */
+async function writeWorkspaceFile(rootPath: string, contents: WorkspaceSettingsFile): Promise<void> {
+  const { loadError } = useWorkspaceStore.getState()
+  if (loadError) throw new Error(`.orion/settings.json could not be read, so it was not overwritten: ${loadError}`)
+  assertIpcSuccess(await window.api.workspaceWriteSettings(rootPath, contents), 'Save workspace settings')
 }
 
 // ---------------------------------------------------------------------------
@@ -198,12 +213,17 @@ interface WorkspaceStore {
   workspaceOverrides: Record<string, any>
   /** Whether current settings were loaded from a workspace .orion/settings.json */
   isWorkspaceLevel: boolean
-  setSettings: (settings: WorkspaceSettings) => void
+  /** Why .orion/settings.json could not be read; nothing writes the file while this is set. */
+  loadError: string | null
   updateSettings: (patch: Partial<WorkspaceSettings>) => void
-  /** Load .orion/settings.json for a given root and merge with defaults + user settings */
+  /** Load .orion/settings.json for a given root and merge it over the defaults */
   loadWorkspaceSettings: (rootPath: string) => Promise<void>
-  /** Persist the full settings object to .orion/settings.json */
-  saveWorkspaceSettings: (rootPath: string) => Promise<void>
+  /**
+   * Save edited settings to .orion/settings.json: the keys the file already
+   * sets and those that differ from the defaults. Rejects with the reason
+   * when the file was not written.
+   */
+  saveWorkspaceSettings: (rootPath: string, settings: WorkspaceSettings) => Promise<void>
   /** Merge a single key/value into the workspace .orion/settings.json and persist */
   saveWorkspaceSetting: (rootPath: string, key: string, value: any) => Promise<void>
 
@@ -280,11 +300,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   },
 
   // --- Settings ---------------------------------------------------------------
-  settings: { ...DEFAULT_WORKSPACE_SETTINGS, ...loadUserSettings() },
+  settings: { ...DEFAULT_WORKSPACE_SETTINGS },
   workspaceOverrides: {},
   isWorkspaceLevel: false,
-
-  setSettings: (settings) => set({ settings }),
+  loadError: null,
 
   updateSettings: (patch) =>
     set((state) => ({
@@ -292,38 +311,33 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     })),
 
   loadWorkspaceSettings: async (rootPath: string) => {
-    const userSettings = loadUserSettings()
+    let result: WorkspaceSettingsReadResult
     try {
-      const result = await window.api.workspaceReadSettings(rootPath)
-      if (result.settings) {
-        const merged = mergeSettings(result.settings, userSettings)
-        set({ settings: merged, workspaceOverrides: result.settings, isWorkspaceLevel: true })
-      } else {
-        set({
-          settings: mergeSettings({}, userSettings),
-          workspaceOverrides: {},
-          isWorkspaceLevel: false,
-        })
-      }
-    } catch {
-      set({
-        settings: mergeSettings({}, userSettings),
-        workspaceOverrides: {},
-        isWorkspaceLevel: false,
-      })
+      result = await window.api.workspaceReadSettings(rootPath)
+    } catch (err) {
+      result = { settings: null, error: ipcErrorMessage(err) }
     }
+    const overrides = result.settings ?? {}
+    set({
+      settings: mergeSettings(overrides),
+      workspaceOverrides: overrides,
+      isWorkspaceLevel: result.settings !== null,
+      loadError: result.error ?? null,
+    })
   },
 
-  saveWorkspaceSettings: async (rootPath: string) => {
-    const { settings } = get()
-    try {
-      await window.api.workspaceWriteSettings(rootPath, settings)
-      set({ isWorkspaceLevel: true })
-    } catch (err) {
-      console.error('Failed to save workspace settings:', err)
+  saveWorkspaceSettings: async (rootPath: string, edited: WorkspaceSettings) => {
+    const { workspaceOverrides } = get()
+    // Unknown and hand-written keys stay; defaults the user never changed are
+    // not frozen into the file.
+    const overrides: Record<string, any> = { ...workspaceOverrides }
+    for (const key of Object.keys(DEFAULT_WORKSPACE_SETTINGS) as (keyof WorkspaceSettings)[]) {
+      if (key in workspaceOverrides || JSON.stringify(edited[key]) !== JSON.stringify(DEFAULT_WORKSPACE_SETTINGS[key])) {
+        overrides[key] = edited[key]
+      }
     }
-    // Also persist to localStorage as user-level fallback
-    saveUserSettings(settings)
+    await writeWorkspaceFile(rootPath, overrides)
+    set({ settings: mergeSettings(overrides), workspaceOverrides: overrides, isWorkspaceLevel: true })
   },
 
   saveWorkspaceSetting: async (rootPath: string, key: string, value: any) => {
@@ -331,7 +345,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const newOverrides = { ...workspaceOverrides, [key]: value }
     const newSettings = { ...settings, [key]: value } as WorkspaceSettings
     try {
-      await window.api.workspaceWriteSettings(rootPath, newOverrides)
+      await writeWorkspaceFile(rootPath, newOverrides)
       set({ settings: newSettings, workspaceOverrides: newOverrides, isWorkspaceLevel: true })
     } catch (err) {
       console.error('Failed to save workspace setting:', err)
@@ -359,7 +373,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
   saveWorkspaceExtensions: async (rootPath: string, extensions: WorkspaceExtensions) => {
     try {
-      await window.api.workspaceWriteSettings(rootPath, {
+      await writeWorkspaceFile(rootPath, {
         ...get().workspaceOverrides,
         __extensions: extensions,
       })

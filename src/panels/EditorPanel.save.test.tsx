@@ -5,8 +5,9 @@
  * path share one model, and an unmounting editor disposes its model unless
  * `keepCurrentModel` is set (as @monaco-editor/react does).
  */
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { IRange } from 'monaco-editor'
 import type { OpenFile } from '@shared/types'
 import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
@@ -14,6 +15,8 @@ import { useToastStore } from '@/store/toast'
 interface FakeModel {
   uri: { toString(): string }
   value: string
+  /** What each undoable edit replaced, oldest first. */
+  undo: string[]
   editors: Set<FakeEditorHandle>
 }
 
@@ -36,6 +39,8 @@ interface FakeEditorHandle {
 const fake = vi.hoisted(() => ({
   models: new Map<string, FakeModel>(),
   editors: [] as FakeEditorHandle[],
+  /** Runs of the editor's Format Document action. */
+  formats: 0,
 }))
 
 vi.mock('@/monaco/setup', () => ({
@@ -63,7 +68,7 @@ vi.mock('@monaco-editor/react', async () => {
   const getOrCreateModel = (path: string, value: string): FakeModel => {
     let model = fake.models.get(path)
     if (!model) {
-      model = { uri: { toString: () => path }, value, editors: new Set() }
+      model = { uri: { toString: () => path }, value, undo: [], editors: new Set() }
       fake.models.set(path, model)
     }
     return model
@@ -86,23 +91,51 @@ vi.mock('@monaco-editor/react', async () => {
     const handleRef = React.useRef<FakeEditorHandle | null>(null)
     if (!handleRef.current) {
       const handle: FakeEditorHandle = { props, model: null, focused: false, rerender, api: null }
+      const lines = () => handle.model!.value.split('\n')
       handle.api = withFallback({
         getModel: () =>
           handle.model &&
           withFallback({
             uri: handle.model.uri,
             getValue: () => handle.model!.value,
-            setValue: (v: string) => { handle.model!.value = v },
-            getFullModelRange: () => ({}),
+            // Like Monaco's, it also drops the edit history.
+            setValue: (v: string) => {
+              handle.model!.value = v
+              handle.model!.undo.length = 0
+            },
+            getLineCount: () => lines().length,
+            getLineContent: (line: number) => lines()[line - 1],
+            getEOL: () => '\n',
+            getFullModelRange: () => ({
+              startLineNumber: 1, startColumn: 1, endLineNumber: lines().length, endColumn: lines().at(-1)!.length + 1,
+            }),
           }),
-        executeEdits: (_source: string, edits: Array<{ text: string }>) => {
-          if (handle.model) handle.model.value = edits[0].text
+        executeEdits: (_source: string, edits: Array<{ range: IRange; text: string }>) => {
+          const model = handle.model
+          if (!model) return false
+          const before = model.value
+          const offset = (line: number, column: number) =>
+            before.split('\n').slice(0, line - 1).reduce((n, l) => n + l.length + 1, 0) + column - 1
+          const spans = edits
+            .map((e) => ({ start: offset(e.range.startLineNumber, e.range.startColumn), end: offset(e.range.endLineNumber, e.range.endColumn), text: e.text }))
+            .sort((a, b) => b.start - a.start)
+          model.value = spans.reduce((text, s) => text.slice(0, s.start) + s.text + text.slice(s.end), before)
+          model.undo.push(before)
           return true
         },
         pushUndoStop: () => true,
         hasTextFocus: () => handle.focused,
         focus: () => { handle.focused = true },
-        getAction: () => null,
+        // Format Document spaces out `=`; no other action is under test.
+        getAction: (id: string) =>
+          id === 'editor.action.formatDocument'
+            ? {
+                run: async () => {
+                  fake.formats++
+                  if (handle.model) handle.model.value = handle.model.value.replace(/\s*=\s*/g, ' = ')
+                },
+              }
+            : null,
       })
       handleRef.current = handle
     }
@@ -225,9 +258,15 @@ async function typeInto(handle: FakeEditorHandle, text: string) {
 
 const shownTexts = () => screen.getAllByTestId('monaco').map((el) => el.getAttribute('data-text'))
 
+/** Settings > Editor values, read when the panel mounts. */
+function editorSettings(settings: Record<string, boolean>) {
+  localStorage.setItem('orion-editor-settings', JSON.stringify(settings))
+}
+
 beforeEach(() => {
   fake.models.clear()
   fake.editors.length = 0
+  fake.formats = 0
   localStorage.clear()
   globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
   api = {
@@ -304,6 +343,52 @@ describe('split view (#45)', () => {
   })
 })
 
+describe('split and compare requests that name a file (#89, #90)', () => {
+  async function dispatchWithPath(name: string, path: string) {
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(name, { detail: { path } }))
+    })
+  }
+
+  it('opens the named file in the side pane and keeps the main pane', async () => {
+    openFiles([file('/w/a.ts', 'A'), file('/w/b.ts', 'B'), file('/w/c.ts', 'C')], '/w/a.ts')
+    await renderPanel()
+    // Without a name the split guessed "another open file" (b.ts here).
+    await dispatchWithPath('orion:split-editor-right', '/w/c.ts')
+    expect(shownTexts()).toEqual(['A', 'C'])
+  })
+
+  it('does not close a split that is already open', async () => {
+    openFiles([file('/w/a.ts', 'A'), file('/w/b.ts', 'B'), file('/w/c.ts', 'C')], '/w/a.ts')
+    await renderPanel()
+    await dispatchWithPath('orion:split-editor-right', '/w/b.ts')
+    await dispatchWithPath('orion:split-editor-down', '/w/c.ts')
+    expect(shownTexts()).toEqual(['A', 'C'])
+  })
+
+  it("compares the tab whose menu asked, not the previously active one", async () => {
+    openFiles([file('/w/a.ts', 'A'), file('/w/b.ts', 'B')], '/w/a.ts')
+    await renderPanel()
+    Element.prototype.scrollIntoView = vi.fn()
+    await dispatchWithPath('orion:compare-files', '/w/b.ts')
+    // The picker lists the other files; picking a.ts diffs b.ts (original) against it.
+    const picker = screen.getByPlaceholderText('Select a file to compare with...').closest('div[style]')!.parentElement!
+    await act(async () => {
+      fireEvent.click(within(picker).getAllByText('a.ts').at(-1)!)
+    })
+    expect(screen.getByTestId('diff').textContent).toBe('B|A')
+  })
+
+  it('still toggles the split for an unnamed request', async () => {
+    openFiles([file('/w/a.ts', 'A'), file('/w/b.ts', 'B')], '/w/a.ts')
+    await renderPanel()
+    await dispatch('orion:split-editor-right')
+    expect(shownTexts()).toEqual(['A', 'B'])
+    await dispatch('orion:split-editor-right')
+    expect(shownTexts()).toEqual(['A'])
+  })
+})
+
 describe('saving from the split pane (#40)', () => {
   beforeEach(() => {
     openFiles([file('/w/a.ts', 'A'), file('/w/b.ts', 'B')])
@@ -333,7 +418,8 @@ describe('saving from the split pane (#40)', () => {
     await pressCtrlS()
 
     expect(api.writeFile).toHaveBeenCalledTimes(1)
-    expect(api.writeFile).toHaveBeenCalledWith('/w/b.ts', 'B edited')
+    // With the default save settings, which add the final newline.
+    expect(api.writeFile).toHaveBeenCalledWith('/w/b.ts', 'B edited\n')
     expect(useToastStore.getState().toasts.map((t) => t.message)).toContain('Saved b.ts')
   })
 
@@ -361,12 +447,96 @@ describe('saving from the split pane (#40)', () => {
 
     await pressCtrlS()
 
-    expect(api.writeFile).toHaveBeenCalledWith('/w/a.ts', 'A')
+    expect(api.writeFile).toHaveBeenCalledWith('/w/a.ts', 'A\n')
+  })
+})
+
+describe('Ctrl+S applies the save settings, as File > Save does', () => {
+  it('trims trailing whitespace and adds the final newline, in the file and the editor', async () => {
+    openFiles([file('/w/a.ts', 'let x = 1   \nlet y = 2\t')])
+    await renderPanel()
+
+    await pressCtrlS()
+
+    expect(api.writeFile).toHaveBeenCalledWith('/w/a.ts', 'let x = 1\nlet y = 2\n')
+    const model = editorFor('/w/a.ts').model!
+    expect(model.value).toBe('let x = 1\nlet y = 2\n')
+    // One undoable edit: Ctrl+Z after saving still works (setValue drops the history).
+    expect(model.undo).toEqual(['let x = 1   \nlet y = 2\t'])
+  })
+
+  it('adds no second line break when the last line held only spaces', async () => {
+    openFiles([file('/w/a.ts', 'let x = 1\n   ')])
+    await renderPanel()
+
+    await pressCtrlS()
+
+    expect(api.writeFile).toHaveBeenCalledWith('/w/a.ts', 'let x = 1\n')
+  })
+
+  it('keeps the trailing spaces of a Markdown line break', async () => {
+    openFiles([file('/w/README.md', 'first  \nsecond', { language: 'markdown' })])
+    await renderPanel()
+
+    await pressCtrlS()
+
+    expect(api.writeFile).toHaveBeenCalledWith('/w/README.md', 'first  \nsecond\n')
+  })
+
+  it('keeps them too when an untitled buffer is saved as a Markdown file', async () => {
+    openFiles([file('untitled-1', 'first  \nsecond', { name: 'Untitled-1', language: 'plaintext', isModified: true })])
+    api.saveFileDialog.mockResolvedValue({ filePath: '/w/notes.md', language: 'markdown' })
+    await renderPanel()
+
+    await pressCtrlS()
+
+    expect(api.writeFile).toHaveBeenCalledWith('/w/notes.md', 'first  \nsecond\n')
+  })
+
+  it('formats the document first when Format on Save is on', async () => {
+    editorSettings({ formatOnSave: true })
+    openFiles([file('/w/a.ts', 'let x=1\n')])
+    await renderPanel()
+
+    await pressCtrlS()
+
+    expect(fake.formats).toBe(1)
+    expect(api.writeFile).toHaveBeenCalledWith('/w/a.ts', 'let x = 1\n')
+  })
+
+  it('keeps edits typed while the write was in flight unsaved', async () => {
+    openFiles([file('/w/a.ts', 'A\n', { isModified: true })])
+    let finishWrite: (value: { success: true }) => void = () => {}
+    api.writeFile.mockImplementation(() => new Promise((resolve) => { finishWrite = resolve }))
+    await renderPanel()
+
+    await pressCtrlS()
+    await typeInto(editorFor('/w/a.ts'), 'A\nB')
+    await act(async () => {
+      finishWrite({ success: true })
+    })
+
+    expect(api.writeFile).toHaveBeenCalledWith('/w/a.ts', 'A\n')
+    // Marked saved, the tab would close without asking and lose "B".
+    expect(useEditorStore.getState().openFiles[0]).toMatchObject({ content: 'A\nB', isModified: true })
+  })
+
+  it('writes the buffer as typed when those settings are off', async () => {
+    editorSettings({ trimTrailingWhitespace: false, insertFinalNewline: false })
+    openFiles([file('/w/a.ts', 'let x=1   ')])
+    await renderPanel()
+
+    await pressCtrlS()
+
+    expect(fake.formats).toBe(0)
+    expect(api.writeFile).toHaveBeenCalledWith('/w/a.ts', 'let x=1   ')
   })
 })
 
 describe('untitled buffers and Save As (#41)', () => {
   it('Ctrl+S on an untitled buffer asks where to save, writes there and moves the tab', async () => {
+    // The buffer exactly as typed, so the moved tab's content is what was written.
+    editorSettings({ trimTrailingWhitespace: false, insertFinalNewline: false })
     openFiles([file('untitled-1', 'draft', { name: 'Untitled-1', language: 'plaintext', isModified: true })])
     api.saveFileDialog.mockResolvedValue({ filePath: '/w/notes.md', language: 'markdown' })
     await renderPanel()

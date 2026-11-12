@@ -6,15 +6,13 @@ import {
   X,
   Zap,
   Search,
-  Copy,
-  Globe,
-  Bug,
-  ShieldCheck,
 } from 'lucide-react'
 import { useFileStore } from '@/store/files'
 import { useEditorStore } from '@/store/editor'
-import type { EditorStore } from '@/store/editor'
 import { useRecentFilesStore } from '@/store/recentFiles'
+import { openFileInEditor } from '@/utils/openFileInEditor'
+import { requireCommand, runCommand } from '@/commands/registry'
+import '@/commands/appCommands'
 
 /* ------------------------------------------------------------------ */
 /*  CSS variables (injected once)                                      */
@@ -44,9 +42,6 @@ function ensureTitleBarStyles() {
       --titlebar-close-hover-color: #ffffff;
       --titlebar-winctrl-hover-bg: rgba(255, 255, 255, 0.06);
       --titlebar-winctrl-hover-color: var(--text-primary);
-      --titlebar-accent: #58a6ff;
-      --titlebar-debug-bg: rgba(234, 179, 8, 0.15);
-      --titlebar-debug-color: #eab308;
       --titlebar-pill-bg: rgba(255, 255, 255, 0.05);
       --titlebar-pill-hover-bg: rgba(255, 255, 255, 0.08);
       --titlebar-pill-border: rgba(255, 255, 255, 0.08);
@@ -98,673 +93,188 @@ type MenuItem =
 
 type MenuDef = { label: string; accelerator: string; items: MenuItem[] }
 
-function buildMenus(
-  fileStore: ReturnType<typeof useFileStore>,
-  editorStore: EditorStore,
-  recentFiles: { path: string; name: string }[],
-): MenuDef[] {
-  /* ---------- helpers ------------------------------------------------ */
-  const saveActiveFile = () => {
-    if (editorStore.activeFilePath) {
-      dispatch('orion:save-file')
-    }
-  }
+/** A menu item that runs a registry command, labelled and keyed like it everywhere else. */
+function command(id: string, label?: string): MenuItem {
+  const { title, keybinding } = requireCommand(id)
+  return { type: 'action', label: label ?? title, shortcut: keybinding, action: () => runCommand(id) }
+}
 
-  const saveAllFiles = () => {
-    dispatch('orion:save-all')
-  }
+const separator: MenuItem = { type: 'separator' }
 
-  const dispatch = (name: string, detail?: unknown) =>
-    window.dispatchEvent(detail ? new CustomEvent(name, { detail }) : new Event(name))
-
-  /* ---------- recent files submenu ----------------------------------- */
+/**
+ * The visible menu bar on Windows and Linux (the window is frameless). Every
+ * item is a command from the registry, so it does what the palette and the
+ * native macOS menu do.
+ */
+export function buildMenus(recentFiles: { path: string; name: string }[]): MenuDef[] {
   const recentFilesItems: MenuItem[] =
     recentFiles.length > 0
       ? [
           ...recentFiles.map((f) => ({
             type: 'action' as const,
             label: f.name,
-            action: () => dispatch('orion:open-recent-file', { path: f.path, name: f.name }),
+            action: () => void openFileInEditor(f.path),
           })),
-          { type: 'separator' as const },
+          separator,
           {
             type: 'action' as const,
             label: 'Clear Recently Opened',
             action: () => useRecentFilesStore.getState().clearRecent(),
           },
         ]
-      : [
-          {
-            type: 'action' as const,
-            label: '(No Recent Files)',
-            action: () => {},
-          },
-        ]
+      : [{ type: 'action' as const, label: '(No Recent Files)', action: () => {} }]
 
-  /* ---------- menus -------------------------------------------------- */
   return [
-    /* ======================== File ======================== */
     {
       label: 'File',
       accelerator: 'F',
       items: [
-        {
-          type: 'action',
-          label: 'New File',
-          shortcut: 'Ctrl+N',
-          action: () => {
-            const untitled = `untitled-${Date.now()}`
-            editorStore.openFile({
-              path: untitled,
-              name: 'Untitled',
-              content: '',
-              language: 'plaintext',
-              isModified: false,
-              aiModified: false,
-            })
-          },
-        },
-        {
-          type: 'action',
-          label: 'New Window',
-          shortcut: 'Ctrl+Shift+N',
-          action: () => dispatch('orion:new-window'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Open Folder...',
-          shortcut: 'Ctrl+O',
-          action: () => window.api?.openFolder?.(),
-        },
-        {
-          type: 'submenu',
-          label: 'Open Recent',
-          children: recentFilesItems,
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Save',
-          shortcut: 'Ctrl+S',
-          action: saveActiveFile,
-        },
-        {
-          type: 'action',
-          label: 'Save As...',
-          shortcut: 'Ctrl+Shift+S',
-          action: () => dispatch('orion:save-file-as'),
-        },
-        {
-          type: 'action',
-          label: 'Save All',
-          action: saveAllFiles,
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Revert File',
-          action: () => dispatch('orion:revert-file'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Close Tab',
-          shortcut: 'Ctrl+W',
-          action: () => dispatch('orion:close-tab'),
-        },
-        {
-          type: 'action',
-          label: 'Close All Tabs',
-          action: () => dispatch('orion:close-all-tabs'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Auto Save',
-          action: () => dispatch('orion:toggle-auto-save'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Preferences: Settings',
-          shortcut: 'Ctrl+,',
-          action: () => dispatch('orion:open-settings'),
-        },
-        {
-          type: 'action',
-          label: 'Preferences: Keyboard Shortcuts',
-          shortcut: 'Ctrl+K Ctrl+S',
-          action: () => dispatch('orion:keyboard-shortcuts'),
-        },
-        {
-          type: 'action',
-          label: 'Preferences: Color Theme',
-          action: () => dispatch('orion:open-palette'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Exit',
-          shortcut: 'Alt+F4',
-          action: () => window.api?.close?.(),
-        },
+        command('file.newFile'),
+        separator,
+        command('file.openFile'),
+        command('file.openFolder'),
+        { type: 'submenu', label: 'Open Recent', children: recentFilesItems },
+        separator,
+        command('file.save'),
+        command('file.saveAs'),
+        command('file.saveAll'),
+        separator,
+        command('file.revert'),
+        separator,
+        command('file.closeEditor'),
+        command('file.closeAllEditors'),
+        separator,
+        command('preferences.settings', 'Preferences: Settings'),
+        command('preferences.keyboardShortcuts', 'Preferences: Keyboard Shortcuts'),
+        command('preferences.colorTheme', 'Preferences: Color Theme'),
+        command('preferences.snippets', 'Preferences: Snippets'),
+        separator,
+        command('file.exit'),
       ],
     },
-    /* ======================== Edit ======================== */
     {
       label: 'Edit',
       accelerator: 'E',
       items: [
-        {
-          type: 'action',
-          label: 'Undo',
-          shortcut: 'Ctrl+Z',
-          action: () => dispatch('orion:undo'),
-        },
-        {
-          type: 'action',
-          label: 'Redo',
-          shortcut: 'Ctrl+Y',
-          action: () => dispatch('orion:redo'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Cut',
-          shortcut: 'Ctrl+X',
-          action: () => document.execCommand('cut'),
-        },
-        {
-          type: 'action',
-          label: 'Copy',
-          shortcut: 'Ctrl+C',
-          action: () => document.execCommand('copy'),
-        },
-        {
-          type: 'action',
-          label: 'Paste',
-          shortcut: 'Ctrl+V',
-          action: () => navigator.clipboard.readText().then((t) => document.execCommand('insertText', false, t)).catch(() => {}),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Find',
-          shortcut: 'Ctrl+F',
-          action: () => dispatch('orion:editor-find'),
-        },
-        {
-          type: 'action',
-          label: 'Replace',
-          shortcut: 'Ctrl+H',
-          action: () => dispatch('orion:editor-replace'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Find in Files',
-          shortcut: 'Ctrl+Shift+F',
-          action: () => dispatch('orion:show-search'),
-        },
+        command('edit.undo'),
+        command('edit.redo'),
+        separator,
+        command('edit.cut'),
+        command('edit.copy'),
+        command('edit.paste'),
+        separator,
+        command('edit.find'),
+        command('edit.replace'),
+        separator,
+        command('view.search'),
+        separator,
+        command('edit.toggleLineComment'),
+        command('edit.toggleBlockComment'),
       ],
     },
-    /* ======================== Selection ======================== */
     {
       label: 'Selection',
       accelerator: 'S',
       items: [
-        {
-          type: 'action',
-          label: 'Select All',
-          shortcut: 'Ctrl+A',
-          action: () => document.execCommand('selectAll'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Expand Selection',
-          shortcut: 'Shift+Alt+Right',
-          action: () => dispatch('orion:expand-selection'),
-        },
-        {
-          type: 'action',
-          label: 'Shrink Selection',
-          shortcut: 'Shift+Alt+Left',
-          action: () => dispatch('orion:shrink-selection'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Add Cursor Above',
-          shortcut: 'Ctrl+Alt+Up',
-          action: () => dispatch('orion:add-cursor-above'),
-        },
-        {
-          type: 'action',
-          label: 'Add Cursor Below',
-          shortcut: 'Ctrl+Alt+Down',
-          action: () => dispatch('orion:add-cursor-below'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Select All Occurrences',
-          shortcut: 'Ctrl+Shift+L',
-          action: () => dispatch('orion:select-all-occurrences'),
-        },
-        {
-          type: 'action',
-          label: 'Add Next Occurrence',
-          shortcut: 'Ctrl+D',
-          action: () => dispatch('orion:add-selection-next-match'),
-        },
+        command('selection.selectAll'),
+        command('selection.expand'),
+        command('selection.shrink'),
+        separator,
+        command('selection.copyLineUp'),
+        command('selection.copyLineDown'),
+        command('selection.moveLineUp'),
+        command('selection.moveLineDown'),
+        command('selection.duplicate'),
+        separator,
+        command('selection.addCursorAbove'),
+        command('selection.addCursorBelow'),
+        command('selection.cursorsToLineEnds'),
+        command('selection.addNextOccurrence'),
+        command('selection.selectAllOccurrences'),
+        separator,
+        command('selection.columnSelection'),
       ],
     },
-    /* ======================== Selection =================== */
-    {
-      label: 'Selection',
-      accelerator: 'S',
-      items: [
-        {
-          type: 'action',
-          label: 'Select All',
-          shortcut: 'Ctrl+A',
-          action: () => dispatch('orion:select-all'),
-        },
-        {
-          type: 'action',
-          label: 'Expand Selection',
-          shortcut: 'Shift+Alt+Right',
-          action: () => dispatch('orion:expand-selection'),
-        },
-        {
-          type: 'action',
-          label: 'Shrink Selection',
-          shortcut: 'Shift+Alt+Left',
-          action: () => dispatch('orion:shrink-selection'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Copy Line Up',
-          shortcut: 'Shift+Alt+Up',
-          action: () => dispatch('orion:copy-line-up'),
-        },
-        {
-          type: 'action',
-          label: 'Copy Line Down',
-          shortcut: 'Shift+Alt+Down',
-          action: () => dispatch('orion:copy-line-down'),
-        },
-        {
-          type: 'action',
-          label: 'Move Line Up',
-          shortcut: 'Alt+Up',
-          action: () => dispatch('orion:move-line-up'),
-        },
-        {
-          type: 'action',
-          label: 'Move Line Down',
-          shortcut: 'Alt+Down',
-          action: () => dispatch('orion:move-line-down'),
-        },
-        {
-          type: 'action',
-          label: 'Duplicate Selection',
-          action: () => dispatch('orion:duplicate-selection'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Add Cursor Above',
-          shortcut: 'Ctrl+Alt+Up',
-          action: () => dispatch('orion:add-cursor-above'),
-        },
-        {
-          type: 'action',
-          label: 'Add Cursor Below',
-          shortcut: 'Ctrl+Alt+Down',
-          action: () => dispatch('orion:add-cursor-below'),
-        },
-        {
-          type: 'action',
-          label: 'Add Cursors to Line Ends',
-          shortcut: 'Shift+Alt+I',
-          action: () => dispatch('orion:add-cursors-line-ends'),
-        },
-        {
-          type: 'action',
-          label: 'Add Next Occurrence',
-          shortcut: 'Ctrl+D',
-          action: () => dispatch('orion:add-selection-next-match'),
-        },
-        {
-          type: 'action',
-          label: 'Select All Occurrences',
-          shortcut: 'Ctrl+Shift+L',
-          action: () => dispatch('orion:select-all-occurrences'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Column Selection Mode',
-          action: () => dispatch('orion:toggle-column-selection'),
-        },
-      ],
-    },
-    /* ======================== View ======================== */
     {
       label: 'View',
       accelerator: 'V',
       items: [
-        {
-          type: 'action',
-          label: 'Command Palette',
-          shortcut: 'Ctrl+Shift+P',
-          action: () => dispatch('orion:open-palette'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Explorer',
-          shortcut: 'Ctrl+Shift+E',
-          action: () => dispatch('orion:show-explorer'),
-        },
-        {
-          type: 'action',
-          label: 'Search',
-          shortcut: 'Ctrl+Shift+F',
-          action: () => dispatch('orion:show-search'),
-        },
-        {
-          type: 'action',
-          label: 'Source Control',
-          shortcut: 'Ctrl+Shift+G',
-          action: () => dispatch('orion:show-git'),
-        },
-        {
-          type: 'action',
-          label: 'Extensions',
-          shortcut: 'Ctrl+Shift+X',
-          action: () => dispatch('orion:show-extensions'),
-        },
-        { type: 'separator' },
+        command('view.commandPalette'),
+        separator,
+        command('view.explorer', 'Explorer'),
+        command('view.search', 'Search'),
+        command('view.sourceControl', 'Source Control'),
+        command('view.outline', 'Outline'),
+        separator,
         {
           type: 'submenu',
           label: 'Appearance',
           children: [
-            {
-              type: 'action',
-              label: 'Zen Mode',
-              shortcut: 'Ctrl+K Z',
-              action: () => dispatch('orion:zen-mode'),
-            },
-            {
-              type: 'action',
-              label: 'Toggle Full Screen',
-              shortcut: 'F11',
-              action: () => dispatch('orion:toggle-fullscreen'),
-            },
-            { type: 'separator' },
-            {
-              type: 'action',
-              label: 'Toggle Status Bar',
-              action: () => dispatch('orion:toggle-statusbar'),
-            },
-            {
-              type: 'action',
-              label: 'Toggle Activity Bar',
-              action: () => dispatch('orion:toggle-activitybar'),
-            },
-            {
-              type: 'action',
-              label: 'Toggle Sidebar',
-              shortcut: 'Ctrl+B',
-              action: () => dispatch('orion:toggle-sidebar'),
-            },
-            {
-              type: 'action',
-              label: 'Toggle Panel',
-              shortcut: 'Ctrl+J',
-              action: () => dispatch('orion:toggle-panel'),
-            },
+            command('view.toggleZenMode', 'Zen Mode'),
+            separator,
+            command('view.toggleSidebar'),
+            command('view.togglePanel'),
+            command('view.toggleChat'),
           ],
         },
         {
           type: 'submenu',
           label: 'Editor Layout',
           children: [
-            {
-              type: 'action',
-              label: 'Split Right',
-              shortcut: 'Ctrl+\\',
-              action: () => dispatch('orion:split-right'),
-            },
-            {
-              type: 'action',
-              label: 'Split Down',
-              action: () => dispatch('orion:split-down'),
-            },
+            command('editor.splitRight', 'Split Right'),
+            command('editor.splitDown', 'Split Down'),
+            command('editor.toggleSplitDirection'),
           ],
         },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Terminal',
-          shortcut: 'Ctrl+`',
-          action: () => dispatch('orion:toggle-terminal'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Toggle Minimap',
-          action: () => dispatch('orion:toggle-minimap'),
-        },
-        {
-          type: 'action',
-          label: 'Word Wrap',
-          shortcut: 'Alt+Z',
-          action: () => dispatch('orion:toggle-wordwrap'),
-        },
+        separator,
+        command('view.toggleTerminal', 'Terminal'),
+        separator,
+        command('view.toggleMinimap'),
+        command('view.toggleWordWrap', 'Word Wrap'),
       ],
     },
-    /* ======================== Go ======================== */
     {
       label: 'Go',
       accelerator: 'G',
       items: [
-        {
-          type: 'action',
-          label: 'Go to File...',
-          shortcut: 'Ctrl+P',
-          action: () => dispatch('orion:open-palette'),
-        },
-        {
-          type: 'action',
-          label: 'Go to Line...',
-          shortcut: 'Ctrl+G',
-          action: () => dispatch('orion:go-to-line'),
-        },
-        {
-          type: 'action',
-          label: 'Go to Symbol...',
-          shortcut: 'Ctrl+Shift+O',
-          action: () => dispatch('orion:show-outline'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Go to Definition',
-          shortcut: 'F12',
-          action: () => dispatch('orion:go-to-definition'),
-        },
-        {
-          type: 'action',
-          label: 'Go to References',
-          shortcut: 'Shift+F12',
-          action: () => dispatch('orion:go-to-references'),
-        },
+        command('go.file'),
+        command('go.symbol'),
+        command('go.line'),
+        separator,
+        command('go.definition'),
+        command('go.peekDefinition'),
+        command('go.references'),
+        separator,
+        command('go.nextProblem'),
+        command('go.previousProblem'),
       ],
     },
-    /* ======================== Run ======================== */
-    {
-      label: 'Run',
-      accelerator: 'R',
-      items: [
-        {
-          type: 'action',
-          label: 'Run Build Task',
-          shortcut: 'Ctrl+Shift+B',
-          action: () => dispatch('orion:run-build'),
-        },
-        {
-          type: 'action',
-          label: 'Run Task...',
-          action: () => dispatch('orion:run-task'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Toggle Breakpoint',
-          shortcut: 'F9',
-          action: () => dispatch('orion:toggle-breakpoint'),
-        },
-      ],
-    },
-    /* ======================== Terminal ======================== */
+    // A Run menu offered debugging and breakpoints; there is no debugger.
     {
       label: 'Terminal',
       accelerator: 'T',
       items: [
-        {
-          type: 'action',
-          label: 'New Terminal',
-          shortcut: 'Ctrl+`',
-          action: () => dispatch('orion:toggle-terminal'),
-        },
-        {
-          type: 'action',
-          label: 'Split Terminal',
-          action: () => dispatch('orion:split-terminal'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Clear Terminal',
-          action: () => dispatch('orion:clear-terminal'),
-        },
+        command('terminal.new'),
+        command('terminal.split'),
+        separator,
+        command('terminal.runTask'),
+        command('terminal.runBuildTask'),
+        separator,
+        command('terminal.clear'),
+        command('terminal.kill'),
       ],
     },
-    /* ======================== Run ========================= */
-    {
-      label: 'Run',
-      accelerator: 'R',
-      items: [
-        {
-          type: 'action',
-          label: 'Start Debugging',
-          shortcut: 'F5',
-          action: () => dispatch('orion:debug-start'),
-        },
-        {
-          type: 'action',
-          label: 'Run Without Debugging',
-          shortcut: 'Ctrl+F5',
-          action: () => dispatch('orion:debug-run-no-debug'),
-        },
-        {
-          type: 'action',
-          label: 'Stop Debugging',
-          shortcut: 'Shift+F5',
-          action: () => dispatch('orion:debug-stop'),
-        },
-        {
-          type: 'action',
-          label: 'Restart Debugging',
-          shortcut: 'Ctrl+Shift+F5',
-          action: () => dispatch('orion:debug-restart'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Step Over',
-          shortcut: 'F10',
-          action: () => dispatch('orion:debug-step-over'),
-        },
-        {
-          type: 'action',
-          label: 'Step Into',
-          shortcut: 'F11',
-          action: () => dispatch('orion:debug-step-into'),
-        },
-        {
-          type: 'action',
-          label: 'Step Out',
-          shortcut: 'Shift+F11',
-          action: () => dispatch('orion:debug-step-out'),
-        },
-        {
-          type: 'action',
-          label: 'Continue',
-          shortcut: 'F5',
-          action: () => dispatch('orion:debug-continue'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Toggle Breakpoint',
-          shortcut: 'F9',
-          action: () => dispatch('orion:debug-toggle-breakpoint'),
-        },
-        {
-          type: 'action',
-          label: 'Add Configuration...',
-          action: () => dispatch('orion:debug-add-config'),
-        },
-      ],
-    },
-    /* ======================== Help ======================== */
     {
       label: 'Help',
       accelerator: 'H',
       items: [
-        {
-          type: 'action',
-          label: 'Welcome',
-          action: () => dispatch('orion:show-welcome'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Keyboard Shortcuts Reference',
-          shortcut: 'Ctrl+K Ctrl+S',
-          action: () => dispatch('orion:keyboard-shortcuts'),
-        },
-        {
-          type: 'action',
-          label: 'Documentation',
-          action: () =>
-            window.open('https://github.com/concrete-sangminlee/orion', '_blank'),
-        },
-        {
-          type: 'action',
-          label: 'Release Notes',
-          action: () => dispatch('orion:show-release-notes'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'Report Issue',
-          action: () =>
-            window.open('https://github.com/concrete-sangminlee/orion/issues', '_blank'),
-        },
-        { type: 'separator' },
-        {
-          type: 'action',
-          label: 'About Orion',
-          action: () => dispatch('orion:show-about'),
-        },
+        command('preferences.keyboardShortcuts', 'Keyboard Shortcuts Reference'),
+        command('help.documentation'),
+        separator,
+        command('help.reportIssue'),
+        command('help.checkForUpdates'),
+        separator,
+        command('help.about'),
       ],
     },
   ]
@@ -1138,17 +648,14 @@ export default function TitleBar() {
   const [hoveredMenu, setHoveredMenu] = useState<string | null>(null)
   const [altActive, setAltActive] = useState(false)
   const [isMaximized, setIsMaximized] = useState(false)
-  const [isDebugging, setIsDebugging] = useState(false)
-  const [remoteConnected] = useState(false) // placeholder for remote connection
-  const [workspaceTrusted] = useState(true) // placeholder for workspace trust
   const navRef = useRef<HTMLElement>(null)
   const titleBarRef = useRef<HTMLElement>(null)
 
-  const fileStore = useFileStore()
-  const editorStore = useEditorStore()
+  const rootPath = useFileStore((s) => s.rootPath)
+  const activeFile = useEditorStore((s) => s.openFiles.find((f) => f.path === s.activeFilePath))
   const recentFilesList = useRecentFilesStore((s) => s.recentFiles)
   const recentFiles = useMemo(() => recentFilesList.slice(0, 5), [recentFilesList])
-  const menus = useMemo(() => buildMenus(fileStore, editorStore, recentFiles), [fileStore, editorStore, recentFiles])
+  const menus = useMemo(() => buildMenus(recentFiles), [recentFiles])
 
   /* Inject CSS variables */
   useEffect(() => {
@@ -1156,12 +663,9 @@ export default function TitleBar() {
   }, [])
 
   /* Active file info */
-  const activeFile = editorStore.openFiles.find(
-    (f) => f.path === editorStore.activeFilePath,
-  )
   const fileName = activeFile?.name || ''
   const isModified = activeFile?.isModified || false
-  const folderName = folderNameFromPath(fileStore.rootPath)
+  const folderName = folderNameFromPath(rootPath)
 
   /* Build window title: "filename - Orion IDE" */
   const windowTitle = fileName
@@ -1174,18 +678,6 @@ export default function TitleBar() {
   useEffect(() => {
     document.title = (isModified ? '\u25CF ' : '') + windowTitle
   }, [windowTitle, isModified])
-
-  /* Listen for debug session events */
-  useEffect(() => {
-    const onDebugStart = () => setIsDebugging(true)
-    const onDebugStop = () => setIsDebugging(false)
-    window.addEventListener('orion:debug-start', onDebugStart)
-    window.addEventListener('orion:debug-stop', onDebugStop)
-    return () => {
-      window.removeEventListener('orion:debug-start', onDebugStart)
-      window.removeEventListener('orion:debug-stop', onDebugStop)
-    }
-  }, [])
 
   /* Close dropdown on outside click */
   const handleClickOutside = useCallback(
@@ -1312,9 +804,7 @@ export default function TitleBar() {
       className="shrink-0 flex items-center select-none"
       style={{
         height: 'var(--titlebar-height, 38px)',
-        background: isDebugging
-          ? 'linear-gradient(90deg, var(--titlebar-bg) 0%, var(--titlebar-debug-bg) 50%, var(--titlebar-bg) 100%)'
-          : 'var(--titlebar-bg)',
+        background: 'var(--titlebar-bg)',
         borderBottom: '1px solid var(--titlebar-border)',
         WebkitAppRegion: 'drag',
         position: 'relative',
@@ -1417,75 +907,6 @@ export default function TitleBar() {
         })}
       </nav>
 
-      {/* Left indicators */}
-      <div
-        className="flex items-center gap-1"
-        style={{
-          marginLeft: 8,
-          WebkitAppRegion: 'no-drag',
-          height: '100%',
-        } as React.CSSProperties}
-        data-no-dblclick
-      >
-        {/* Remote connection indicator (placeholder) */}
-        {remoteConnected && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              padding: '2px 8px',
-              fontSize: 11,
-              color: 'var(--titlebar-accent)',
-              background: 'rgba(88, 166, 255, 0.1)',
-              borderRadius: 12,
-            }}
-          >
-            <Globe size={11} />
-            <span>Remote</span>
-          </div>
-        )}
-
-        {/* Debugging indicator */}
-        {isDebugging && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              padding: '2px 8px',
-              fontSize: 11,
-              fontWeight: 600,
-              color: 'var(--titlebar-debug-color)',
-              background: 'var(--titlebar-debug-bg)',
-              borderRadius: 12,
-              letterSpacing: '0.3px',
-            }}
-          >
-            <Bug size={11} />
-            <span>Debugging</span>
-          </div>
-        )}
-
-        {/* Workspace trust indicator */}
-        {workspaceTrusted && folderName && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 3,
-              padding: '2px 6px',
-              fontSize: 10,
-              color: 'var(--text-muted)',
-              opacity: 0.5,
-            }}
-            title="Workspace is trusted"
-          >
-            <ShieldCheck size={10} />
-          </div>
-        )}
-      </div>
-
       {/* Center: search pill / command quick access */}
       <div className="flex-1" />
       <div
@@ -1500,7 +921,7 @@ export default function TitleBar() {
         } as React.CSSProperties}
       >
         <button
-          onClick={() => window.dispatchEvent(new Event('orion:open-palette'))}
+          onClick={() => runCommand('go.file')}
           style={{
             display: 'flex',
             alignItems: 'center',

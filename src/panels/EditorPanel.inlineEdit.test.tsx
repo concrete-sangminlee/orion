@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 /**
- * Ctrl+K inline edit and the editor's AI edit actions, driven through
+ * Ctrl+I inline edit and the editor's AI edit actions, driven through
  * EditorPanel and the real widget against a fake Monaco: one text model per
  * path (kept across tab switches, like keepCurrentModel), the actions the
  * panel registers, and the edits it applies.
@@ -273,7 +273,7 @@ describe('EditorPanel inline AI edits', () => {
     fake.selection = { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 10 }
     await runAction('orion-ai-add-comments')
 
-    // Ctrl+K on the next line while the first reply is still out.
+    // Ctrl+I on the next line while the first reply is still out.
     fake.selection = { startLineNumber: 2, startColumn: 1, endLineNumber: 2, endColumn: 10 }
     await runAction('orion-inline-edit')
     await act(async () => {
@@ -284,7 +284,37 @@ describe('EditorPanel inline AI edits', () => {
     expect(screen.queryByText('AI Edit Preview')).toBeNull()
   })
 
-  it('opens the Ctrl+K widget from the command palette', async () => {
+  it('offers no model choice or Refine step that the edit would ignore', async () => {
+    openFiles([file('/w/a.ts', 'let x = 1\n')])
+    await renderPanel()
+    fake.selection = { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 10 }
+    await runAction('orion-inline-edit')
+
+    // The edit runs on the chat's model, so the widget names no other.
+    const buttonTexts = () => screen.getAllByRole('button').map((b) => b.textContent ?? '')
+    expect(buttonTexts().filter((t) => /GPT|Claude|Sonnet|Opus/.test(t))).toEqual([])
+
+    let answer: (result: InlineEditResult) => void = () => {}
+    aiEdit.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Use const' } })
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    })
+    expect(screen.getByText('Editing 1 line')).toBeTruthy()
+
+    await act(async () => {
+      answer({ text: 'const x = 1' })
+    })
+    expect(screen.getByText('AI Edit Preview')).toBeTruthy()
+    // Refine left the widget empty; Accept and Reject are the choices.
+    expect(screen.queryByRole('button', { name: /Refine/ })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeTruthy()
+  })
+
+  it('opens the inline edit widget from the command palette', async () => {
     openFiles([file('/w/a.ts', 'let x = 1\n')])
     await renderPanel()
 

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **Workspace roots come from the main process.** `fs:open-workspace` accepted any directory the renderer named, so script in the renderer could make `~/.ssh` the workspace and read and write there through the ordinary file handlers. Only folders the user chose (Open Folder dialog or menu, command line, a folder dropped on the window, or one chosen in an earlier session) can be opened.
+- `orion run --fix` also refuses writes through a symlink inside the project that points outside it.
+- `orion agent` no longer spreads tasks over every provider with an API key in the environment, which sent work to (and billed) providers the user had not chosen; it uses the configured provider unless `--provider` or `--round-robin` is given.
 - **Monaco no longer comes from a CDN.** `@monaco-editor/react` fetched Monaco 0.55.1 from `cdn.jsdelivr.net` at runtime (a different version than `package.json` pins), so remote script ran in the privileged renderer and the editor failed offline. The bundled `monaco-editor` and its language workers are now used; the smoke test fails if the renderer contacts any non-localhost host.
 - **Content-Security-Policy** in production builds: `script-src 'self'` (no remote, inline, or eval'd script), `object-src`/`base-uri`/`form-action 'none'`. Defined in `shared/csp.ts`; the smoke test fails on any violation.
 - **Renderer sandbox enabled.** The preload is now a CommonJS bundle (`preload.cjs`), so windows run with `sandbox: true`.
@@ -47,6 +50,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `customCSS` passed to `MarkdownPreview` is now sanitized before injection into both the live preview and the exported HTML. `@import` directives, `</style>` breakout attempts, `expression(...)` (legacy IE), and any `url(...)` that isn't a `data:` URI are stripped — closes CSS-based exfiltration via attribute-selector tricks and external resource fetches.
 
 ### Fixed
+- **Closing discarded unsaved edits without asking.** Ctrl+W, Close Others / Right / All, the close-all button, middle-click and the Open Editors X closed modified tabs silently, and closing, quitting or reloading the window never asked. Every close now asks Save / Don't Save / Cancel; following a link does not.
+- Edits the user discarded (Don't Save, Reload) were kept as "recovery", restored as unsaved changes at the next launch and then auto-saved over the file.
+- **About 120 menu, title bar and command palette entries did nothing** (their events had no listener), and the renderer subscribed to 3 of the native menu's 35 events, so on macOS Cmd+S, Cmd+P and the other menu shortcuts had no effect. One command registry now backs the palette, the title bar, the native menu and the shortcuts; a test fails when an event or menu item has no handler.
+- Inline AI edit (now Ctrl+I) never opened: Ctrl+K starts Monaco's and the app's chords. Fold All / Unfold All were bound to Ctrl+K, Ctrl+0 and Ctrl+J on their own instead of as chords.
+- Settings that were saved but never applied; `.orion/settings.json` that could not be read was overwritten, one with a UTF-8 BOM could not be read, and a value of the wrong type crashed the explorer and the settings dialog.
+- The status bar branch picker checked out remote branches into a detached HEAD; renaming a compacted explorer folder moved it into a new nested path; dropping an OS folder on the explorer failed.
+- **File operations destroyed data.** New File with an existing name emptied that file, and a rename, move or copy onto an existing name replaced it. They now fail and leave both untouched (a case-only rename still works).
+- **Non-UTF-8 and binary files were corrupted on save.** Files were always decoded as UTF-8, so Latin-1, UTF-16 or binary content became U+FFFD and the next save (auto-save included) wrote that over the original bytes. Files open only if they can be saved back byte for byte (UTF-8 with or without BOM, UTF-16 with BOM) and are saved in the encoding they were opened in; other files are refused with a reason, and images open as a preview that cannot be overwritten.
+- The watcher missed a file that changed and then returned to the saved content, and flagged a false conflict for a file created just before it was opened.
+- **Closing or hiding terminals killed running shells**: switching bottom-panel or terminal tabs, opening a second terminal, or hiding the panel unmounted the terminal and killed its pty. The pty also always started at 80x24, never reported an exit and was not killed on quit.
+- **The chat could freeze the IDE on every launch**: a reply with a line such as `####`, `#include` or a bare `##` made the markdown renderer loop forever, and the reply was already saved.
+- Attached file context and the chat's system prompt never reached the model; the process-wide AI history was never reset by New chat, Clear or Regenerate; stream chunks could land in another conversation; "Ollama" always called `llama3.2`.
+- Replace in Files discarded unsaved editor edits, replaced dismissed matches, and Undo could overwrite later changes; clicking a result did not jump to the match.
+- Source Control: Discard and Drop Stash ran on one click (untracked folders were deleted); conflicted files opened as empty buffers that a save truncated; Stage Hunk staged the whole file; staged and untracked diffs showed "No changes"; checking out a remote branch detached HEAD; git mutations were killed after 10 seconds.
+- Editor: untitled buffers could not be saved; split-pane edits were never saved and Ctrl+S saved the other pane; Compare on the "changed on disk" bar showed an empty diff and dropped the overwrite guard; `.tsx`/`.jsx` opened as plain text; Ctrl+K and the AI context actions never returned a result; Output panel file links opened an empty buffer bound to the real file.
+- The JSON tree view rewrote the whole file on click and blur and changed value types.
+- Drag and drop from the OS did nothing (Electron 42 removed `File.path`).
+- Files from the command line or "Open with" were dropped unless their extension was on a fixed list; a second launch resolved relative paths against the wrong directory.
+- CLI: whole-file commands (edit, fix, refactor, migrate, format, docs, translate) wrote replies cut off at `max_tokens` over the file; `run --fix` wrote without a backup, accepted truncated blocks and ignored `--dry-run`; `hooks install` installed a hook that always failed; `watch` never fired with chokidar 4; `test` and `run` exited 0 when the wrapped command failed; `test` could not run Gradle on Windows.
+- The `.deb` package depended on packages current Debian and Ubuntu no longer ship (`gconf2`, `gconf-service`, `libappindicator1`).
 - **Saves could silently discard a version changed on disk.** With unsaved edits, an external change showed the conflict banner and auto-save then overwrote it anyway; Ctrl+S, Save All, and Save-and-close overwrote it without asking. Auto-save now skips files that changed or were deleted on disk, and explicit saves ask first.
 - External changes made within 1.5 s after a save (formatters on save, a git checkout) were ignored because the watcher suppressed events by time; it now ignores only events whose file content matches what the app wrote.
 - The workspace watcher's ignore pattern matched substrings of the absolute path, so files like `src/distance.ts`, `.github/`, `.gitignore`, or any workspace under a path containing `dist` were not watched. It now matches whole path segments below the workspace root.
@@ -72,6 +95,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `orion search`: same regex hot-loop fix — dropped the `g` flag and removed the per-iteration `lastIndex` resets that were papering over its stateful semantics.
 
 ### Added
+- **Inline AI completion** (ghost text) with a free local default: a local Ollama model (fill-in-the-middle when the model supports it), or Claude Haiku 5.5 with the stored API key when chosen in Settings. One request per typing pause; a newer request cancels the one in flight.
+- Native Save As for untitled buffers; an `ai:edit` request/response channel for Ctrl+K and the editor's AI actions; real Monaco diagnostics in the Problems panel.
+- The e2e smoke test also runs against the packaged Linux app in CI, and covers file safety, encodings, inline completion and the terminal.
 - `npm run test:e2e` launches the built desktop app (Playwright's Electron driver) and checks that a window opens, `window.api` works, React renders, IPC round-trips, navigation stays in the app, and API keys are stored without exposing them. A new CI job runs it under Xvfb.
 - `shared/ipc-contract.ts`: single typed contract for every IPC channel. The main process registers handlers through typed `handle()`/`listen()`/`emit()`, the preload builds `window.api` from an electron-free factory, and the renderer's `window.api` type is derived from it, so channel/argument/payload drift is a compile error.
 - IPC integrity tests: the preload exposes exactly the contract, the main process registers each channel exactly once, every event is emitted, and no module reachable from the app entry point uses `window.electron`, `window.electronAPI`, or `(window as any).api`.
@@ -83,10 +109,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CHANGELOG.md` and `SECURITY.md` are now shipped in the published npm tarball via the `files` manifest.
 
 ### Changed
+- Inline AI edit is Ctrl+I (as in VS Code) instead of Ctrl+K.
+- Ctrl+Shift+S is Save As, as the menus show it (it ran a second copy of Save All).
+- "Check for Updates" opens the releases page; the previous check waited two seconds and always reported that no update was available.
 - **AI models.** The previously hard-coded Claude IDs (`claude-sonnet-4-20250514`, …) are retired; the CLI now defaults to `claude-opus-5-5` (`claude`, `claude-opus`, `claude-sonnet`, `claude-haiku`, new `claude-fable` shortcuts point at current models), and `temperature` is only sent to models that still accept it. `temperature: 0` / `maxTokens` in config are no longer replaced by defaults (`||` → `??`).
 - **IDE model selector names now match the model they call.** "Claude Opus" called a Sonnet model and "GPT-5.3" called `gpt-4o`; Kimi and Gemini had no base URL and sent their keys to api.openai.com. Entries are now `Claude Opus 5.5`, `GPT-6.1 Sol`, `Kimi K3.1 Pro` (Moonshot endpoint), and `Gemini 3.6 Flash` (Gemini OpenAI-compatible endpoint).
 - IDE AI conversation history only records completed exchanges, so a failed or cancelled request no longer leaves a dangling user turn (or a duplicate one after the streaming → non-streaming retry).
 - AI chat markdown parsing was extracted from `AIChatWidget` into a shared `src/utils/aiChatMarkdown.ts` module. The widget no longer duplicates fenced-code-block detection: both call sites use `hasCodeBlock()` and the shared `CODE_BLOCK_REGEX`.
+
+### Removed
+- The app-level breadcrumb bar, which listed made-up sibling files and folders (the editor's own breadcrumb is real), and menu, palette and status bar entries with nothing behind them (debugger, extensions, remote, accounts, fullscreen, the encoding picker, the memory estimate, the Explorer's Clone Repository, the inline edit's Refine and model picker).
+- Simulated features with nothing behind them: Run and Debug (timers, fake variables and call stack), Extensions (hard-coded catalogue, timed "install"), Testing (`Math.random()` results), AI Agents (mock tasks), the Composer tab (canned diffs), the chat's Agent mode (scripted agent logs), the Ports and Debug Console tabs, the terminal's keyword-table "Generate", the notification center's seeded notifications, and the welcome tab's invented "What's New" list.
+- New Window: a second window shared the first window's workspace, watcher and terminals, and Ctrl+Shift+N was registered as a global shortcut that took the key from every other application.
+- `orion plan --execute`, which reported plan steps as completed without writing any file.
 
 ## [2.2.0] - 2026-05-18
 

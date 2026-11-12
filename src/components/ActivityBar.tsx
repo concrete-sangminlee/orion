@@ -28,7 +28,8 @@ const defaultItems: ActivityItem[] = [
   { view: 'explorer', Icon: Files, label: 'Explorer', shortcut: 'Ctrl+Shift+E' },
   { view: 'search', Icon: Search, label: 'Search', shortcut: 'Ctrl+Shift+F', badgeKey: 'search' },
   { view: 'git', Icon: GitBranch, label: 'Source Control', shortcut: 'Ctrl+Shift+G', badgeKey: 'git' },
-  { view: 'outline', Icon: ListTree, label: 'Outline', shortcut: 'Ctrl+Shift+O' },
+  // Ctrl+Shift+O is Go to Symbol, as in the menus.
+  { view: 'outline', Icon: ListTree, label: 'Outline' },
 ]
 
 const STORAGE_KEY_ORDER = 'orion:activity-bar-order'

@@ -54,6 +54,7 @@ import {
   callAI,
   callAIStreaming,
   checkOllama,
+  completeAI,
   resolveModel,
   setCustomPrompts,
 } from './ai-client'
@@ -261,6 +262,25 @@ describe('custom prompts', () => {
     expect(sdk.anthropicCreate.mock.calls[0][0]).toMatchObject({ system: 'Be terse.', messages: [{ role: 'user', content: 'Q: hi' }] })
   })
 
+  it('prepends a template without {message} instead of dropping the typed message', async () => {
+    sdk.anthropicCreate.mockResolvedValue(anthropicReply('ok'))
+    setCustomPrompts({ userPromptTemplate: 'Answer briefly.' })
+    await callAI('Claude Opus 5.5', 'What is a monad?', ALL_KEYS, null)
+    expect(sdk.anthropicCreate.mock.calls[0][0].messages).toEqual([
+      { role: 'user', content: 'Answer briefly.\n\nWhat is a monad?' },
+    ])
+  })
+
+  it("keeps $&, $' and $` in the message literal", async () => {
+    sdk.anthropicCreate.mockResolvedValue(anthropicReply('ok'))
+    setCustomPrompts({ userPromptTemplate: 'Q: {message} (end)' })
+    const message = "sed 's/a/$&/' and echo $` $' $$"
+    await callAI('Claude Opus 5.5', message, ALL_KEYS, null)
+    expect(sdk.anthropicCreate.mock.calls[0][0].messages).toEqual([
+      { role: 'user', content: `Q: ${message} (end)` },
+    ])
+  })
+
   it.each([null, 'junk', { systemPrompt: 42, userPromptTemplate: { evil: true } }])(
     'ignores a malformed prompts value (%j) instead of breaking every turn', async (prompts) => {
       sdk.anthropicCreate.mockResolvedValue(anthropicReply('ok'))
@@ -378,5 +398,40 @@ describe('conversation history', () => {
     await expect(callAI('Claude Opus 5.5', 'q', ALL_KEYS, null, { signal: controller.signal })).rejects.toThrow()
     expect(sdk.anthropicCtor).not.toHaveBeenCalled()
     expect(sdk.anthropicCreate).not.toHaveBeenCalled()
+  })
+})
+
+// ─── Replies used as data (inline edit) ──────────────────────────────────────
+
+describe('completeAI', () => {
+  it('says when Claude stopped at max_tokens', async () => {
+    sdk.anthropicCreate.mockResolvedValue({ content: [{ type: 'text', text: 'half' }], stop_reason: 'max_tokens' })
+    await expect(completeAI('Claude Opus 5.5', 'q', ALL_KEYS, null)).resolves.toEqual({ content: 'half', truncated: true })
+
+    sdk.anthropicCreate.mockResolvedValue(anthropicReply('whole'))
+    await expect(completeAI('Claude Opus 5.5', 'q', ALL_KEYS, null)).resolves.toEqual({ content: 'whole', truncated: false })
+  })
+
+  it('says when an OpenAI-compatible model stopped at its length cap', async () => {
+    sdk.openaiCreate.mockResolvedValue({ choices: [{ message: { content: 'half' }, finish_reason: 'length' }] })
+    await expect(completeAI('Kimi K3.1 Pro', 'q', ALL_KEYS, null)).resolves.toEqual({ content: 'half', truncated: true })
+
+    sdk.openaiCreate.mockResolvedValue({ choices: [{ message: { content: 'whole' }, finish_reason: 'stop' }] })
+    await expect(completeAI('Kimi K3.1 Pro', 'q', ALL_KEYS, null)).resolves.toEqual({ content: 'whole', truncated: false })
+  })
+
+  it('returns an empty completion as empty, while the chat still shows its notice', async () => {
+    sdk.openaiCreate.mockResolvedValue({ choices: [{ message: { content: null }, finish_reason: 'stop' }] })
+    await expect(completeAI('GPT-6.1 Sol', 'q', ALL_KEYS, null)).resolves.toEqual({ content: '', truncated: false })
+    await expect(callAI('GPT-6.1 Sol', 'q', ALL_KEYS, null)).resolves.toEqual({ content: 'No response generated.', model: 'gpt-6.1-sol' })
+
+    sdk.openaiCreate.mockResolvedValue((async function* () {})())
+    await expect(callAIStreaming('GPT-6.1 Sol', 'q', ALL_KEYS, null, () => {})).resolves.toEqual({
+      content: 'No response generated.', model: 'gpt-6.1-sol',
+    })
+  })
+
+  it('returns null when no model can answer', async () => {
+    await expect(completeAI('Claude Opus 5.5', 'q', {}, null)).resolves.toBeNull()
   })
 })

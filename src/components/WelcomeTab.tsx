@@ -192,7 +192,7 @@ const TAGLINE = 'The AI-Native Code Editor'
 const TIPS = [
   { shortcut: 'Ctrl+P', text: 'Quickly open any file in your workspace by typing part of its name.' },
   { shortcut: 'Ctrl+Shift+P', text: 'Open the Command Palette to access every command in Orion.' },
-  { shortcut: 'Ctrl+K', text: 'Use inline AI editing to transform, refactor, or generate code in place.' },
+  { shortcut: 'Ctrl+I', text: 'Use inline AI editing to transform, refactor, or generate code in place.' },
   { shortcut: 'Ctrl+D', text: 'Select the next occurrence of the current word for multi-cursor editing.' },
   { shortcut: 'Ctrl+\\', text: 'Split your editor to view two files side by side.' },
   { shortcut: 'Ctrl+`', text: 'Toggle the integrated terminal without leaving the editor.' },

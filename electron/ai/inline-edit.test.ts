@@ -43,7 +43,8 @@ const request = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
-const replying = (content: string | null) => vi.fn<CallModel>(async () => (content === null ? null : { content }))
+const replying = (content: string | null, truncated = false) =>
+  vi.fn<CallModel>(async () => (content === null ? null : { content, truncated }))
 
 /** A model call that only ends when its signal aborts. */
 const hanging = () =>
@@ -130,6 +131,13 @@ describe('createInlineEditor', () => {
     await expect(createInlineEditor({ callModel: replying(' \n') }).edit(request())).resolves.toEqual({ error: 'The model returned no code' })
   })
 
+  it('refuses a reply cut off at the output limit instead of offering it as the edit', async () => {
+    // Accepting it would replace the whole selection with its first half.
+    await expect(createInlineEditor({ callModel: replying('let count = 1\nfunction half(', true) }).edit(request())).resolves.toEqual({
+      error: expect.stringMatching(/cut off at the model's output limit/),
+    })
+  })
+
   it('reports provider failures', async () => {
     const callModel = vi.fn<CallModel>(async () => { throw new Error('401 invalid x-api-key') })
     await expect(createInlineEditor({ callModel }).edit(request())).resolves.toEqual({ error: 'AI request failed: 401 invalid x-api-key' })
@@ -146,7 +154,7 @@ describe('createInlineEditor', () => {
 
   it('cancels a caller\'s older request when it sends a newer one, but not other callers\'', async () => {
     const slow = hanging()
-    const callModel = vi.fn<CallModel>((model, message, options) => (message.includes('first') ? slow(model, message, options) : Promise.resolve({ content: 'done' })))
+    const callModel = vi.fn<CallModel>((model, message, options) => (message.includes('first') ? slow(model, message, options) : Promise.resolve({ content: 'done', truncated: false })))
     const editor = createInlineEditor({ callModel })
     const first = editor.edit(request({ instruction: 'first' }), 1)
     await expect(editor.edit(request({ instruction: 'other window' }), 2)).resolves.toEqual({ text: 'done\n' })
@@ -186,12 +194,24 @@ describe('registerInlineEditHandlers', () => {
 
   it('reports an empty completion instead of offering the chat\'s placeholder as code', async () => {
     mocks.keys.mockReturnValue({ openai: 'sk-test' })
-    mocks.openaiCreate.mockResolvedValue({ choices: [{ message: { content: '' }, finish_reason: 'length' }] })
+    mocks.openaiCreate.mockResolvedValue({ choices: [{ message: { content: '' }, finish_reason: 'stop' }] })
 
     await expect(registeredHandler()({ sender: { id: 7 } }, request({ model: 'GPT-6.1 Sol' }))).resolves.toEqual({
       error: 'The model returned no code',
     })
     expect(mocks.openaiCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['Claude', 'Claude Opus 5.5', { anthropic: 'sk-ant' }, () => mocks.anthropicCreate.mockResolvedValue({ content: [{ type: 'text', text: 'let count = 1\nfunction half(' }], stop_reason: 'max_tokens' })],
+    ['an OpenAI-compatible model', 'Kimi K3.1 Pro', { kimi: 'sk-kimi' }, () => mocks.openaiCreate.mockResolvedValue({ choices: [{ message: { content: 'let count = 1\nfunction half(' }, finish_reason: 'length' }] })],
+  ])('refuses a reply from %s that stopped at the output cap', async (_label, model, keys, reply) => {
+    mocks.keys.mockReturnValue(keys)
+    reply()
+
+    await expect(registeredHandler()({ sender: { id: 7 } }, request({ model }))).resolves.toEqual({
+      error: expect.stringMatching(/cut off/),
+    })
   })
 
   it('reports a model without a key instead of answering', async () => {

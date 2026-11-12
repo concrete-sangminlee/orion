@@ -288,8 +288,9 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
   // Copy a file from source to destination directory
   handle(IPC.FS_COPY_FILE, async (_event, srcPath: string, destDir: string) => {
     try {
-      // The source is in the workspace, or an item the user dropped from outside it.
-      const safeSrcPath = await resolveEditableFilePath(srcPath)
+      // The source is in the workspace, or an item the user dropped from
+      // outside it: a file grant, or a dropped folder (granted as a root).
+      const safeSrcPath = isGrantedWorkspaceRoot(srcPath) ? path.resolve(srcPath) : await resolveEditableFilePath(srcPath)
       const safeDestDir = await resolveActiveWorkspacePath(destDir, 'destination directory')
       const fileName = path.basename(safeSrcPath)
       let destPath = path.join(safeDestDir, fileName)

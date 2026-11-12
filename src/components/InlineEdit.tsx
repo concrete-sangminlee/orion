@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { Sparkles, X, Loader2, Check, RotateCcw, Pencil, ChevronRight, ChevronDown, Bug, Type, Zap, FileText, Minimize2, CheckCircle2, XCircle } from 'lucide-react'
+import { Sparkles, X, Loader2, Check, ChevronRight, Bug, Type, Zap, FileText, Minimize2, CheckCircle2, XCircle } from 'lucide-react'
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -29,15 +29,6 @@ interface Props {
   streamingResponse?: string | null
   language?: string
 }
-
-// ── AI Models ──────────────────────────────────────────────
-
-const AI_MODELS = [
-  { id: 'gpt-4o', label: 'GPT-4o', badge: 'Fast' },
-  { id: 'claude-sonnet', label: 'Claude Sonnet', badge: 'Balanced' },
-  { id: 'claude-opus', label: 'Claude Opus', badge: 'Best' },
-  { id: 'gpt-4o-mini', label: 'GPT-4o Mini', badge: 'Quick' },
-] as const
 
 // ── Quick Actions ──────────────────────────────────────────
 
@@ -192,7 +183,7 @@ function highlightLine(text: string) {
 
 // ── Phase type ─────────────────────────────────────────────
 
-type Phase = 'input' | 'loading' | 'preview' | 'refine' | 'streaming'
+type Phase = 'input' | 'loading' | 'preview' | 'streaming'
 
 // ── Component ──────────────────────────────────────────────
 
@@ -211,28 +202,21 @@ export default function InlineEdit({
   language,
 }: Props) {
   const [instruction, setInstruction] = useState('')
-  const [refineInstruction, setRefineInstruction] = useState('')
   const [fadeIn, setFadeIn] = useState(false)
   const [showContext, setShowContext] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('claude-sonnet')
-  const [showModelDropdown, setShowModelDropdown] = useState(false)
   const [historyIndex, setHistoryIndex] = useState(-1)
   const [hunkStatuses, setHunkStatuses] = useState<Record<number, 'pending' | 'accepted' | 'rejected'>>({})
-  const [isRefining, setIsRefining] = useState(false)
 
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const refineInputRef = useRef<HTMLTextAreaElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const modelDropdownRef = useRef<HTMLDivElement>(null)
 
   // Determine the current phase
   const phase: Phase = useMemo(() => {
-    if (isRefining) return 'refine'
     if (streamingResponse && isProcessing) return 'streaming'
     if (aiResponse) return 'preview'
     if (isProcessing) return 'loading'
     return 'input'
-  }, [aiResponse, isProcessing, isRefining, streamingResponse])
+  }, [aiResponse, isProcessing, streamingResponse])
 
   // Compute diff for preview phase
   const diffLines = useMemo(() => {
@@ -263,33 +247,12 @@ export default function InlineEdit({
   useEffect(() => {
     if (visible && phase === 'input') {
       setInstruction('')
-      setRefineInstruction('')
       setShowContext(false)
       setHistoryIndex(-1)
       setHunkStatuses({})
-      setIsRefining(false)
       setTimeout(() => inputRef.current?.focus(), 80)
     }
   }, [visible, phase])
-
-  // Focus refine input
-  useEffect(() => {
-    if (isRefining) {
-      setTimeout(() => refineInputRef.current?.focus(), 80)
-    }
-  }, [isRefining])
-
-  // Close model dropdown on outside click
-  useEffect(() => {
-    if (!showModelDropdown) return
-    const handler = (e: MouseEvent) => {
-      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
-        setShowModelDropdown(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showModelDropdown])
 
   // Auto-resize textarea
   const autoResize = useCallback((el: HTMLTextAreaElement) => {
@@ -300,11 +263,6 @@ export default function InlineEdit({
   const handleTextareaChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInstruction(e.target.value)
     setHistoryIndex(-1)
-    autoResize(e.target)
-  }, [autoResize])
-
-  const handleRefineChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setRefineInstruction(e.target.value)
     autoResize(e.target)
   }, [autoResize])
 
@@ -403,27 +361,6 @@ export default function InlineEdit({
     }
   }, [instruction, historyIndex, handleSubmit, onClose, autoResize])
 
-  // Keyboard shortcuts for refine input
-  const handleRefineKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && e.shiftKey) return
-
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      if (refineInstruction.trim()) {
-        setIsRefining(false)
-        handleSubmit(refineInstruction)
-      }
-      return
-    }
-
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      setIsRefining(false)
-      setRefineInstruction('')
-      return
-    }
-  }, [refineInstruction, handleSubmit])
-
   // Global keyboard handler for preview/streaming phase
   useEffect(() => {
     if (!visible || (phase !== 'preview' && phase !== 'streaming')) return
@@ -460,7 +397,6 @@ export default function InlineEdit({
 
   const lineCount = selectedText ? selectedText.split('\n').length : 0
   const hasSelection = selectedText.length > 0
-  const currentModel = AI_MODELS.find(m => m.id === selectedModel) ?? AI_MODELS[1]
 
   // ── Styles ─────────────────────────────────────────────────
 
@@ -741,7 +677,6 @@ export default function InlineEdit({
             {phase === 'preview' ? 'AI Edit Preview'
               : phase === 'streaming' ? 'Generating...'
               : phase === 'loading' ? 'Generating...'
-              : phase === 'refine' ? 'Refine Edit'
               : 'Edit with AI'}
           </span>
 
@@ -807,7 +742,6 @@ export default function InlineEdit({
           <button
             onClick={() => {
               if ((phase === 'preview' || phase === 'streaming') && onReject) onReject()
-              setIsRefining(false)
               onClose()
             }}
             style={{
@@ -838,107 +772,8 @@ export default function InlineEdit({
         {/* ── Input Phase ──────────────────────────────────── */}
         {phase === 'input' && (
           <>
-            {/* Model selector + Input row */}
+            {/* Input row */}
             <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-              {/* Model selector dropdown */}
-              <div ref={modelDropdownRef} style={{ position: 'relative', flexShrink: 0 }}>
-                <button
-                  onClick={() => setShowModelDropdown(!showModelDropdown)}
-                  style={{
-                    padding: '8px 8px',
-                    background: 'var(--inline-edit-action-bg, rgba(255,255,255,0.04))',
-                    border: '1px solid var(--inline-edit-action-border, rgba(255,255,255,0.08))',
-                    borderRadius: 8,
-                    color: 'var(--inline-edit-text-secondary, rgba(255,255,255,0.6))',
-                    fontSize: 10,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    height: 36,
-                    transition: 'all 0.15s',
-                    whiteSpace: 'nowrap',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--inline-edit-accent, rgba(88,166,255,0.4))'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--inline-edit-action-border, rgba(255,255,255,0.08))'
-                  }}
-                >
-                  <Sparkles size={10} />
-                  {currentModel.label}
-                  <ChevronDown size={10} style={{
-                    transform: showModelDropdown ? 'rotate(180deg)' : 'rotate(0)',
-                    transition: 'transform 0.15s',
-                  }} />
-                </button>
-
-                {showModelDropdown && (
-                  <div style={{
-                    position: 'absolute',
-                    top: '100%',
-                    left: 0,
-                    marginTop: 4,
-                    background: 'var(--inline-edit-dropdown-bg, #252536)',
-                    border: '1px solid var(--inline-edit-dropdown-border, rgba(255,255,255,0.1))',
-                    borderRadius: 8,
-                    boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-                    zIndex: 100,
-                    overflow: 'hidden',
-                    minWidth: 180,
-                  }}>
-                    {AI_MODELS.map((model) => (
-                      <button
-                        key={model.id}
-                        onClick={() => {
-                          setSelectedModel(model.id)
-                          setShowModelDropdown(false)
-                        }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 8,
-                          width: '100%',
-                          padding: '8px 12px',
-                          background: selectedModel === model.id
-                            ? 'var(--inline-edit-dropdown-active, rgba(88,166,255,0.1))'
-                            : 'transparent',
-                          border: 'none',
-                          color: selectedModel === model.id
-                            ? 'var(--inline-edit-accent, #58a6ff)'
-                            : 'var(--inline-edit-text-secondary, rgba(255,255,255,0.6))',
-                          fontSize: 11,
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          transition: 'background 0.1s',
-                        }}
-                        onMouseEnter={(e) => {
-                          if (selectedModel !== model.id)
-                            e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
-                        }}
-                        onMouseLeave={(e) => {
-                          if (selectedModel !== model.id)
-                            e.currentTarget.style.background = 'transparent'
-                        }}
-                      >
-                        <span style={{ flex: 1, fontWeight: 500 }}>{model.label}</span>
-                        <span style={{
-                          fontSize: 9,
-                          padding: '1px 5px',
-                          borderRadius: 3,
-                          background: 'var(--inline-edit-badge-bg, rgba(255,255,255,0.06))',
-                          color: 'var(--inline-edit-text-muted, rgba(255,255,255,0.4))',
-                        }}>
-                          {model.badge}
-                        </span>
-                        {selectedModel === model.id && <Check size={12} />}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
               {/* Multi-line textarea */}
               <textarea
                 ref={inputRef}
@@ -1154,8 +989,8 @@ export default function InlineEdit({
                 fontSize: 10, color: 'var(--inline-edit-text-muted, rgba(255,255,255,0.35))', marginTop: 4,
               }}>
                 {hasSelection
-                  ? `Editing ${lineCount} line${lineCount !== 1 ? 's' : ''} with ${currentModel.label}`
-                  : `Generating code with ${currentModel.label}`}
+                  ? `Editing ${lineCount} line${lineCount !== 1 ? 's' : ''}`
+                  : 'Generating code at the cursor'}
               </div>
             </div>
             <div style={{
@@ -1231,79 +1066,6 @@ export default function InlineEdit({
               )}
             </div>
 
-            {/* Refine input (shown when isRefining) */}
-            {isRefining && (
-              <div style={{
-                padding: '8px 12px',
-                borderTop: '1px solid var(--inline-edit-separator, rgba(255,255,255,0.06))',
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: 8,
-                background: 'var(--inline-edit-refine-bg, rgba(139,92,246,0.05))',
-              }}>
-                <RotateCcw size={14} style={{
-                  color: 'var(--inline-edit-accent-secondary, #8b5cf6)',
-                  flexShrink: 0,
-                  marginTop: 10,
-                }} />
-                <textarea
-                  ref={refineInputRef}
-                  value={refineInstruction}
-                  onChange={handleRefineChange}
-                  onKeyDown={handleRefineKeyDown}
-                  placeholder="Describe refinements..."
-                  rows={1}
-                  style={{
-                    flex: 1,
-                    padding: '8px 10px',
-                    background: 'var(--inline-edit-input-bg, rgba(255,255,255,0.04))',
-                    border: '1px solid var(--inline-edit-refine-border, rgba(139,92,246,0.3))',
-                    borderRadius: 8,
-                    outline: 'none',
-                    fontSize: 12,
-                    color: 'var(--inline-edit-text, #e4e4e7)',
-                    fontFamily: "'Inter', -apple-system, sans-serif",
-                    resize: 'none',
-                    lineHeight: '1.5',
-                    minHeight: 34,
-                    maxHeight: 100,
-                  }}
-                  onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--inline-edit-accent-secondary, rgba(139,92,246,0.5))' }}
-                  onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--inline-edit-refine-border, rgba(139,92,246,0.3))' }}
-                />
-                <button
-                  onClick={() => {
-                    if (refineInstruction.trim()) {
-                      setIsRefining(false)
-                      handleSubmit(refineInstruction)
-                    }
-                  }}
-                  disabled={!refineInstruction.trim()}
-                  style={{
-                    padding: '8px 12px',
-                    background: refineInstruction.trim()
-                      ? 'var(--inline-edit-refine-btn-bg, linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%))'
-                      : 'var(--inline-edit-action-bg, rgba(255,255,255,0.04))',
-                    color: refineInstruction.trim() ? '#fff' : 'var(--inline-edit-text-muted, rgba(255,255,255,0.2))',
-                    border: 'none',
-                    borderRadius: 8,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    cursor: refineInstruction.trim() ? 'pointer' : 'default',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    height: 34,
-                    flexShrink: 0,
-                    transition: 'all 0.2s',
-                  }}
-                >
-                  <RotateCcw size={11} />
-                  Refine
-                </button>
-              </div>
-            )}
-
             {/* Action buttons */}
             <div style={{
               display: 'flex',
@@ -1329,41 +1091,6 @@ export default function InlineEdit({
 
               {/* Action buttons */}
               <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                {/* Refine button */}
-                <button
-                  onClick={() => {
-                    setIsRefining(true)
-                    setRefineInstruction('')
-                  }}
-                  style={{
-                    padding: '5px 12px',
-                    fontSize: 11,
-                    fontWeight: 500,
-                    color: 'var(--inline-edit-text-secondary, rgba(255,255,255,0.6))',
-                    background: 'var(--inline-edit-action-bg, rgba(255,255,255,0.04))',
-                    border: '1px solid var(--inline-edit-action-border, rgba(255,255,255,0.08))',
-                    borderRadius: 6,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    transition: 'all 0.15s',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'var(--inline-edit-action-hover-bg, rgba(139,92,246,0.12))'
-                    e.currentTarget.style.borderColor = 'rgba(139,92,246,0.3)'
-                    e.currentTarget.style.color = 'var(--inline-edit-accent-secondary, #8b5cf6)'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'var(--inline-edit-action-bg, rgba(255,255,255,0.04))'
-                    e.currentTarget.style.borderColor = 'var(--inline-edit-action-border, rgba(255,255,255,0.08))'
-                    e.currentTarget.style.color = 'var(--inline-edit-text-secondary, rgba(255,255,255,0.6))'
-                  }}
-                >
-                  <Pencil size={11} />
-                  Refine
-                </button>
-
                 {/* Reject button */}
                 <button
                   onClick={() => {
@@ -1430,36 +1157,6 @@ export default function InlineEdit({
               </div>
             </div>
           </>
-        )}
-
-        {/* ── Refine Phase (standalone, when no preview) ───── */}
-        {phase === 'refine' && !aiResponse && (
-          <div style={{ padding: '10px 12px' }}>
-            <textarea
-              ref={refineInputRef}
-              value={refineInstruction}
-              onChange={handleRefineChange}
-              onKeyDown={handleRefineKeyDown}
-              placeholder="Type refinement instructions..."
-              rows={1}
-              style={{
-                width: '100%',
-                padding: '8px 10px',
-                background: 'var(--inline-edit-input-bg, rgba(255,255,255,0.04))',
-                border: '1px solid var(--inline-edit-refine-border, rgba(139,92,246,0.3))',
-                borderRadius: 8,
-                outline: 'none',
-                fontSize: 13,
-                color: 'var(--inline-edit-text, #e4e4e7)',
-                fontFamily: "'Inter', -apple-system, sans-serif",
-                resize: 'none',
-                lineHeight: '1.5',
-                minHeight: 36,
-                maxHeight: 100,
-                boxSizing: 'border-box',
-              }}
-            />
-          </div>
         )}
       </div>
 

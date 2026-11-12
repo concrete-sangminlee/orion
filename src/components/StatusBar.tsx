@@ -5,8 +5,12 @@ import { useChatStore } from '@/store/chat'
 import { useFileStore } from '@/store/files'
 import { useToastStore } from '@/store/toast'
 import { useCompletionStore } from '@/store/completion'
+import { getProblemsCount, useProblemsStore } from '@/store/problems'
 import NotificationCenter from '@/components/NotificationCenter'
-import { extensionHost } from '@/utils/extensionHost'
+import { ipcErrorMessage } from '@/utils/ipcResult'
+import { runCommand } from '@/commands/registry'
+import { checkoutTargetFor } from '@/commands/gitCheckout'
+import type { GitBranch as BranchInfo } from '@shared/ipc-contract'
 import {
   GitBranch,
   AlertTriangle,
@@ -24,7 +28,6 @@ import {
   ChevronDown,
   Check,
   Cpu,
-  Puzzle,
   Files,
 } from 'lucide-react'
 
@@ -220,14 +223,6 @@ function StatusDropdown({ items, onSelect, onClose, anchorRef, maxHeight = 260, 
 }
 
 // ── Constants ──────────────────
-const AVAILABLE_ENCODINGS = [
-  { id: 'utf-8', label: 'UTF-8' },
-  { id: 'utf-16le', label: 'UTF-16 LE' },
-  { id: 'utf-16be', label: 'UTF-16 BE' },
-  { id: 'ascii', label: 'ASCII' },
-  { id: 'iso-8859-1', label: 'ISO-8859-1' },
-]
-
 const INDENTATION_OPTIONS = [
   { id: 'spaces-2', label: 'Spaces: 2' },
   { id: 'spaces-4', label: 'Spaces: 4' },
@@ -292,11 +287,6 @@ interface GitInfo {
   behind: number
 }
 
-interface BranchInfo {
-  name: string
-  current: boolean
-}
-
 export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
   const agents = useAgentStore((s) => s.agents)
   const activeFile = useEditorStore((s) =>
@@ -304,11 +294,14 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
   )
   const model = useChatStore((s) => s.selectedModel)
   const rootPath = useFileStore((s) => s.rootPath)
-  const logs = useAgentStore((s) => s.logs)
   const activeAgents = agents.filter((a) => a.status !== 'idle').length
-  const errorCount = logs.filter((l) => l.type === 'error').length
-  const warningCount = logs.filter((l) => l.type === 'action').length
-  const storeUnreadCount = useToastStore((s) => s.getUnreadCount)()
+  // The editor's problems (what the Problems panel lists), not agent log lines.
+  const problems = useProblemsStore((s) => s.problems)
+  const { errors: errorCount, warnings: warningCount } = useMemo(() => getProblemsCount(problems), [problems])
+  // Select the count itself: a selector returning the getUnreadCount function
+  // never changed, so the badge never re-rendered.
+  const unreadNotifications = useToastStore((s) => s.notifications.reduce((n, x) => n + (x.read ? 0 : 1), 0))
+  const addToast = useToastStore((s) => s.addToast)
 
   // Auto-saved indicator: shows briefly when auto-save triggers
   const [autoSavedVisible, setAutoSavedVisible] = useState(false)
@@ -326,7 +319,6 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
       if (autoSavedTimerRef.current) clearTimeout(autoSavedTimerRef.current)
     }
   }, [])
-  const unreadNotifications = storeUnreadCount > 0 ? storeUnreadCount : errorCount + activeAgents
   const completionEnabled = useCompletionStore((s) => s.enabled)
   const completionLoading = useCompletionStore((s) => s.isLoading)
   const setCompletionEnabled = useCompletionStore((s) => s.setEnabled)
@@ -339,17 +331,14 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
   const [branches, setBranches] = useState<BranchInfo[]>([])
   const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false)
-  const [encodingDropdownOpen, setEncodingDropdownOpen] = useState(false)
   const [indentDropdownOpen, setIndentDropdownOpen] = useState(false)
   const [eolDropdownOpen, setEolDropdownOpen] = useState(false)
-  const [selectedEncoding, setSelectedEncoding] = useState('utf-8')
   const [indentConfig, setIndentConfig] = useState({ useSpaces: true, size: 2 })
   const [eolSequence, setEolSequence] = useState<'LF' | 'CRLF'>('LF')
 
   // Refs for dropdown anchoring
   const branchRef = useRef<HTMLDivElement>(null)
   const languageRef = useRef<HTMLDivElement>(null)
-  const encodingRef = useRef<HTMLDivElement>(null)
   const indentRef = useRef<HTMLDivElement>(null)
   const eolRef = useRef<HTMLDivElement>(null)
 
@@ -490,14 +479,20 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
   }, [rootPath, gitInfo])
 
   const handleBranchSelect = useCallback(async (branchName: string) => {
-    if (!rootPath) return
+    const picked = branches.find((b) => b.name === branchName)
+    if (!rootPath || !picked) return
+    // Same as the Source Control panel: a remote ref gets a local branch.
+    const { branch, track } = checkoutTargetFor(picked, branches)
     try {
-      await window.api?.gitCheckout(rootPath, branchName)
-      // Re-fetch git status after checkout
-      const info = await window.api?.gitStatus(rootPath)
-      if (info) setGitInfo(info)
+      await window.api.gitCheckout(rootPath, branch, track)
+      addToast({ type: 'success', message: track ? `Created branch ${branch} tracking ${track}` : `Switched to branch: ${branch}` })
+    } catch (err) {
+      addToast({ type: 'error', message: `Could not switch to ${branch}: ${ipcErrorMessage(err)}` })
+    }
+    try {
+      setGitInfo(await window.api.gitStatus(rootPath))
     } catch {}
-  }, [rootPath])
+  }, [rootPath, branches, addToast])
 
   // ── Language mode action ──────────────────
   const handleLanguageSelect = useCallback((languageId: string) => {
@@ -507,10 +502,16 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
     )
   }, [])
 
-  // ── Format document action ──────────────────
-  const handleFormat = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('orion:format-document'))
-  }, [])
+  // The palette's Change Language Mode opens this picker (shown for an open file).
+  const hasActiveFile = Boolean(activeFile)
+  useEffect(() => {
+    const open = () => {
+      if (hasActiveFile) setLanguageDropdownOpen(true)
+      else addToast({ type: 'info', message: 'Change Language Mode: open a file in the editor first' })
+    }
+    window.addEventListener('orion:change-language-mode', open)
+    return () => window.removeEventListener('orion:change-language-mode', open)
+  }, [hasActiveFile, addToast])
 
   // ── Indentation display ──────────────────
   const indentLabel = indentConfig.useSpaces
@@ -541,61 +542,24 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
   // ── Performance monitoring ──────────────────
   const [memoryMB, setMemoryMB] = useState<number | null>(null)
   const openFilesCount = useEditorStore((s) => s.openFiles.length)
-  const [extensionCount, setExtensionCount] = useState(() => extensionHost.registry.getEnabled().length)
 
-  // Refresh extension count periodically
-  useEffect(() => {
-    const refreshExtCount = () => setExtensionCount(extensionHost.registry.getEnabled().length)
-    const interval = setInterval(refreshExtCount, 10_000)
-    return () => clearInterval(interval)
-  }, [])
-
-  // Memory usage polling (every 10 seconds)
+  // Renderer JS heap, polled every 10 seconds. Without performance.memory the
+  // item is hidden rather than showing an estimate.
   useEffect(() => {
     const readMemory = () => {
-      try {
-        // Chromium/Electron: performance.memory is available
-        const perfMemory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
-        if (perfMemory?.usedJSHeapSize) {
-          setMemoryMB(Math.round(perfMemory.usedJSHeapSize / (1024 * 1024)))
-          return
-        }
-      } catch {
-        // ignore
-      }
-      // Fallback: estimate based on open files
-      setMemoryMB(80 + openFilesCount * 8)
+      const perfMemory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+      setMemoryMB(perfMemory?.usedJSHeapSize ? Math.round(perfMemory.usedJSHeapSize / (1024 * 1024)) : null)
     }
     readMemory()
     const interval = setInterval(readMemory, 10_000)
     return () => clearInterval(interval)
-  }, [openFilesCount])
+  }, [])
 
   const getMemoryColor = (mb: number): string => {
     if (mb < 300) return 'var(--accent-green, #89d185)'
     if (mb <= 500) return 'var(--accent-orange, #cca700)'
     return 'var(--accent-red, #f44747)'
   }
-
-  const handleMemoryClick = useCallback(() => {
-    // Hint the GC by clearing weak references / forcing minor collection
-    if (typeof window !== 'undefined' && (window as unknown as { gc?: () => void }).gc) {
-      ;(window as unknown as { gc: () => void }).gc()
-    }
-    // Dispatch event so other parts of the app can respond
-    window.dispatchEvent(new CustomEvent('orion:gc-hint'))
-    // Re-read memory after a short delay
-    setTimeout(() => {
-      try {
-        const perfMemory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
-        if (perfMemory?.usedJSHeapSize) {
-          setMemoryMB(Math.round(perfMemory.usedJSHeapSize / (1024 * 1024)))
-        }
-      } catch {
-        // ignore
-      }
-    }, 500)
-  }, [])
 
   const changedFiles = gitInfo?.files?.length || 0
 
@@ -662,13 +626,11 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
 
         {branchDropdownOpen && branchRef.current && (
           <StatusDropdown
-            items={branches
-              .filter((b) => !b.name.startsWith('origin/'))
-              .map((b) => ({
-                id: b.name,
-                label: b.name,
-                active: b.name === gitInfo?.branch,
-              }))}
+            items={branches.map((b) => ({
+              id: b.name,
+              label: b.name,
+              active: b.current,
+            }))}
             onSelect={handleBranchSelect}
             onClose={() => setBranchDropdownOpen(false)}
             anchorRef={branchRef}
@@ -744,7 +706,7 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
             {/* Cursor position - clickable to trigger Go to Line */}
             <StatusItem
               title={cursorInfo.selectedChars > 0 ? `${cursorInfo.selectedChars} characters selected across ${cursorInfo.selectedLines} line(s) - Click to Go to Line` : `Line ${cursorInfo.line}, Column ${cursorInfo.column} - Click to Go to Line (Ctrl+G)`}
-              onClick={() => window.dispatchEvent(new CustomEvent('orion:go-to-line'))}
+              onClick={() => runCommand('go.line')}
             >
               <span style={{ padding: '0 4px', fontSize: 11 }}>
                 Ln {cursorInfo.line}, Col {cursorInfo.column}
@@ -807,29 +769,8 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
               />
             )}
 
-            {/* File encoding selector */}
-            <div ref={encodingRef} style={{ display: 'flex', alignItems: 'center', height: '100%' }}>
-              <StatusItem
-                title="File encoding (click to change)"
-                onClick={() => setEncodingDropdownOpen((v) => !v)}
-              >
-                <span>{AVAILABLE_ENCODINGS.find((e) => e.id === selectedEncoding)?.label || 'UTF-8'}</span>
-                <ChevronDown size={9} style={{ color: 'var(--text-muted)' }} />
-              </StatusItem>
-            </div>
-
-            {encodingDropdownOpen && encodingRef.current && (
-              <StatusDropdown
-                items={AVAILABLE_ENCODINGS.map((e) => ({
-                  ...e,
-                  active: e.id === selectedEncoding,
-                }))}
-                onSelect={(id) => setSelectedEncoding(id)}
-                onClose={() => setEncodingDropdownOpen(false)}
-                anchorRef={encodingRef}
-              />
-            )}
-
+            {/* (An encoding picker changed only its own label: files keep the
+                encoding they were opened in, which the renderer is not told.) */}
             {/* Language mode selector */}
             <div ref={languageRef} style={{ display: 'flex', alignItems: 'center', height: '100%' }}>
               <StatusItem
@@ -858,7 +799,7 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
             )}
 
             {/* Format document button */}
-            <StatusItem title="Format Document (Shift+Alt+F)" onClick={handleFormat}>
+            <StatusItem title="Format Document (Shift+Alt+F)" onClick={() => runCommand('editor.formatDocument')}>
               <Sparkles size={11} style={{ color: 'var(--text-muted)' }} />
             </StatusItem>
           </>
@@ -881,24 +822,13 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
 
         {/* Memory usage */}
         {memoryMB !== null && (
-          <StatusItem
-            title={`Memory: ${memoryMB} MB (click to hint GC)`}
-            onClick={handleMemoryClick}
-          >
+          <StatusItem title={`Renderer memory: ${memoryMB} MB`}>
             <Cpu size={10} style={{ color: getMemoryColor(memoryMB) }} />
             <span style={{ color: getMemoryColor(memoryMB), fontSize: 10 }}>
               {memoryMB} MB
             </span>
           </StatusItem>
         )}
-
-        {/* Extensions count */}
-        <StatusItem title={`${extensionCount} extension${extensionCount !== 1 ? 's' : ''} active`}>
-          <Puzzle size={10} style={{ color: 'var(--text-muted)' }} />
-          <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>
-            {extensionCount} ext
-          </span>
-        </StatusItem>
 
         {/* AI Autocomplete toggle */}
         <StatusItem
@@ -971,10 +901,7 @@ export default function StatusBar({ onToggleTerminal, onToggleChat }: Props) {
         <div className="status-divider" />
 
         {/* Feedback button */}
-        <StatusItem
-          title="Send feedback"
-          onClick={() => window.open('https://github.com/orion-editor/orion/issues', '_blank')}
-        >
+        <StatusItem title="Send feedback" onClick={() => runCommand('help.reportIssue')}>
           <span style={{ fontSize: 10 }}>Feedback</span>
         </StatusItem>
 

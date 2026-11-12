@@ -3,10 +3,10 @@
  * Fix Issues actions.
  *
  * One request/response call per edit, through the chat's provider layer
- * (ai-client.ts callAI) with the model picked in the chat and no chat history.
+ * (ai-client.ts completeAI) with the model picked in the chat and no chat history.
  */
 import type { InlineEditRequest, InlineEditResult } from '../../shared/ipc-contract'
-import { callAI } from '../omo-bridge/ai-client'
+import { completeAI, type AICompletion } from '../omo-bridge/ai-client'
 import { handle } from '../ipc/typed-ipc'
 import { getApiKeyStore } from '../secrets'
 
@@ -89,7 +89,7 @@ export type CallModel = (
   model: string,
   message: string,
   options: { signal: AbortSignal; systemPrompt: string },
-) => Promise<{ content: string } | null>
+) => Promise<AICompletion | null>
 
 export interface InlineEditorDeps {
   callModel: CallModel
@@ -131,6 +131,10 @@ export function createInlineEditor(deps: InlineEditorDeps): InlineEditor {
         if (!reply) {
           return { error: `No API key for ${request.model}. Add one in Settings, or run Ollama for a free local model.` }
         }
+        // Accepted, a cut-off reply would delete the rest of the selection.
+        if (reply.truncated) {
+          return { error: 'The reply was cut off at the model\'s output limit, so it is not offered as an edit. Try a smaller selection or another model.' }
+        }
         const text = cleanInlineEditReply(reply.content, request.code)
         return text ? { text } : { error: 'The model returned no code' }
       } catch (err) {
@@ -145,18 +149,12 @@ export function createInlineEditor(deps: InlineEditorDeps): InlineEditor {
   }
 }
 
-/** What callAI returns for an empty OpenAI-compatible completion: a notice for the chat, not code. */
-const EMPTY_COMPLETION_NOTICE = 'No response generated.'
-
 /** Register `ai:edit`. Call once, after app 'ready' (the key store needs safeStorage). */
 export function registerInlineEditHandlers(): void {
   const editor = createInlineEditor({
     // No `history`: an edit neither sees the chat nor becomes part of it.
-    callModel: async (model, message, options) => {
-      const reply = await callAI(model, message, getApiKeyStore().keys() as Record<string, string>, null, options)
-      // Offered as an edit, the notice would replace the user's code.
-      return reply?.content === EMPTY_COMPLETION_NOTICE ? { content: '' } : reply
-    },
+    callModel: (model, message, options) =>
+      completeAI(model, message, getApiKeyStore().keys() as Record<string, string>, null, options),
   })
   handle('ai:edit', (event, request: unknown) => editor.edit(request, event.sender.id))
 }
