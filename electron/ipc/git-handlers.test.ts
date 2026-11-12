@@ -190,6 +190,34 @@ describe.runIf(hasGit())('git IPC handlers against a real repository', () => {
     })
   })
 
+  describe('ext:: transport', () => {
+    it("refuses to store an ext:: command or an option as a branch's remote", async () => {
+      for (const value of ['ext::sh -c touch% /tmp/orion-pwned', '--upload-pack=touch /tmp/orion-pwned']) {
+        await expect(call('git:config-set', 'branch.main.remote', value, 'local')).resolves.toMatchObject({ success: false })
+      }
+      expect(git(['config', '--local', 'branch.main.remote'])).toBe('upstream')
+      await expect(call('git:config-set', 'branch.main.remote', 'upstream', 'local')).resolves.toEqual({ success: true })
+    })
+
+    it('never runs an ext:: remote, even where git config allows the ext transport', async () => {
+      // Configured outside the app. Git refuses ext:: by default, but a config
+      // file can turn it on; the app's command-line override wins.
+      const marker = path.join(root, 'ext-ran')
+      git(['config', 'protocol.ext.allow', 'always'])
+      git(['config', 'remote.evil.url', `ext::sh -c touch% ${marker.split(path.sep).join('/')}`])
+      git(['config', 'branch.main.remote', 'evil'])
+      try {
+        await expect(call('git:pull')).rejects.toThrow(/transport 'ext' not allowed/)
+        await expect(call('git:fetch')).rejects.toThrow()
+        expect(fs.existsSync(marker)).toBe(false)
+      } finally {
+        git(['config', 'branch.main.remote', 'upstream'])
+        git(['remote', 'remove', 'evil'])
+        git(['config', '--unset', 'protocol.ext.allow'])
+      }
+    })
+  })
+
   describe('git:push / git:pull', () => {
     it('publishes a new branch with setUpstream so later pushes and pulls work without arguments', async () => {
       git(['checkout', '-q', '-b', 'topic'])

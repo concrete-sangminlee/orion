@@ -55,6 +55,13 @@ const QUERY_TIMEOUT_MS = 10_000
  */
 export const MUTATION_TIMEOUT_MS = 10 * 60_000
 
+/**
+ * Prepended to every git command. `ext::` remotes run an arbitrary command
+ * when git talks to them (fetch, pull, push, ls-remote); a value written into
+ * `remote.<name>.url` or `branch.<name>.remote` must never get that far.
+ */
+export const GIT_SAFETY_ARGS = ['-c', 'protocol.ext.allow=never'] as const
+
 async function runGitExec(
   cwd: unknown,
   args: string[],
@@ -63,7 +70,7 @@ async function runGitExec(
   const safeCwd = await resolveGitCwd(cwd)
   const timeout = options?.timeout ?? QUERY_TIMEOUT_MS
   try {
-    const { stdout } = await execFileAsync('git', args, {
+    const { stdout } = await execFileAsync('git', [...GIT_SAFETY_ARGS, ...args], {
       cwd: safeCwd,
       timeout,
       maxBuffer: options?.maxBuffer ?? 1024 * 1024 * 5,
@@ -945,9 +952,12 @@ export function registerGitHandlers() {
       if (typeof value !== 'string' || value.includes('\0')) {
         return { success: false, error: 'Invalid config value' }
       }
+      // A branch's remote is used by a plain `git pull`/`git push`; an option
+      // or an ext:: URL there would run as part of the next sync.
+      const configValue = /^branch\..+\.remote$/i.test(key) ? normalizeGitRemote(value, 'branch remote') : value
       const args = ['config']
       if (scope === 'local' || scope === 'global') args.push(`--${scope}`)
-      args.push('--', key, value)
+      args.push('--', key, configValue)
       await runGitExec(cwd, args)
       return { success: true }
     } catch (err: any) {
