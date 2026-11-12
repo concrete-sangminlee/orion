@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { useFileHistoryStore, formatRelativeTime, formatBytes, triggerLabels } from '@/store/fileHistory'
 import { useEditorStore } from '@/store/editor'
+import { useFileStore } from '@/store/files'
 import { useToastStore } from '@/store/toast'
 import {
   Clock, RotateCcw, Trash2, X, ChevronDown, ChevronRight,
@@ -616,7 +617,8 @@ export default function TimelinePanel() {
   const openFiles = useEditorStore((s) => s.openFiles)
   const updateFileContent = useEditorStore((s) => s.updateFileContent)
   const addToast = useToastStore((s) => s.addToast)
-  const { getSnapshots, getTimeline, deleteSnapshot, clearFileHistory, restoreSnapshot, deleteOlderThan, keepLastN } = useFileHistoryStore()
+  const rootPath = useFileStore((s) => s.rootPath)
+  const { getSnapshots, getTimeline, deleteSnapshot, clearFileHistory, restoreSnapshot, deleteOlderThan, keepLastN, addGitCommits } = useFileHistoryStore()
 
   const [previewId, setPreviewId] = useState<string | null>(null)
   const [confirmAction, setConfirmAction] = useState<{ type: 'restore' | 'delete' | 'clear'; id?: string } | null>(null)
@@ -629,6 +631,27 @@ export default function TimelinePanel() {
   const [showGitCommits, setShowGitCommits] = useState(true)
 
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Load the file's git history so the timeline can show commits next to local snapshots.
+  useEffect(() => {
+    if (!rootPath || !activeFilePath) return
+    let cancelled = false
+    window.api.gitFileLog(rootPath, { file: activeFilePath, limit: 20 })
+      .then(({ commits }) => {
+        if (cancelled) return
+        addGitCommits(activeFilePath, commits.map((c): GitCommitEntry => ({
+          type: 'git-commit',
+          id: c.fullHash,
+          hash: c.hash,
+          message: c.message,
+          author: c.author,
+          timestamp: Date.parse(c.date),
+        })))
+      })
+      // Not a repository or git unavailable: the timeline keeps its local snapshots only.
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [rootPath, activeFilePath, addGitCommits])
 
   const activeFile = openFiles.find((f) => f.path === activeFilePath)
   const snapshots = useMemo(

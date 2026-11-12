@@ -8,9 +8,10 @@ import {
   Github,
   FileText,
   Scale,
-  Globe,
+  Bug,
 } from 'lucide-react'
 import { APP_VERSION } from '@/utils/version'
+import { PROJECT_LINKS } from '@/utils/projectLinks'
 
 interface Props {
   open: boolean
@@ -47,12 +48,12 @@ const LINES: [number, number][] = [
   [2, 3], [3, 4], [2, 5], [4, 6],
 ]
 
-/* ── Links ────────────────────────────────────────────────────────── */
+/* ── Links (the repository declared in package.json) ─────────────── */
 const LINKS = [
-  { label: 'Website',       icon: Globe,    url: 'https://orion-ide.dev' },
-  { label: 'GitHub',        icon: Github,   url: 'https://github.com/orion-ide/orion' },
-  { label: 'License',       icon: Scale,    url: 'https://github.com/orion-ide/orion/blob/main/LICENSE' },
-  { label: 'Release Notes', icon: FileText, url: 'https://github.com/orion-ide/orion/releases' },
+  { label: 'GitHub',        icon: Github,   url: PROJECT_LINKS.repository },
+  { label: 'License',       icon: Scale,    url: PROJECT_LINKS.license },
+  { label: 'Release Notes', icon: FileText, url: PROJECT_LINKS.releases },
+  { label: 'Report Issue',  icon: Bug,      url: PROJECT_LINKS.issues },
 ]
 
 /* ── Human-readable OS name ───────────────────────────────────────── */
@@ -611,7 +612,7 @@ function LinkRow({
   onClick,
 }: {
   label: string
-  icon: typeof Globe
+  icon: typeof Github
   onClick: () => void
 }) {
   return (

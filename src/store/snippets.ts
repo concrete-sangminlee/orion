@@ -1,4 +1,7 @@
 import { create } from 'zustand'
+import { loader, type Monaco } from '@monaco-editor/react'
+import type { editor as MonacoEditor, IDisposable } from 'monaco-editor'
+import { useEditorStore } from './editor'
 
 export interface Snippet {
   id: string
@@ -30,11 +33,30 @@ interface SnippetStore {
   // Legacy compat
   addSnippet: (snippet: Omit<Snippet, 'id' | 'isBuiltin'>) => void
   removeSnippet: (id: string) => void
-  importSnippets: (snippets: Array<Partial<Snippet> & { prefix: string; body: string }>) => void
+  /** Adds the well-formed entries of an imported file; the rest are counted as skipped. */
+  importSnippets: (snippets: unknown[]) => { imported: number; skipped: number }
   importVSCodeSnippets: (data: VSCodeSnippetFormat, defaultLanguage?: string) => number
   exportSnippets: () => Snippet[]
   exportVSCodeFormat: () => VSCodeSnippetFormat
-  insertSnippetAtCursor: (snippet: Snippet) => void
+  /** Expands the snippet in the editor showing the active file; false when there is none. */
+  insertSnippetAtCursor: (snippet: Snippet) => boolean
+}
+
+/**
+ * Snippet language (canonical, as offered by the Snippet Manager) -> the ids a
+ * Monaco model or an imported VS Code scope may use for the same language.
+ */
+const LANGUAGE_ALIASES: Record<string, string[]> = {
+  javascript: ['javascript', 'javascriptreact', 'jsx'],
+  typescript: ['typescript', 'typescriptreact', 'tsx'],
+  python: ['python', 'py'],
+  html: ['html', 'htm'],
+  css: ['css', 'scss', 'less'],
+  shell: ['shell', 'shellscript', 'bash', 'sh', 'zsh'],
+  csharp: ['csharp', 'cs', 'c#'],
+  cpp: ['cpp', 'c++'],
+  markdown: ['markdown', 'md'],
+  yaml: ['yaml', 'yml'],
 }
 
 let _nextId = 1
@@ -1376,18 +1398,37 @@ const BUILTIN_SNIPPETS: Snippet[] = [
   },
 ]
 
+/**
+ * Turn untrusted JSON (an imported file or stored data) into a user snippet,
+ * or null. A snippet without a string prefix/body would crash the Snippet
+ * Manager on every open, so such entries never reach the store.
+ */
+function toUserSnippet(raw: unknown, id: string): Snippet | null {
+  if (!raw || typeof raw !== 'object') return null
+  const s = raw as Record<string, unknown>
+  if (typeof s.prefix !== 'string' || !s.prefix.trim() || typeof s.body !== 'string') return null
+  const text = (value: unknown, fallback: string) => (typeof value === 'string' && value.trim() ? value : fallback)
+  return {
+    id,
+    name: text(s.name, s.prefix),
+    prefix: s.prefix,
+    body: s.body,
+    description: text(s.description, s.prefix),
+    language: text(s.language, 'global'),
+    isBuiltin: false,
+  }
+}
+
 // Load user snippets from localStorage
 function loadUserSnippets(): Snippet[] {
   try {
     const stored = localStorage.getItem('orion-user-snippets')
     if (stored) {
-      const parsed = JSON.parse(stored) as Snippet[]
-      // Migrate old snippets that lack `name` or `isBuiltin`
-      return parsed.map((s) => ({
-        ...s,
-        name: s.name || s.prefix,
-        isBuiltin: false,
-      }))
+      const parsed: unknown = JSON.parse(stored)
+      if (!Array.isArray(parsed)) return []
+      return parsed
+        .map((s) => toUserSnippet(s, typeof s?.id === 'string' && s.id ? s.id : genId()))
+        .filter((s): s is Snippet => s !== null)
     }
   } catch { /* ignore */ }
   return []
@@ -1406,12 +1447,15 @@ function parseVSCodeFormat(data: VSCodeSnippetFormat, defaultLanguage: string = 
   for (const [name, entry] of Object.entries(data)) {
     if (!entry || typeof entry !== 'object') continue
     const prefix = Array.isArray(entry.prefix) ? entry.prefix[0] : entry.prefix
-    const body = Array.isArray(entry.body) ? entry.body.join('\n') : entry.body
-    if (!prefix || !body) continue
+    const body = Array.isArray(entry.body) && entry.body.every((line) => typeof line === 'string')
+      ? entry.body.join('\n')
+      : entry.body
+    // The file is untrusted: skip entries the manager could not render.
+    if (typeof prefix !== 'string' || !prefix.trim() || typeof body !== 'string' || !body) continue
 
     // Parse scope to language — VS Code uses comma-separated scope
     let language = defaultLanguage
-    if (entry.scope) {
+    if (typeof entry.scope === 'string' && entry.scope) {
       const scopeParts = entry.scope.split(',').map((s) => s.trim().toLowerCase())
       // Use first scope as language
       if (scopeParts.length > 0 && scopeParts[0]) {
@@ -1423,7 +1467,7 @@ function parseVSCodeFormat(data: VSCodeSnippetFormat, defaultLanguage: string = 
       name,
       prefix,
       body,
-      description: entry.description || name,
+      description: typeof entry.description === 'string' && entry.description ? entry.description : name,
       language,
     })
   }
@@ -1493,14 +1537,8 @@ export const useSnippetStore = create<SnippetStore>((set, get) => {
     getSnippetsForLanguage: (langId: string) => {
       const state = get()
       const lang = langId.toLowerCase()
-      const langAliases: Record<string, string[]> = {
-        javascript: ['javascript', 'javascriptreact', 'jsx'],
-        typescript: ['typescript', 'typescriptreact', 'tsx'],
-        python: ['python'],
-        html: ['html', 'htm'],
-      }
       let matchLangs = [lang]
-      for (const [canonical, aliases] of Object.entries(langAliases)) {
+      for (const [canonical, aliases] of Object.entries(LANGUAGE_ALIASES)) {
         if (aliases.includes(lang) || canonical === lang) {
           matchLangs = [canonical, ...aliases]
           break
@@ -1520,26 +1558,18 @@ export const useSnippetStore = create<SnippetStore>((set, get) => {
 
     removeSnippet: (id) => get().deleteSnippet(id),
 
-    importSnippets: (imported) =>
-      set((state) => {
-        const newUser = imported
-          .filter((s) => !s.id?.startsWith('builtin_'))
-          .map((s) => ({
-            id: genId(),
-            name: s.name || s.prefix,
-            prefix: s.prefix,
-            body: s.body,
-            description: s.description || s.prefix,
-            language: s.language || 'global',
-            isBuiltin: false,
-          }))
-        const nextUser = [...state.userSnippets, ...newUser]
+    importSnippets: (imported) => {
+      const newUser = imported
+        .filter((s) => !String((s as { id?: unknown } | null)?.id ?? '').startsWith('builtin_'))
+        .map((s) => toUserSnippet(s, genId()))
+        .filter((s): s is Snippet => s !== null)
+      if (newUser.length > 0) {
+        const nextUser = [...get().userSnippets, ...newUser]
         saveUserSnippets(nextUser)
-        return {
-          snippets: [...BUILTIN_SNIPPETS, ...nextUser],
-          userSnippets: nextUser,
-        }
-      }),
+        set({ snippets: [...BUILTIN_SNIPPETS, ...nextUser], userSnippets: nextUser })
+      }
+      return { imported: newUser.length, skipped: imported.length - newUser.length }
+    },
 
     importVSCodeSnippets: (data: VSCodeSnippetFormat, defaultLanguage?: string) => {
       const parsed = parseVSCodeFormat(data, defaultLanguage)
@@ -1569,11 +1599,59 @@ export const useSnippetStore = create<SnippetStore>((set, get) => {
     },
 
     insertSnippetAtCursor: (snippet: Snippet) => {
-      // Dispatch a custom event that the editor can listen for
-      const event = new CustomEvent('orion-insert-snippet', {
-        detail: { body: snippet.body, name: snippet.name },
-      })
-      window.dispatchEvent(event)
+      const editor = activeFileEditor()
+      const controller = editor?.getContribution<MonacoEditor.IEditorContribution & SnippetController>('snippetController2')
+      if (!editor || !controller) return false
+      editor.focus()
+      // Monaco's snippet controller expands tab stops and placeholders like a typed prefix would.
+      controller.insert(snippet.body)
+      return true
     },
   }
 })
+
+interface SnippetController {
+  insert(template: string): void
+}
+
+/** The writable Monaco editor that shows the active file, if one is mounted. */
+function activeFileEditor(): MonacoEditor.ICodeEditor | null {
+  // Read lazily: Monaco is configured by src/monaco/setup.ts once the editor panel loads.
+  const monaco = loader.__getMonacoInstance()
+  const path = useEditorStore.getState().activeFilePath
+  if (!monaco || !path) return null
+  const uri = monaco.Uri.file(path).toString()
+  return monaco.editor.getEditors().find((e) =>
+    e.getModel()?.uri.toString() === uri && !e.getOption(monaco.editor.EditorOption.readOnly),
+  ) ?? null
+}
+
+/**
+ * Offer the store's snippets as completions in every language. The model's
+ * language is resolved per request, so snippets for HTML, CSS, Go, Shell, …
+ * and global snippets work wherever the user types their prefix.
+ */
+export function registerSnippetCompletionProvider(monaco: Monaco): IDisposable {
+  return monaco.languages.registerCompletionItemProvider('*', {
+    provideCompletionItems: (model, position) => {
+      const word = model.getWordUntilPosition(position)
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      }
+      const suggestions = useSnippetStore.getState().getSnippetsForLanguage(model.getLanguageId()).map((snippet) => ({
+        label: snippet.prefix,
+        kind: monaco.languages.CompletionItemKind.Snippet,
+        documentation: snippet.description,
+        insertText: snippet.body,
+        insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+        detail: `Snippet: ${snippet.description}`,
+        range,
+        sortText: `!${snippet.prefix}`,
+      }))
+      return { suggestions }
+    },
+  })
+}
