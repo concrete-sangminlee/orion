@@ -3,13 +3,13 @@ import { useChatStore } from '@/store/chat'
 import { useChatHistoryStore, type Conversation } from '@/store/chatHistory'
 import { v4 as uuid } from 'uuid'
 import {
-  Sparkles, Bot, User, Zap, MessageSquare,
-  ArrowUp, Paperclip, AtSign, CheckCircle2, Loader2, Circle,
+  Sparkles, Bot, User,
+  ArrowUp, Paperclip, AtSign,
   ChevronDown, Copy, Check, Code, Lightbulb, Wrench, BookOpen,
   Play, Trash2, FileCode, X, Plus, PanelLeftClose, PanelLeftOpen,
   MoreHorizontal, Pencil, RotateCw, TextCursorInput, Eye, Settings2,
   Square, Search, TestTube, Pin, PinOff, GitFork, FilePlus, Timer,
-  Gauge, Globe, Brain, Rocket, Cpu, Star, ExternalLink,
+  Gauge, Brain, Rocket, Cpu, Star,
 } from 'lucide-react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
@@ -19,7 +19,8 @@ import { useToastStore } from '@/store/toast'
 import { useFileStore } from '@/store/files'
 import { useSettingsStore } from '@/store/settings'
 import { getCurrentContext, buildSystemPrompt, getContextSummary, type CodeContext } from '@/utils/codeContext'
-import { writeFileChecked } from '@/utils/ipcResult'
+import { getLanguageId } from '@/utils/fileTypes'
+import { ipcErrorMessage, writeFileChecked } from '@/utils/ipcResult'
 
 /* ── Model definitions ─────────────────────────────────── */
 
@@ -57,17 +58,17 @@ const nvidiaModels: ModelDef[] = [
   { id: 'Qwen 2.5', label: 'Qwen', color: '#76b900', badge: '2.5', capabilities: ['fast', 'code'] },
 ]
 
-const customEndpointModel: ModelDef = {
-  id: '__custom_endpoint__',
-  label: 'Custom API',
-  color: '#8b949e',
-  badge: 'API',
-  capabilities: [],
-}
-
 /* ── Simple markdown renderer ──────────────────────────── */
 
-function renderMarkdown(text: string): ReactNode[] {
+/** ATX heading: 1-6 '#' then whitespace. '#include', '####' or a bare '#' is not a heading. */
+const HEADING_RE = /^(#{1,6})\s+(.*)$/
+const HEADING_STYLES: React.CSSProperties[] = [
+  { fontSize: 15, fontWeight: 700, margin: '18px 0 8px' },
+  { fontSize: 14, fontWeight: 600, margin: '16px 0 6px' },
+  { fontSize: 13, fontWeight: 600, margin: '14px 0 6px' },
+]
+
+export function renderMarkdown(text: string): ReactNode[] {
   const blocks: ReactNode[] = []
   const lines = text.split('\n')
   let i = 0
@@ -93,56 +94,14 @@ function renderMarkdown(text: string): ReactNode[] {
     }
 
     // Headers
-    if (line.startsWith('### ')) {
+    const heading = HEADING_RE.exec(line)
+    if (heading) {
+      const style = HEADING_STYLES[Math.min(heading[1].length, 3) - 1]
+      const Tag = (['h2', 'h3', 'h4', 'h5', 'h6', 'h6'] as const)[heading[1].length - 1]
       blocks.push(
-        <h4
-          key={blockKey++}
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            color: 'var(--text-primary)',
-            margin: '14px 0 6px',
-            lineHeight: 1.4,
-          }}
-        >
-          {renderInline(line.slice(4))}
-        </h4>
-      )
-      i++
-      continue
-    }
-    if (line.startsWith('## ')) {
-      blocks.push(
-        <h3
-          key={blockKey++}
-          style={{
-            fontSize: 14,
-            fontWeight: 600,
-            color: 'var(--text-primary)',
-            margin: '16px 0 6px',
-            lineHeight: 1.4,
-          }}
-        >
-          {renderInline(line.slice(3))}
-        </h3>
-      )
-      i++
-      continue
-    }
-    if (line.startsWith('# ')) {
-      blocks.push(
-        <h2
-          key={blockKey++}
-          style={{
-            fontSize: 15,
-            fontWeight: 700,
-            color: 'var(--text-primary)',
-            margin: '18px 0 8px',
-            lineHeight: 1.4,
-          }}
-        >
-          {renderInline(line.slice(2))}
-        </h2>
+        <Tag key={blockKey++} style={{ color: 'var(--text-primary)', lineHeight: 1.4, ...style }}>
+          {renderInline(heading[2])}
+        </Tag>
       )
       i++
       continue
@@ -225,35 +184,36 @@ function renderMarkdown(text: string): ReactNode[] {
       continue
     }
 
-    // Regular paragraph — collect consecutive non-empty lines
-    const paraLines: string[] = []
+    // Regular paragraph — this line plus the consecutive plain lines after it.
+    // It always consumes the current line, so the loop cannot stall on a line
+    // no other branch takes.
+    const paraLines: string[] = [line]
+    i++
     while (
       i < lines.length &&
       lines[i].trim() !== '' &&
       !lines[i].trimStart().startsWith('```') &&
-      !lines[i].startsWith('#') &&
+      !HEADING_RE.test(lines[i]) &&
       !/^[\s]*[-*]\s/.test(lines[i]) &&
       !/^\d+\.\s/.test(lines[i])
     ) {
       paraLines.push(lines[i])
       i++
     }
-    if (paraLines.length > 0) {
-      blocks.push(
-        <p
-          key={blockKey++}
-          style={{
-            fontSize: 12.5,
-            lineHeight: 1.65,
-            color: 'var(--text-primary)',
-            margin: '4px 0',
-            wordBreak: 'break-word',
-          }}
-        >
-          {renderInline(paraLines.join(' '))}
-        </p>
-      )
-    }
+    blocks.push(
+      <p
+        key={blockKey++}
+        style={{
+          fontSize: 12.5,
+          lineHeight: 1.65,
+          color: 'var(--text-primary)',
+          margin: '4px 0',
+          wordBreak: 'break-word',
+        }}
+      >
+        {renderInline(paraLines.join(' '))}
+      </p>
+    )
   }
 
   return blocks
@@ -314,39 +274,56 @@ function renderInline(text: string): ReactNode[] {
 
 /* ── Code block component with copy ────────────────────── */
 
+/** Common fence-language aliases mapped to what react-syntax-highlighter expects. */
+const LANGUAGE_ALIASES: Record<string, string> = {
+  js: 'javascript',
+  ts: 'typescript',
+  tsx: 'tsx',
+  jsx: 'jsx',
+  py: 'python',
+  rb: 'ruby',
+  yml: 'yaml',
+  sh: 'bash',
+  shell: 'bash',
+  zsh: 'bash',
+  md: 'markdown',
+  cs: 'csharp',
+  'c++': 'cpp',
+  'c#': 'csharp',
+}
+
+const CODE_FILE_EXTENSIONS: Record<string, string> = {
+  javascript: 'js', typescript: 'ts', tsx: 'tsx', jsx: 'jsx',
+  python: 'py', ruby: 'rb', go: 'go', rust: 'rs', java: 'java',
+  css: 'css', html: 'html', json: 'json', yaml: 'yml', bash: 'sh',
+  markdown: 'md', csharp: 'cs', cpp: 'cpp', c: 'c', sql: 'sql',
+}
+
+/**
+ * Open a code block in a new untitled editor tab, like Ctrl+N with the code
+ * in it. Nothing is written to disk until the user saves the tab.
+ */
+export function openCodeInNewTab(code: string, language: string): void {
+  const langKey = language.toLowerCase()
+  const ext = CODE_FILE_EXTENSIONS[LANGUAGE_ALIASES[langKey] || langKey] || 'txt'
+  const id = Date.now()
+  const name = `Untitled-${id}.${ext}`
+  useEditorStore.getState().openFile({
+    path: `untitled-${id}`,
+    name,
+    content: code,
+    language: getLanguageId(name),
+    isModified: true,
+    aiModified: true,
+  })
+}
+
 function CodeBlock({ language, code }: { language: string; code: string }) {
   const [copied, setCopied] = useState(false)
   const [applied, setApplied] = useState(false)
   const [showDiffPreview, setShowDiffPreview] = useState(false)
-  const [createdFile, setCreatedFile] = useState(false)
   const { openFiles, activeFilePath, updateFileContent } = useEditorStore()
   const { addToast } = useToastStore()
-
-  const handleCreateNewFile = async () => {
-    // Determine a file extension from the language
-    const extMap: Record<string, string> = {
-      javascript: 'js', typescript: 'ts', tsx: 'tsx', jsx: 'jsx',
-      python: 'py', ruby: 'rb', go: 'go', rust: 'rs', java: 'java',
-      css: 'css', html: 'html', json: 'json', yaml: 'yml', bash: 'sh',
-      markdown: 'md', csharp: 'cs', cpp: 'cpp', c: 'c', sql: 'sql',
-    }
-    const langKey = language.toLowerCase()
-    const ext = extMap[langKey] || extMap[langMap[langKey]] || 'txt'
-    const fileName = `untitled_${Date.now()}.${ext}`
-    try {
-      // Dispatch event to create a new file with the code content
-      window.dispatchEvent(
-        new CustomEvent('orion:create-file-from-chat', {
-          detail: { fileName, content: code, language: ext },
-        }),
-      )
-      addToast({ type: 'success', message: `Creating new file: ${fileName}` })
-      setCreatedFile(true)
-      setTimeout(() => setCreatedFile(false), 2000)
-    } catch {
-      addToast({ type: 'error', message: 'Failed to create file' })
-    }
-  }
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(code)
@@ -397,24 +374,7 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
     addToast({ type: 'success', message: 'Code inserted at cursor position' })
   }
 
-  // Map common language aliases to what react-syntax-highlighter expects
-  const langMap: Record<string, string> = {
-    js: 'javascript',
-    ts: 'typescript',
-    tsx: 'tsx',
-    jsx: 'jsx',
-    py: 'python',
-    rb: 'ruby',
-    yml: 'yaml',
-    sh: 'bash',
-    shell: 'bash',
-    zsh: 'bash',
-    md: 'markdown',
-    cs: 'csharp',
-    'c++': 'cpp',
-    'c#': 'csharp',
-  }
-  const highlightLang = langMap[language.toLowerCase()] || language.toLowerCase() || 'text'
+  const highlightLang = LANGUAGE_ALIASES[language.toLowerCase()] || language.toLowerCase() || 'text'
 
   return (
     <div
@@ -520,12 +480,12 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
             Insert
           </button>
           <button
-            onClick={handleCreateNewFile}
+            onClick={() => openCodeInNewTab(code, language)}
             className="flex items-center gap-1 transition-colors duration-100"
-            title="Create a new file with this code"
+            title="Open this code in a new untitled tab"
             style={{
               fontSize: 10,
-              color: createdFile ? 'var(--accent-green)' : 'var(--text-muted)',
+              color: 'var(--text-muted)',
               background: 'transparent',
               border: 'none',
               cursor: 'pointer',
@@ -533,14 +493,14 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
               borderRadius: 4,
             }}
             onMouseEnter={(e) => {
-              if (!createdFile) e.currentTarget.style.color = 'var(--accent-green)'
+              e.currentTarget.style.color = 'var(--accent-green)'
             }}
             onMouseLeave={(e) => {
-              if (!createdFile) e.currentTarget.style.color = 'var(--text-muted)'
+              e.currentTarget.style.color = 'var(--text-muted)'
             }}
           >
-            {createdFile ? <Check size={11} /> : <FilePlus size={11} />}
-            {createdFile ? 'Created' : 'New File'}
+            <FilePlus size={11} />
+            New File
           </button>
           <button
             onClick={handleCopy}
@@ -919,7 +879,12 @@ function MessageBubble({
   const handleSubmitEdit = () => {
     const trimmed = editContent.trim()
     if (trimmed && trimmed !== message.content) {
-      onEdit?.(message.id, trimmed)
+      // A reply started while this was being edited (no onEdit then): keep the edit open.
+      if (!onEdit) {
+        addToast({ type: 'info', message: 'Wait for the current reply to finish, or stop it' })
+        return
+      }
+      onEdit(message.id, trimmed)
     }
     setIsEditing(false)
   }
@@ -1311,57 +1276,6 @@ function MessageBubble({
               )}
             </div>
           )}
-
-          {/* Task Progress */}
-          {message.taskProgress && (
-            <div
-              style={{
-                marginTop: 10,
-                background: 'rgba(255,255,255,0.02)',
-                borderRadius: 8,
-                padding: 10,
-              }}
-            >
-              {message.taskProgress.map((task, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-2"
-                  style={{ padding: '3px 0', fontSize: 11 }}
-                >
-                  {task.status === 'done' ? (
-                    <CheckCircle2
-                      size={13}
-                      style={{ color: 'var(--accent-green)', flexShrink: 0 }}
-                    />
-                  ) : task.status === 'working' ? (
-                    <Loader2
-                      size={13}
-                      className="anim-spin"
-                      style={{ color: 'var(--accent)', flexShrink: 0 }}
-                    />
-                  ) : (
-                    <Circle
-                      size={13}
-                      style={{ color: 'var(--text-muted)', flexShrink: 0 }}
-                    />
-                  )}
-                  <span
-                    style={{
-                      color:
-                        task.status === 'done'
-                          ? 'var(--text-muted)'
-                          : 'var(--text-primary)',
-                      textDecoration:
-                        task.status === 'done' ? 'line-through' : 'none',
-                      opacity: task.status === 'done' ? 0.7 : 1,
-                    }}
-                  >
-                    {task.name}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -1374,32 +1288,25 @@ function ModelDropdown({
   models,
   selectedModel,
   onSelect,
-  customEndpoint,
-  onCustomEndpointChange,
 }: {
   models: ModelDef[]
   selectedModel: string
   onSelect: (id: string) => void
-  customEndpoint?: string
-  onCustomEndpointChange?: (url: string) => void
 }) {
   const [open, setOpen] = useState(false)
-  const [showCustomInput, setShowCustomInput] = useState(false)
-  const [customUrl, setCustomUrl] = useState(customEndpoint || '')
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         setOpen(false)
-        setShowCustomInput(false)
       }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const current = models.find((m) => m.id === selectedModel) || (selectedModel === '__custom_endpoint__' ? customEndpointModel : null)
+  const current = models.find((m) => m.id === selectedModel)
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
@@ -1487,7 +1394,7 @@ function ModelDropdown({
             API Models
           </div>
           {models
-            .filter((m) => !nvidiaModels.some((n) => n.id === m.id) && m.id !== '__custom_endpoint__')
+            .filter((m) => !nvidiaModels.some((n) => n.id === m.id))
             .map((model) => (
               <DropdownItem
                 key={model.id}
@@ -1532,108 +1439,6 @@ function ModelDropdown({
                 }}
               />
             ))}
-
-          {/* Custom Endpoint */}
-          <div
-            style={{
-              height: 1,
-              background: 'var(--border)',
-              margin: '4px 8px',
-            }}
-          />
-          <div
-            style={{
-              fontSize: 9,
-              color: 'var(--text-muted)',
-              padding: '4px 8px 2px',
-              fontWeight: 600,
-              letterSpacing: '0.06em',
-              textTransform: 'uppercase',
-            }}
-          >
-            Custom
-          </div>
-          <button
-            onClick={() => {
-              setShowCustomInput(!showCustomInput)
-              if (!showCustomInput) {
-                onSelect('__custom_endpoint__')
-              }
-            }}
-            className="flex items-center gap-2 w-full transition-colors duration-75"
-            style={{
-              fontSize: 11,
-              padding: '5px 8px',
-              borderRadius: 5,
-              background: selectedModel === '__custom_endpoint__' ? 'rgba(139,148,158,0.15)' : 'transparent',
-              color: selectedModel === '__custom_endpoint__' ? '#8b949e' : 'var(--text-secondary)',
-              border: 'none',
-              cursor: 'pointer',
-              textAlign: 'left',
-            }}
-            onMouseEnter={(e) => {
-              if (selectedModel !== '__custom_endpoint__')
-                e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
-            }}
-            onMouseLeave={(e) => {
-              if (selectedModel !== '__custom_endpoint__')
-                e.currentTarget.style.background = 'transparent'
-            }}
-          >
-            <Globe size={12} style={{ flexShrink: 0, opacity: 0.6 }} />
-            <span style={{ flex: 1 }}>Custom API Endpoint</span>
-            <ExternalLink size={10} style={{ opacity: 0.4 }} />
-          </button>
-          {showCustomInput && (
-            <div style={{ padding: '4px 8px 6px' }}>
-              <input
-                type="text"
-                value={customUrl}
-                onChange={(e) => setCustomUrl(e.target.value)}
-                placeholder="https://api.example.com/v1/chat"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    onCustomEndpointChange?.(customUrl)
-                    setOpen(false)
-                    setShowCustomInput(false)
-                  }
-                }}
-                style={{
-                  width: '100%',
-                  fontSize: 10,
-                  padding: '4px 8px',
-                  borderRadius: 4,
-                  border: '1px solid var(--border)',
-                  background: 'var(--bg-primary)',
-                  color: 'var(--text-primary)',
-                  outline: 'none',
-                  fontFamily: 'var(--font-mono, monospace)',
-                }}
-                onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)' }}
-                onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)' }}
-              />
-              <button
-                onClick={() => {
-                  onCustomEndpointChange?.(customUrl)
-                  setOpen(false)
-                  setShowCustomInput(false)
-                }}
-                style={{
-                  marginTop: 4,
-                  fontSize: 9,
-                  padding: '2px 8px',
-                  borderRadius: 4,
-                  border: '1px solid var(--accent)',
-                  background: 'rgba(88,166,255,0.1)',
-                  color: 'var(--accent)',
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                }}
-              >
-                Connect
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -2241,18 +2046,16 @@ function ConversationSidebar({
 export default function ChatPanel() {
   const {
     messages,
-    mode,
     selectedModel,
-    isStreaming,
-    addMessage,
-    setMode,
     setModel,
     clearMessages,
     loadMessages,
     ollamaAvailable,
     ollamaModels,
-    removeMessagesAfter,
+    sendTurn,
+    cancelTurn,
   } = useChatStore()
+  const isStreaming = useChatStore((s) => s.pendingTurn !== null)
 
   const {
     activeConversationId,
@@ -2264,7 +2067,6 @@ export default function ChatPanel() {
   const [systemPrompt, setSystemPrompt] = useState('')
   const [showSystemPromptEditor, setShowSystemPromptEditor] = useState(false)
   const [pinnedMessages, setPinnedMessages] = useState<Set<string>>(new Set())
-  const [customEndpoint, setCustomEndpoint] = useState('')
   const [streamStartTime, setStreamStartTime] = useState<number | null>(null)
   const [streamTokenCount, setStreamTokenCount] = useState(0)
   const [streamStats, setStreamStats] = useState<{ tokensPerSec: number; elapsed: number; estimatedRemaining: number } | null>(null)
@@ -2359,10 +2161,9 @@ export default function ChatPanel() {
 
   // Stop generation handler
   const handleStopGeneration = useCallback(() => {
-    window.api?.omoSend({ type: 'cancel', payload: {} })
-    useChatStore.getState().setStreaming(false)
+    cancelTurn()
     addToast({ type: 'info', message: 'Generation stopped' })
-  }, [addToast])
+  }, [cancelTurn, addToast])
 
   /* ── File context state ────────────────────────────────── */
   const activeFilePath = useEditorStore((s) => s.activeFilePath)
@@ -2444,85 +2245,32 @@ export default function ChatPanel() {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  // Listen for AI context-menu actions from EditorPanel
+  // "AI: Explain Selection" from EditorPanel. Its edit actions (Refactor / Add
+  // Comments / Fix Issues) are answered in the editor over ai:edit instead.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail
       if (!detail) return
-      const { action, selectedText, filePath, language, fullContext } = detail as {
+      const { action, selectedText, filePath, language } = detail as {
         action: string
         selectedText: string
         filePath: string
         language: string
-        fullContext?: string
       }
 
       if (action === 'explain') {
         // "AI: Explain Selection" -- send to chat as a user question
         const fileName = filePath?.replace(/\\/g, '/').split('/').pop() || 'unknown'
-        const userMsg = `Explain this code from ${fileName}:\n\`\`\`${language}\n${selectedText}\n\`\`\``
-        addMessage({
-          id: uuid(),
-          role: 'user',
-          content: userMsg,
-          timestamp: Date.now(),
+        const sent = sendTurn({
+          text: `Explain this code from ${fileName}:\n\`\`\`${language}\n${selectedText}\n\`\`\``,
+          prompt: `Please explain the following code in detail:\n\`\`\`${language}\n${selectedText}\n\`\`\``,
         })
-        // Dispatch to AI backend
-        window.api?.omoSend({
-          type: 'chat',
-          payload: {
-            message: `Please explain the following code in detail:\n\`\`\`${language}\n${selectedText}\n\`\`\``,
-            mode: 'chat',
-            model: selectedModel,
-          },
-        })
-      } else if (action === 'refactor' || action === 'add-comments' || action === 'fix-issues') {
-        // Build instruction per action type
-        let instruction = ''
-        if (action === 'refactor') {
-          instruction = 'Refactor the following code for better readability, performance, and best practices.'
-        } else if (action === 'add-comments') {
-          instruction = 'Add clear, helpful inline comments to the following code. Keep the code unchanged, only add comments.'
-        } else if (action === 'fix-issues') {
-          instruction = 'Analyze the following code for bugs, potential issues, and anti-patterns, then fix them.'
-        }
-
-        const aiMessage = `You are editing code inline. The user selected this code:\n\`\`\`\n${selectedText}\n\`\`\`\n\n${fullContext ? `From this file:\n\`\`\`${language}\n${fullContext}\n\`\`\`\n\n` : ''}Instruction: ${instruction}\n\nRespond with ONLY the replacement code, no explanation, no markdown fences. Just the raw code that should replace the selection.`
-
-        window.api?.omoSend({
-          type: 'chat',
-          payload: { message: aiMessage, mode: 'chat', model: 'inline-edit' },
-        })
-
-        // Listen for the response and forward it as a context-response event
-        const respHandler = (evt: any) => {
-          if (evt?.detail?.type === 'inline-edit-response') {
-            const suggestedCode = evt.detail.content
-            if (suggestedCode) {
-              window.dispatchEvent(
-                new CustomEvent('orion:ai-context-response', {
-                  detail: {
-                    action,
-                    suggestedCode,
-                    originalText: selectedText,
-                  },
-                }),
-              )
-            }
-            window.removeEventListener('orion:inline-edit-response', respHandler)
-          }
-        }
-        window.addEventListener('orion:inline-edit-response', respHandler)
-
-        // Timeout fallback
-        setTimeout(() => {
-          window.removeEventListener('orion:inline-edit-response', respHandler)
-        }, 30000)
+        if (!sent) addToast({ type: 'info', message: 'Wait for the current reply to finish, or stop it' })
       }
     }
     window.addEventListener('orion:ai-context-action', handler)
     return () => window.removeEventListener('orion:ai-context-action', handler)
-  }, [addMessage, selectedModel])
+  }, [sendTurn, addToast])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -2531,61 +2279,40 @@ export default function ChatPanel() {
     })
   }, [messages])
 
+  /**
+   * System instructions for a turn: the active file / selection context shown
+   * as "Attached" (built fresh at send time) plus the custom system prompt.
+   */
+  const turnSystemPrompt = (): string | undefined => {
+    const custom = systemPrompt.trim()
+    if (!includeContext) return custom || undefined
+    const built = buildSystemPrompt(getCurrentContext({ selectionText }))
+    return custom ? `${built}\n\n--- User custom instructions ---\n${custom}` : built
+  }
+
   const handleSend = () => {
-    if (!input.trim()) return
-
     const userText = input.trim()
+    if (!userText) return
 
-    // Build context-enriched message for the AI
-    let aiMessage = userText
-    let contextSystemPrompt = systemPrompt.trim()
+    // Files the user picked explicitly (@-mentions, attachments) always go with
+    // the question; the Attached/Detached toggle only covers the active file.
+    const mentionedFileContents = mentionedFiles
+      .map((path) => openFiles.find((f) => f.path === path))
+      .filter(Boolean)
+      .map((f) => `[Referenced file: ${f!.name}]\n\`\`\`${f!.language}\n${f!.content}\n\`\`\``)
+      .join('\n\n')
+    const attachedFileContents = attachedFiles
+      .map((f) => `[File: ${f.name}]\n\`\`\`\n${f.content?.substring(0, 3000) || '(content unavailable)'}\n\`\`\``)
+      .join('\n\n')
+    const extraFileContext = [mentionedFileContents, attachedFileContents].filter(Boolean).join('\n\n')
 
-    if (includeContext) {
-      // Gather fresh context at send time
-      const ctx = getCurrentContext({ selectionText })
-
-      // Build intelligent system prompt with full code context
-      const builtPrompt = buildSystemPrompt(ctx)
-      contextSystemPrompt = contextSystemPrompt
-        ? `${builtPrompt}\n\n--- User custom instructions ---\n${contextSystemPrompt}`
-        : builtPrompt
-
-      // Gather mentioned file contents (from open files by @name)
-      const mentionedFileContents = mentionedFiles
-        .map((path) => openFiles.find((f) => f.path === path))
-        .filter(Boolean)
-        .map((f) => `[Referenced file: ${f!.name}]\n\`\`\`${f!.language}\n${f!.content}\n\`\`\``)
-        .join('\n\n')
-
-      // Gather attached file contents (from workspace @file picker)
-      const attachedFileContents = attachedFiles
-        .map((f) => `[File: ${f.name}]\n\`\`\`\n${f.content?.substring(0, 3000) || '(content unavailable)'}\n\`\`\``)
-        .join('\n\n')
-
-      const extraFileContext = [mentionedFileContents, attachedFileContents].filter(Boolean).join('\n\n')
-
-      // The system prompt now carries the full file context, so the user message
-      // only needs to include extra @-mentioned / attached files (if any)
-      if (extraFileContext) {
-        aiMessage = `${extraFileContext}\n\nUser question: ${userText}`
-      }
-    }
-
-    addMessage({
-      id: uuid(),
-      role: 'user',
-      content: userText,
-      timestamp: Date.now(),
+    // A turn is already waiting for its reply: keep the draft.
+    const sent = sendTurn({
+      text: userText,
+      ...(extraFileContext ? { prompt: `${extraFileContext}\n\nUser question: ${userText}` } : {}),
+      systemPrompt: turnSystemPrompt(),
     })
-    window.api?.omoSend({
-      type: 'chat',
-      payload: {
-        message: aiMessage,
-        mode,
-        model: selectedModel,
-        ...(contextSystemPrompt ? { systemPrompt: contextSystemPrompt } : {}),
-      },
-    })
+    if (!sent) return
     setInput('')
     setMentionedFiles([])
     setAttachedFiles([])
@@ -2596,31 +2323,23 @@ export default function ChatPanel() {
     }
   }
 
-  const handleRegenerate = useCallback(
-    (msgId: string) => {
-      if (isStreaming) return
-      // Find the assistant message and the user message before it
-      const msgIdx = messages.findIndex((m) => m.id === msgId)
-      if (msgIdx === -1) return
-      // Find the last user message before this assistant message
-      let userMsg: ChatMessage | null = null
-      for (let i = msgIdx - 1; i >= 0; i--) {
-        if (messages[i].role === 'user') {
-          userMsg = messages[i]
-          break
-        }
+  const handleRegenerate = (msgId: string) => {
+    // Find the assistant message and the user message before it
+    const msgIdx = messages.findIndex((m) => m.id === msgId)
+    if (msgIdx === -1) return
+    let userMsg: ChatMessage | null = null
+    for (let i = msgIdx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userMsg = messages[i]
+        break
       }
-      if (!userMsg) return
-      // Remove the assistant message and re-send
-      removeMessagesAfter(msgId)
-      window.api?.omoSend({
-        type: 'chat',
-        payload: { message: userMsg.content, mode, model: selectedModel },
-      })
+    }
+    if (!userMsg) return
+    // Ask that question again in place of it and everything after it
+    if (sendTurn({ text: userMsg.content, systemPrompt: turnSystemPrompt(), replaceFrom: userMsg.id })) {
       addToast({ type: 'info', message: 'Regenerating response...' })
-    },
-    [messages, isStreaming, mode, selectedModel, removeMessagesAfter, addToast],
-  )
+    }
+  }
 
   const handleClearChat = useCallback(() => {
     clearMessages()
@@ -2654,21 +2373,12 @@ export default function ChatPanel() {
     addToast({ type: 'info', message: 'Message deleted' })
   }, [loadMessages, addToast])
 
-  const handleEditMessage = useCallback((msgId: string, newContent: string) => {
-    // Find the message index, update it, remove all messages after it, then resend
-    const msgs = useChatStore.getState().messages
-    const idx = msgs.findIndex((m) => m.id === msgId)
-    if (idx === -1) return
-    const updatedMsg = { ...msgs[idx], content: newContent, timestamp: Date.now() }
-    const updatedMessages = [...msgs.slice(0, idx), updatedMsg]
-    loadMessages(updatedMessages)
-    // Resend the edited message
-    window.api?.omoSend({
-      type: 'chat',
-      payload: { message: newContent, mode, model: selectedModel },
-    })
-    addToast({ type: 'info', message: 'Message edited and resent' })
-  }, [loadMessages, mode, selectedModel, addToast])
+  const handleEditMessage = (msgId: string, newContent: string) => {
+    // The edited question replaces the original and everything after it
+    if (sendTurn({ text: newContent, systemPrompt: turnSystemPrompt(), replaceFrom: msgId })) {
+      addToast({ type: 'info', message: 'Message edited and resent' })
+    }
+  }
 
   const handleForkConversation = useCallback((msgId: string) => {
     const msgs = useChatStore.getState().messages
@@ -2817,6 +2527,28 @@ export default function ChatPanel() {
     setShowMentionDropdown(false)
   }
 
+  // Paperclip: pick files anywhere on disk (the dialog grants read access to them)
+  const handleAttachFiles = async () => {
+    let filePaths: string[]
+    try {
+      filePaths = await window.api.openFileDialog()
+    } catch (err) {
+      addToast({ type: 'error', message: `Cannot open the file picker: ${ipcErrorMessage(err)}` })
+      return
+    }
+    for (const filePath of filePaths) {
+      const name = filePath.split(/[\\/]/).pop() || filePath
+      try {
+        const { content, binary } = await window.api.readFile(filePath)
+        // Images resolve as previews with no text: there is nothing to send.
+        if (binary) throw new Error('it is not a text file')
+        setAttachedFiles((prev) => (prev.some((f) => f.path === filePath) ? prev : [...prev, { path: filePath, name, content }]))
+      } catch (err) {
+        addToast({ type: 'error', message: `Cannot attach ${name}: ${ipcErrorMessage(err)}` })
+      }
+    }
+  }
+
   const filteredMentionFiles = openFiles.filter(
     (f) =>
       f.name.toLowerCase().includes(mentionQuery) &&
@@ -2914,40 +2646,8 @@ export default function ChatPanel() {
           Orion AI
         </span>
 
-        {/* Mode Toggle */}
-        <div
-          className="ml-auto flex items-center"
-          style={{
-            background: 'var(--bg-primary)',
-            borderRadius: 6,
-            padding: 2,
-            border: '1px solid var(--border)',
-          }}
-        >
-          {[
-            { m: 'agent' as const, label: 'Agent', Icon: Zap, color: '#3fb950' },
-            { m: 'chat' as const, label: 'Chat', Icon: MessageSquare, color: '#58a6ff' },
-          ].map(({ m, label, Icon, color }) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className="flex items-center gap-1 transition-all duration-150"
-              style={{
-                fontSize: 10,
-                padding: '3px 8px',
-                borderRadius: 4,
-                fontWeight: mode === m ? 600 : 400,
-                background: mode === m ? color + '18' : 'transparent',
-                color: mode === m ? color : 'var(--text-muted)',
-                border: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              <Icon size={10} />
-              {label}
-            </button>
-          ))}
-        </div>
+        {/* Push the header actions to the right */}
+        <div style={{ flex: 1 }} />
         {/* System prompt indicator */}
         {systemPrompt.trim() && (
           <button
@@ -3157,11 +2857,11 @@ export default function ChatPanel() {
                   key={msg.id}
                   message={msg}
                   showThinking={isLastAssistantEmpty}
-                  onRegenerate={handleRegenerate}
+                  onRegenerate={isStreaming ? undefined : handleRegenerate}
                   isPinned={pinnedMessages.has(msg.id)}
                   onTogglePin={handleTogglePin}
                   onDelete={handleDeleteMessage}
-                  onEdit={msg.role === 'user' ? handleEditMessage : undefined}
+                  onEdit={msg.role === 'user' && !isStreaming ? handleEditMessage : undefined}
                   onFork={handleForkConversation}
                   streamStats={isLastAssistantStreaming ? streamStats : null}
                 />
@@ -3645,11 +3345,7 @@ export default function ChatPanel() {
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder={
-              mode === 'agent'
-                ? 'Ask Orion to build, fix, or refactor...  (@ to mention, / for commands)'
-                : 'Ask Orion anything about your code...  (@ to mention, / for commands)'
-            }
+            placeholder="Ask Orion anything about your code...  (@ to mention, / for commands)"
             rows={1}
             style={{
               width: '100%',
@@ -3686,6 +3382,7 @@ export default function ChatPanel() {
           )}
           <div className="flex items-center px-2 pb-2">
             <button
+              onClick={handleAttachFiles}
               style={{
                 padding: 6,
                 color: 'var(--text-muted)',
@@ -3773,8 +3470,6 @@ export default function ChatPanel() {
                 models={allModels}
                 selectedModel={selectedModel}
                 onSelect={setModel}
-                customEndpoint={customEndpoint}
-                onCustomEndpointChange={setCustomEndpoint}
               />
               {/* Stop generation button (visible while streaming) */}
               {isStreaming ? (

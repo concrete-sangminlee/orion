@@ -15,12 +15,15 @@ export interface AIConfig {
   baseURL?: string
 }
 
+/** The chat assistant is the only agent; its logs and status use this id. */
+export const ASSISTANT_AGENT_ID = 'assistant'
+
 function emit(handler: EventHandler, event: OmoEvent) {
   try { handler?.(event) } catch (err) { console.error('[AI Client] emit error:', err) }
 }
 
-function log(handler: EventHandler, agentId: string, message: string, logType: string = 'info') {
-  emit(handler, { type: 'agent-log', payload: { agentId, message, logType } })
+function log(handler: EventHandler, message: string, logType: string = 'info') {
+  emit(handler, { type: 'agent-log', payload: { agentId: ASSISTANT_AGENT_ID, message, logType } })
 }
 
 // ─── Model catalog ───────────────────────────────────────────────────────────
@@ -61,9 +64,7 @@ export const MODEL_CATALOG: Readonly<Record<string, ModelEntry>> = {
 // Map UI model names to actual API configs
 export function resolveModel(selectedModel: string, apiKeys: Record<string, string>): AIConfig | null {
   // Ollama - no API key needed
-  if (selectedModel === 'Ollama') {
-    return { provider: 'ollama', apiKey: 'ollama', model: 'llama3.2', baseURL: OLLAMA_BASE_URL }
-  }
+  if (selectedModel === 'Ollama') return ollamaConfig()
 
   if (!Object.prototype.hasOwnProperty.call(MODEL_CATALOG, selectedModel)) return null
   const cfg = MODEL_CATALOG[selectedModel]
@@ -93,8 +94,15 @@ const COMPAT_MAX_TOKENS = 4096
 type OnChunk = (text: string) => void
 
 export interface CallOptions {
-  /** Aborts the in-flight provider request; an aborted call is never added to history. */
+  /** Aborts the in-flight provider request; the call then rejects even if the reply already arrived. */
   signal?: AbortSignal
+  /**
+   * Earlier turns of the caller's conversation, oldest first. Nothing is kept
+   * between calls, so a one-shot request (inline edit) simply omits it.
+   */
+  history?: readonly ChatMessage[]
+  /** Extra system instructions for this call only, appended to the base system prompt. */
+  systemPrompt?: string
 }
 
 function toAnthropicRequest(config: AIConfig, messages: ChatMessage[]): Anthropic.MessageCreateParamsNonStreaming {
@@ -113,12 +121,12 @@ async function callAnthropic(config: AIConfig, messages: ChatMessage[], handler:
   const request = toAnthropicRequest(config, messages)
 
   if (!onChunk) {
-    log(handler, 'hephaestus', 'Calling Claude API...', 'action')
+    log(handler, 'Calling Claude API...', 'action')
     const response = await client.messages.create(request, { signal })
     return response.content.map(b => (b.type === 'text' ? b.text : '')).join('')
   }
 
-  log(handler, 'hephaestus', 'Calling Claude API (streaming)...', 'action')
+  log(handler, 'Calling Claude API (streaming)...', 'action')
   const stream = client.messages.stream(request, { signal })
 
   let fullText = ''
@@ -150,12 +158,12 @@ async function callOpenAICompat(config: AIConfig, messages: ChatMessage[], handl
   }
 
   if (!onChunk) {
-    log(handler, 'hephaestus', `Calling ${label}...`, 'action')
+    log(handler, `Calling ${label}...`, 'action')
     const response = await client.chat.completions.create(request, { signal })
     return response.choices[0]?.message?.content || 'No response generated.'
   }
 
-  log(handler, 'hephaestus', `Calling ${label} (streaming)...`, 'action')
+  log(handler, `Calling ${label} (streaming)...`, 'action')
   const stream = await client.chat.completions.create({ ...request, stream: true }, { signal })
 
   let fullText = ''
@@ -211,8 +219,9 @@ export async function checkOllama(): Promise<{ available: boolean; models: strin
   }
 }
 
-export function getOllamaStatus() {
-  return { available: ollamaAvailable, models: ollamaModels }
+/** The installed model the selector shows (`Ollama (<first model>)`). */
+function ollamaConfig(): AIConfig {
+  return { provider: 'ollama', apiKey: 'ollama', model: ollamaModels[0] || 'llama3.2', baseURL: OLLAMA_BASE_URL }
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are Orion AI by Bebut, an expert coding assistant integrated into a code editor IDE. You help with code analysis, debugging, feature implementation, and code explanations. Be concise and helpful. Use markdown formatting for code blocks.
@@ -222,51 +231,77 @@ IMPORTANT: You MUST always respond in Korean (한국어). All explanations, comm
 let customSystemPrompt: string = ''
 let customUserTemplate: string = ''
 
-export function setCustomPrompts(prompts: { systemPrompt?: string; userPromptTemplate?: string }) {
-  customSystemPrompt = prompts.systemPrompt || ''
-  customUserTemplate = prompts.userPromptTemplate || ''
+export function setCustomPrompts(prompts: unknown) {
+  // Renderer data (parsed from localStorage there): anything but a string would
+  // become the provider's system text or break every turn's template replace.
+  const { systemPrompt, userPromptTemplate } = (prompts && typeof prompts === 'object' ? prompts : {}) as Record<string, unknown>
+  customSystemPrompt = typeof systemPrompt === 'string' ? systemPrompt : ''
+  customUserTemplate = typeof userPromptTemplate === 'string' ? userPromptTemplate : ''
   console.log('[AI Client] Custom prompts updated')
 }
 
 // ─── Conversation history ────────────────────────────────────────────────────
 
-/** Keep the last 10 exchanges (user + assistant pairs). */
-const MAX_HISTORY_MESSAGES = 20
+/** At most the last 10 exchanges (user + assistant pairs) of the caller's history. */
+export const MAX_HISTORY_MESSAGES = 20
+/** Character budget for the history, newest turns first, so long chats still fit small local models. */
+export const MAX_HISTORY_CHARS = 60_000
+/** Cap on a request's extra system prompt (the renderer builds it within an ~8K-token budget). */
+export const MAX_REQUEST_SYSTEM_PROMPT_CHARS = 64_000
 
-// Conversation history for context. Only completed exchanges are stored, so it
-// always holds whole user/assistant pairs and starts with a user turn.
-let conversationHistory: ChatMessage[] = []
-
-/** Snapshot of the stored conversation history. */
-export function getConversationHistory(): ChatMessage[] {
-  return conversationHistory.map(m => ({ ...m }))
+/**
+ * The caller's history as provider turns. It comes from the renderer, so it is
+ * validated here: only user/assistant turns with text (Claude rejects empty
+ * ones), the most recent within the caps, and starting with a user turn.
+ */
+function historyTurns(history: unknown): ChatMessage[] {
+  if (!Array.isArray(history)) return []
+  const kept: ChatMessage[] = []
+  let chars = 0
+  for (let i = history.length - 1; i >= 0 && kept.length < MAX_HISTORY_MESSAGES; i--) {
+    const turn: unknown = history[i]
+    if (!turn || typeof turn !== 'object') continue
+    const { role, content } = turn as { role?: unknown; content?: unknown }
+    if ((role !== 'user' && role !== 'assistant') || typeof content !== 'string' || !content.trim()) continue
+    chars += content.length
+    if (chars > MAX_HISTORY_CHARS) break
+    kept.unshift({ role, content })
+  }
+  while (kept[0]?.role === 'assistant') kept.shift()
+  return kept
 }
 
-export function clearConversationHistory(): void {
-  conversationHistory = []
+/** Join consecutive turns of the same role (e.g. a question left unanswered by an error). */
+function mergeSameRole(turns: ChatMessage[]): ChatMessage[] {
+  const merged: ChatMessage[] = []
+  for (const turn of turns) {
+    const last = merged[merged.length - 1]
+    if (last && last.role === turn.role) merged[merged.length - 1] = { role: last.role, content: `${last.content}\n\n${turn.content}` }
+    else merged.push(turn)
+  }
+  return merged
 }
 
 interface PreparedCall {
   config: AIConfig
-  userTurn: ChatMessage
   messages: ChatMessage[]
 }
 
-/** Resolve the model and build the request without touching the stored history. */
+/** Resolve the model and build the request from this call's own history and system prompt. */
 function prepareCall(
   selectedModel: string,
   message: string,
   apiKeys: Record<string, string>,
   handler: EventHandler,
   streaming: boolean,
+  { history, systemPrompt: extraSystemPrompt }: CallOptions,
 ): PreparedCall | null {
   let config = resolveModel(selectedModel, apiKeys)
 
   // Fallback to Ollama if no API key
   if (!config && ollamaAvailable) {
-    const model = ollamaModels[0] || 'llama3.2'
-    config = { provider: 'ollama', apiKey: 'ollama', model, baseURL: OLLAMA_BASE_URL }
-    log(handler, 'sisyphus', `No API key for ${selectedModel}, using Ollama (${model})`, 'info')
+    config = ollamaConfig()
+    log(handler, `No API key for ${selectedModel}, using Ollama (${config.model})`, 'info')
   }
 
   if (!config) return null
@@ -284,25 +319,18 @@ function prepareCall(
     processedMessage = `(반드시 한국어로 답변하세요. Answer in Korean only.)\n\n${processedMessage}`
   }
 
-  const userTurn: ChatMessage = { role: 'user', content: processedMessage }
-  const systemPrompt = customSystemPrompt || DEFAULT_SYSTEM_PROMPT
+  let systemPrompt = customSystemPrompt || DEFAULT_SYSTEM_PROMPT
+  if (typeof extraSystemPrompt === 'string' && extraSystemPrompt.trim()) {
+    systemPrompt += `\n\n${extraSystemPrompt.slice(0, MAX_REQUEST_SYSTEM_PROMPT_CHARS)}`
+  }
 
   return {
     config,
-    userTurn,
-    messages: [{ role: 'system', content: systemPrompt }, ...conversationHistory, userTurn],
+    messages: [
+      { role: 'system', content: systemPrompt },
+      ...mergeSameRole([...historyTurns(history), { role: 'user', content: processedMessage }]),
+    ],
   }
-}
-
-/**
- * Record a completed exchange. Called only after the provider call succeeds, so
- * a failed request (or a failed stream retried without streaming) never leaves
- * a dangling user turn behind. An empty reply is not stored either: Claude
- * rejects empty assistant messages in later requests.
- */
-function commitExchange(userTurn: ChatMessage, content: string): void {
-  if (!content.trim()) return
-  conversationHistory = [...conversationHistory, userTurn, { role: 'assistant' as const, content }].slice(-MAX_HISTORY_MESSAGES)
 }
 
 async function runCall(
@@ -311,20 +339,20 @@ async function runCall(
   apiKeys: Record<string, string>,
   handler: EventHandler,
   onChunk: OnChunk | undefined,
-  { signal }: CallOptions = {},
+  options: CallOptions = {},
 ): Promise<{ content: string; model: string } | null> {
+  const { signal } = options
   signal?.throwIfAborted()
-  const prepared = prepareCall(selectedModel, message, apiKeys, handler, onChunk !== undefined)
+  const prepared = prepareCall(selectedModel, message, apiKeys, handler, onChunk !== undefined, options)
   if (!prepared) return null
 
-  const { config, userTurn, messages } = prepared
+  const { config, messages } = prepared
   const content = config.provider === 'anthropic'
     ? await callAnthropic(config, messages, handler, onChunk, signal)
     : await callOpenAICompat(config, messages, handler, onChunk, signal)
 
-  // A cancel that lands as the reply completes still discards the turn.
+  // A cancel that lands as the reply completes still discards it.
   signal?.throwIfAborted()
-  commitExchange(userTurn, content)
   return { content, model: config.model }
 }
 
