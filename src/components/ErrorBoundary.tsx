@@ -28,7 +28,8 @@ export default class ErrorBoundary extends React.Component<ErrorBoundaryProps, E
   }
 
   handleReload = (): void => {
-    window.location.reload()
+    // Through the main process, which asks about unsaved edits first.
+    window.api.reloadWindow()
   }
 
   handleDismiss = (): void => {

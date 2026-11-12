@@ -52,6 +52,16 @@ export interface RecoveryNotification {
   dismissed: boolean
 }
 
+/** A close that would discard unsaved edits, waiting for Save / Don't Save / Cancel. */
+export interface CloseRequest {
+  /** Every tab the close removes. */
+  paths: string[]
+  /** The tabs among them with unsaved edits: the ones the user is asked about. */
+  unsaved: string[]
+  /** Tab to activate if the active one closes (and this one stays open). */
+  next?: string
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const TAB_HISTORY_MAX_DEPTH = 50
@@ -129,6 +139,27 @@ export function retargetPath(path: string, oldPath: string, newPath: string): st
   return path
 }
 
+/**
+ * The tab state once `paths` are closed. The active tab stays active if it is
+ * still open; otherwise `next` (when still open), else the last tab.
+ */
+function withoutTabs(
+  state: Pick<EditorStore, 'openFiles' | 'activeFilePath' | 'previewPath'>,
+  paths: readonly string[],
+  next?: string,
+): Pick<EditorStore, 'openFiles' | 'activeFilePath' | 'previewPath'> {
+  const closing = new Set(paths)
+  const openFiles = state.openFiles.filter((f) => !closing.has(f.path))
+  const isOpen = (path: string | null | undefined): path is string =>
+    !!path && openFiles.some((f) => f.path === path)
+  const activeFilePath = isOpen(state.activeFilePath)
+    ? state.activeFilePath
+    : isOpen(next)
+      ? next
+      : openFiles[openFiles.length - 1]?.path ?? null
+  return { openFiles, activeFilePath, previewPath: isOpen(state.previewPath) ? state.previewPath : null }
+}
+
 // ─── Default group helper ────────────────────────────────────────────────────
 
 function createDefaultGroup(): EditorGroup {
@@ -157,11 +188,21 @@ export interface EditorStore {
 
   // === Existing actions ===
   openFile: (file: OpenFile, options?: { preview?: boolean }) => void
+  /*
+   * Every way of closing tabs goes through these. A close that includes tabs
+   * with unsaved edits does not happen right away: it becomes `closeRequest`,
+   * which the tab bar asks about, and only confirmCloseRequest() closes them.
+   * Pinned tabs are never closed.
+   */
   closeFile: (path: string) => void
   closeAllFiles: () => void
   closeOtherFiles: (path: string) => void
   closeToRight: (path: string) => void
   closeSaved: () => void
+  closeRequest: CloseRequest | null
+  /** Close the requested tabs (after they were saved, or to discard their edits). */
+  confirmCloseRequest: () => void
+  cancelCloseRequest: () => void
   setActiveFile: (path: string) => void
   switchToNextTab: () => void
   switchToPrevTab: () => void
@@ -250,12 +291,27 @@ const initialRecoveryNotifications: RecoveryNotification[] = Object.values(
 
 // ─── Store implementation ────────────────────────────────────────────────────
 
+/** Close `paths` now, or ask first when any of them has unsaved edits. */
+function requestClose(paths: string[], next?: string) {
+  const state = useEditorStore.getState()
+  const closing = new Set(paths)
+  const unsaved = state.openFiles.filter((f) => f.isModified && closing.has(f.path)).map((f) => f.path)
+  if (unsaved.length > 0) useEditorStore.setState({ closeRequest: { paths, unsaved, next } })
+  else if (paths.length > 0) useEditorStore.setState(withoutTabs(state, paths, next))
+}
+
+/** Paths of the unpinned tabs that `keep` does not keep. */
+function unpinnedPaths(state: EditorStore, keep: (file: OpenFile, index: number) => boolean): string[] {
+  return state.openFiles.filter((f, i) => !state.pinnedTabs.includes(f.path) && !keep(f, i)).map((f) => f.path)
+}
+
 export const useEditorStore = create<EditorStore>((set, get) => ({
   // === Legacy flat state ===
   openFiles: [],
   activeFilePath: null,
   previewPath: null,
   pinnedTabs: [],
+  closeRequest: null,
 
   // === Tab groups state ===
   editorGroups: [createDefaultGroup()],
@@ -341,21 +397,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     })
   },
 
-  closeFile: (path) =>
+  closeFile: (path) => requestClose(unpinnedPaths(get(), (f) => f.path !== path)),
+
+  confirmCloseRequest: () =>
     set((state) => {
-      // Pinned tabs cannot be closed without unpinning first
-      if (state.pinnedTabs.includes(path)) return state
-      const files = state.openFiles.filter((f) => f.path !== path)
-      const activePath =
-        state.activeFilePath === path
-          ? files[files.length - 1]?.path ?? null
-          : state.activeFilePath
-      return {
-        openFiles: files,
-        activeFilePath: activePath,
-        previewPath: state.previewPath === path ? null : state.previewPath,
-      }
+      const request = state.closeRequest
+      if (!request) return state
+      // A tab that picked up edits after the question was asked is kept.
+      const closable = request.paths.filter((path) => {
+        const file = state.openFiles.find((f) => f.path === path)
+        return !file?.isModified || request.unsaved.includes(path)
+      })
+      return { ...withoutTabs(state, closable, request.next), closeRequest: null }
     }),
+
+  cancelCloseRequest: () => set({ closeRequest: null }),
 
   setActiveFile: (path) =>
     set((state) => ({
@@ -396,52 +452,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
     }),
 
-  closeAllFiles: () =>
-    set((state) => {
-      const pinnedFiles = state.openFiles.filter((f) => state.pinnedTabs.includes(f.path))
-      if (pinnedFiles.length === 0) {
-        return { openFiles: [], activeFilePath: null, previewPath: null }
-      }
-      const activePath = pinnedFiles.find((f) => f.path === state.activeFilePath)
-        ? state.activeFilePath
-        : pinnedFiles[0]?.path ?? null
-      return {
-        openFiles: pinnedFiles,
-        activeFilePath: activePath,
-        previewPath: state.previewPath && pinnedFiles.find((f) => f.path === state.previewPath)
-          ? state.previewPath
-          : null,
-      }
-    }),
+  closeAllFiles: () => {
+    const state = get()
+    const firstPinned = state.openFiles.find((f) => state.pinnedTabs.includes(f.path))?.path
+    requestClose(unpinnedPaths(state, () => false), firstPinned)
+  },
 
-  closeOtherFiles: (path) =>
-    set((state) => ({
-      openFiles: state.openFiles.filter((f) => f.path === path || state.pinnedTabs.includes(f.path)),
-      activeFilePath: path,
-      previewPath: state.previewPath === path ? state.previewPath : null,
-    })),
+  closeOtherFiles: (path) => requestClose(unpinnedPaths(get(), (f) => f.path === path), path),
 
-  closeToRight: (path) =>
-    set((state) => {
-      const idx = state.openFiles.findIndex((f) => f.path === path)
-      if (idx === -1) return state
-      // Keep tabs to the left (including target), plus any pinned tabs to the right
-      const files = state.openFiles.filter((f, i) =>
-        i <= idx || state.pinnedTabs.includes(f.path)
-      )
-      const activePath =
-        state.activeFilePath && files.find((f) => f.path === state.activeFilePath)
-          ? state.activeFilePath
-          : path
-      return {
-        openFiles: files,
-        activeFilePath: activePath,
-        previewPath:
-          state.previewPath && files.find((f) => f.path === state.previewPath)
-            ? state.previewPath
-            : null,
-      }
-    }),
+  closeToRight: (path) => {
+    const state = get()
+    const idx = state.openFiles.findIndex((f) => f.path === path)
+    if (idx === -1) return
+    requestClose(unpinnedPaths(state, (_f, i) => i <= idx), path)
+  },
 
   closeSaved: () =>
     set((state) => {

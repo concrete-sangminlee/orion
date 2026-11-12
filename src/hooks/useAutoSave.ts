@@ -2,8 +2,8 @@ import { useEffect, useRef, useCallback } from 'react'
 import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
 import { useFileHistoryStore } from '@/store/fileHistory'
-import { writeFileChecked } from '@/utils/ipcResult'
-import { canAutoSave } from '@/utils/saveGuards'
+import { ipcErrorMessage, writeFileChecked } from '@/utils/ipcResult'
+import { canAutoSave, needsSaveLocation } from '@/utils/saveGuards'
 
 // ── Types ──────────────────────────────────────────────
 export type AutoSaveMode = 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange'
@@ -47,7 +47,43 @@ function getRecoveryIndex(): Record<string, string> {
 }
 
 function setRecoveryIndex(index: Record<string, string>) {
-  localStorage.setItem(RECOVERY_INDEX_KEY, JSON.stringify(index))
+  try {
+    localStorage.setItem(RECOVERY_INDEX_KEY, JSON.stringify(index))
+  } catch {
+    // localStorage full or unavailable
+  }
+}
+
+/** Where the fingerprint of the file as it was on disk when its edits began is kept. */
+function baseKey(entryKey: string): string {
+  return `${entryKey}-base`
+}
+
+function setRecoveryBase(filePath: string, diskContent: string) {
+  try {
+    localStorage.setItem(baseKey(recoveryKey(filePath)), contentHash(diskContent))
+  } catch {}
+}
+
+function removeEntry(entryKey: string) {
+  try {
+    localStorage.removeItem(entryKey)
+    localStorage.removeItem(baseKey(entryKey))
+  } catch {}
+}
+
+/** A fingerprint of file text. It only tells whether the text changed; it is not cryptographic. */
+function contentHash(text: string): string {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ ch, 2654435761)
+    h2 = Math.imul(h2 ^ ch, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return `${text.length}:${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}`
 }
 
 /** Store file content for crash recovery. Limits to MAX_RECOVERY_FILES entries. */
@@ -88,7 +124,7 @@ function storeRecovery(filePath: string, content: string) {
       }
 
       if (oldest) {
-        try { localStorage.removeItem(oldest.key) } catch {}
+        removeEntry(oldest.key)
         delete index[oldest.path]
       }
     }
@@ -104,19 +140,45 @@ function storeRecovery(filePath: string, content: string) {
   }
 }
 
-/** Clear recovery entry for a file (called after successful save). */
+/** Clear the recovery entry for a file (its buffer was saved or discarded). */
 export function clearRecovery(filePath: string) {
-  const key = recoveryKey(filePath)
   const index = getRecoveryIndex()
-  delete index[filePath]
-  setRecoveryIndex(index)
-  try { localStorage.removeItem(key) } catch {}
+  if (index[filePath]) {
+    delete index[filePath]
+    setRecoveryIndex(index)
+  }
+  removeEntry(recoveryKey(filePath))
 }
+
+// A recovery copy belongs to a buffer that is open with unsaved edits. Once the
+// buffer is closed or reverted (Don't Save, Reload) its edits were discarded on
+// purpose: a copy left behind would come back at the next launch as "unsaved
+// changes" and then be auto-saved over the file. (A renamed buffer gets a new
+// copy under its new path with its next change or backup.) Closing a clean tab
+// discards nothing, so it keeps a copy the last session left for that file.
+//
+// When a buffer's edits begin, its clean content is what it last loaded from
+// or saved to disk: that fingerprint lets a restore tell whether the file
+// changed since. (Reading the disk instead would mark that content as seen by
+// the editor, and the watcher would then drop a real external change.)
+useEditorStore.subscribe((state, prev) => {
+  if (state.openFiles === prev.openFiles) return
+  const current = new Map(state.openFiles.map((f) => [f.path, f]))
+  for (const before of prev.openFiles) {
+    const after = current.get(before.path)
+    if (before.isModified && !after?.isModified) clearRecovery(before.path)
+    else if (after && !before.isModified && after.isModified && !needsSaveLocation(before.path)) {
+      setRecoveryBase(before.path, before.content)
+    }
+  }
+})
 
 export interface RecoveryEntry {
   path: string
   content: string
   timestamp: number
+  /** Fingerprint of the buffer's clean (on-disk) content when the edits began, if known. */
+  baseHash?: string
 }
 
 /** Check for any pending recovery entries. Returns array of recoverable files. */
@@ -128,14 +190,16 @@ export function getRecoveryEntries(): RecoveryEntry[] {
     try {
       const raw = localStorage.getItem(key)
       if (raw) {
-        const parsed = JSON.parse(raw) as RecoveryEntry
-        entries.push(parsed)
-    } else {
+        const { path, content, timestamp } = JSON.parse(raw) as RecoveryEntry
+        const baseHash = localStorage.getItem(baseKey(key)) ?? undefined
+        entries.push({ path, content, timestamp, baseHash })
+      } else {
         // Stale index entry
+        removeEntry(key)
         delete index[filePath]
       }
     } catch {
-      localStorage.removeItem(key)
+      removeEntry(key)
       delete index[filePath]
     }
   }
@@ -147,10 +211,49 @@ export function getRecoveryEntries(): RecoveryEntry[] {
 /** Clear all recovery entries. */
 export function clearAllRecovery() {
   const index = getRecoveryIndex()
-  for (const key of Object.values(index)) {
-    try { localStorage.removeItem(key) } catch {}
+  for (const key of Object.values(index)) removeEntry(key)
+  try { localStorage.removeItem(RECOVERY_INDEX_KEY) } catch {}
+}
+
+/**
+ * Reopen the buffers of `entries` with their unsaved edits. Auto-save may then
+ * write a restored buffer only when the file is still exactly what it was when
+ * those edits began; otherwise the tab is flagged as changed on disk, so the
+ * user compares, keeps or reloads it first.
+ */
+export async function restoreRecoveryEntries(entries: RecoveryEntry[]): Promise<void> {
+  const failures: string[] = []
+  for (const entry of entries) {
+    const name = entry.path.split(/[\\/]/).pop() || entry.path
+    let language = guessLanguage(name)
+    let changedOnDisk = false
+    if (!needsSaveLocation(entry.path)) {
+      let disk: { content: string; language: string }
+      try {
+        disk = await window.api.readFile(entry.path)
+      } catch (err) {
+        failures.push(`${name} (${ipcErrorMessage(err)})`)
+        continue
+      }
+      if (disk.content === entry.content) {
+        // Nothing unsaved: the file already holds this text.
+        clearRecovery(entry.path)
+        continue
+      }
+      language = disk.language
+      changedOnDisk = entry.baseHash !== contentHash(disk.content)
+    }
+    const { openFiles, openFile, updateFileContent, markExternalChange } = useEditorStore.getState()
+    // A tab with edits of its own made since launch keeps them.
+    if (openFiles.some((f) => f.path === entry.path && f.isModified)) continue
+    openFile({ path: entry.path, name, content: entry.content, language, isModified: true, aiModified: false })
+    // openFile only activates a tab that is already open.
+    updateFileContent(entry.path, entry.content)
+    if (changedOnDisk) markExternalChange(entry.path)
   }
-  localStorage.removeItem(RECOVERY_INDEX_KEY)
+  if (failures.length > 0) {
+    useToastStore.getState().addToast({ type: 'error', message: `Could not restore ${failures.join(', ')}` })
+  }
 }
 
 // ── Read settings from localStorage ──────────────────
@@ -334,26 +437,11 @@ export function useRecoveryCheck() {
       const { addToast } = useToastStore.getState()
       addToast({
         type: 'info',
-        message: `Recovered unsaved changes for ${entries.length} file(s).`,
+        message: `Found unsaved changes to ${entries.length} file(s) from the last session.`,
         action: {
           label: 'Restore',
-          onClick: () => {
-            const { openFile, updateFileContent } = useEditorStore.getState()
-            for (const entry of entries) {
-              const name = entry.path.split('/').pop() || entry.path.split('\\').pop() || entry.path
-              // Open the file with the recovered content
-              openFile({
-                path: entry.path,
-                name,
-                content: entry.content,
-                language: guessLanguage(name),
-                isModified: true,
-                aiModified: false,
-              })
-              updateFileContent(entry.path, entry.content)
-            }
-            // Keep recovery entries until user saves
-          },
+          // The entries stay until the restored buffers are saved or discarded.
+          onClick: () => { void restoreRecoveryEntries(entries) },
         },
         secondaryAction: {
           label: 'Discard',

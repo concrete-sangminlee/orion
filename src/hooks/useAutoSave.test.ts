@@ -1,8 +1,10 @@
 /** @vitest-environment jsdom */
 import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { getRecoveryEntries, useAutoSave } from './useAutoSave'
+import { getRecoveryEntries, restoreRecoveryEntries, useAutoSave } from './useAutoSave'
 import { useEditorStore } from '@/store/editor'
+import { useToastStore } from '@/store/toast'
+import { canAutoSave } from '@/utils/saveGuards'
 
 /** Auto-save runs for files open in the editor with unsaved changes. */
 function openModifiedFiles(...paths: string[]) {
@@ -231,5 +233,128 @@ describe('useAutoSave', () => {
     expect(localStorage.getItem('orion-recovery-index')).toBe('{}')
 
     unmount()
+  })
+})
+
+describe('recovery copies of discarded edits', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    localStorage.clear()
+    useEditorStore.setState({ pinnedTabs: [], closeRequest: null })
+    openModifiedFiles('/workspace/a.ts', '/workspace/b.ts')
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('forgets the copy of a buffer closed with Don\'t Save', () => {
+    const { result } = renderHook(() => useAutoSave())
+    act(() => {
+      result.current.scheduleAutoSave('/workspace/a.ts', 'discard me')
+      result.current.scheduleAutoSave('/workspace/b.ts', 'keep me')
+      useEditorStore.getState().closeFile('/workspace/a.ts')
+      useEditorStore.getState().confirmCloseRequest()
+    })
+    expect(getRecoveryEntries().map((e) => e.path)).toEqual(['/workspace/b.ts'])
+  })
+
+  it('keeps the copy the last session left when a clean tab of that file is closed', () => {
+    const { result } = renderHook(() => useAutoSave())
+    act(() => result.current.scheduleAutoSave('/workspace/a.ts', 'unsaved last session'))
+    // The next launch starts with an empty editor and this localStorage...
+    const leftBehind = { ...localStorage }
+    useEditorStore.setState({ openFiles: [] })
+    for (const [key, value] of Object.entries(leftBehind)) localStorage.setItem(key, value)
+    // ...and the file is opened from disk (clean) and closed again.
+    useEditorStore.getState().openFile({ path: '/workspace/a.ts', name: 'a.ts', content: 'disk', language: 'typescript', isModified: false, aiModified: false })
+    useEditorStore.getState().closeFile('/workspace/a.ts')
+    expect(useEditorStore.getState().openFiles).toEqual([])
+    expect(getRecoveryEntries().map((e) => e.content)).toEqual(['unsaved last session'])
+  })
+
+  it('forgets the copy of a buffer reloaded from disk', () => {
+    const { result } = renderHook(() => useAutoSave())
+    act(() => {
+      result.current.scheduleAutoSave('/workspace/a.ts', 'discard me')
+      useEditorStore.getState().reloadFileContent('/workspace/a.ts', 'disk version')
+    })
+    expect(getRecoveryEntries()).toEqual([])
+  })
+})
+
+describe('restoreRecoveryEntries', () => {
+  let readFile: ReturnType<typeof vi.fn>
+
+  /** What a session leaves behind when it crashes while `/workspace/a.ts` holds unsaved edits. */
+  function crashWithUnsavedEdit(diskWhenEditing: string, edit: string) {
+    useEditorStore.setState({
+      openFiles: [{ path: '/workspace/a.ts', name: 'a.ts', content: diskWhenEditing, language: 'typescript', isModified: false, aiModified: false }],
+    })
+    const { result, unmount } = renderHook(() => useAutoSave())
+    act(() => {
+      useEditorStore.getState().updateFileContent('/workspace/a.ts', edit)
+      result.current.scheduleAutoSave('/workspace/a.ts', edit)
+    })
+    unmount()
+    // The next launch starts with an empty editor and this localStorage.
+    const leftBehind = { ...localStorage }
+    useEditorStore.setState({ openFiles: [], activeFilePath: null })
+    for (const [key, value] of Object.entries(leftBehind)) localStorage.setItem(key, value)
+    // A file read here would mark the disk text as seen by the editor.
+    expect(readFile).not.toHaveBeenCalled()
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    localStorage.clear()
+    readFile = vi.fn()
+    ;(globalThis as unknown as { api: Record<string, unknown> }).api = {
+      writeFile: vi.fn().mockResolvedValue({ success: true }),
+      readFile,
+    }
+    useEditorStore.setState({ openFiles: [], activeFilePath: null, previewPath: null, pinnedTabs: [] })
+    useToastStore.setState({ toasts: [] })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const restored = () => useEditorStore.getState().openFiles.find((f) => f.path === '/workspace/a.ts')
+
+  it('restores edits to a file that is unchanged since they began, ready for auto-save', async () => {
+    crashWithUnsavedEdit('original', 'my edit')
+    readFile.mockResolvedValue({ content: 'original', language: 'typescript' })
+    await restoreRecoveryEntries(getRecoveryEntries())
+    expect(restored()).toMatchObject({ content: 'my edit', isModified: true })
+    expect(restored()?.hasExternalChange).toBeFalsy()
+  })
+
+  it('flags a file that changed on disk since, so auto-save does not write over it', async () => {
+    crashWithUnsavedEdit('original', 'my edit')
+    readFile.mockResolvedValue({ content: 'changed by git pull', language: 'typescript' })
+    await restoreRecoveryEntries(getRecoveryEntries())
+    expect(restored()).toMatchObject({ content: 'my edit', isModified: true, hasExternalChange: true })
+    expect(canAutoSave(restored())).toBe(false)
+  })
+
+  it('drops a copy the file already holds', async () => {
+    crashWithUnsavedEdit('original', 'saved elsewhere')
+    readFile.mockResolvedValue({ content: 'saved elsewhere', language: 'typescript' })
+    await restoreRecoveryEntries(getRecoveryEntries())
+    expect(restored()).toBeUndefined()
+    expect(getRecoveryEntries()).toEqual([])
+  })
+
+  it('says which files could not be read instead of opening them', async () => {
+    crashWithUnsavedEdit('original', 'my edit')
+    readFile.mockRejectedValue(new Error('Refused file path: outside workspace root'))
+    await restoreRecoveryEntries(getRecoveryEntries())
+    expect(restored()).toBeUndefined()
+    expect(useToastStore.getState().toasts.map((t) => t.message)).toEqual([
+      'Could not restore a.ts (Refused file path: outside workspace root)',
+    ])
+    expect(getRecoveryEntries()).toHaveLength(1)
   })
 })

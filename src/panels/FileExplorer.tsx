@@ -4,6 +4,7 @@ import { useEditorStore } from '@/store/editor'
 import { useToastStore } from '@/store/toast'
 import { useWorkspaceStore } from '@/store/workspace'
 import { ipcErrorMessage } from '@/utils/ipcResult'
+import { useRevealStore } from '@/utils/revealInExplorer'
 import {
   ChevronDown, ChevronRight, ChevronsDownUp,
   File, FileCode, FileCode2, FileText,
@@ -140,7 +141,6 @@ interface InlineInputState {
   mode: InlineInputMode
   parentPath: string
   /** Only set when mode === 'rename' */
-  existingName?: string
   existingPath?: string
   depth: number
 }
@@ -758,7 +758,8 @@ function FileTreeNode({
         <InlineInput
           mode="rename"
           depth={depth}
-          initialValue={node.name}
+          // A compact row is labelled "src/components" but renames only its last folder.
+          initialValue={leafName(node.path)}
           onSubmit={onInlineSubmit}
           onCancel={onInlineCancel}
         />
@@ -1038,6 +1039,11 @@ function sep(p: string): string {
   return p.includes('/') ? '/' : '\\'
 }
 
+/** The last segment of a path: what a rename changes. */
+function leafName(p: string): string {
+  return p.split(/[\\/]/).pop() || p
+}
+
 /** Compute a relative path from a root to a target */
 function relativePath(root: string, target: string): string {
   const norm = (s: string) => s.replace(/\\/g, '/')
@@ -1265,6 +1271,21 @@ export default function FileExplorer() {
   const [stickyParents, setStickyParents] = useState<{ path: string; name: string; depth: number }[]>([])
   const searchInputRef = useRef<HTMLInputElement>(null)
 
+  // "Reveal in Explorer" expanded the file's folders; scroll its row into view.
+  const revealTarget = useRevealStore((s) => s.target)
+  useEffect(() => {
+    if (!revealTarget) return
+    // A filter could be hiding the row.
+    if (searchQuery) {
+      setSearchQuery('')
+      return
+    }
+    const row = treeContainerRef.current?.querySelector<HTMLElement>(`[data-node-path="${CSS.escape(revealTarget)}"]`)
+    row?.scrollIntoView({ block: 'center' })
+    row?.focus({ preventScroll: true })
+    useRevealStore.setState({ target: null })
+  }, [revealTarget, searchQuery])
+
   const openFiles = useEditorStore((s) => s.openFiles)
   const activeFilePath = useEditorStore((s) => s.activeFilePath)
   const setActiveFile = useEditorStore((s) => s.setActiveFile)
@@ -1387,7 +1408,6 @@ export default function FileExplorer() {
     setInlineInput({
       mode: 'rename',
       parentPath: node.path.replace(/[\\/][^\\/]+$/, ''),
-      existingName: node.name,
       existingPath: node.path,
       depth: 0,
     })
@@ -1402,7 +1422,7 @@ export default function FileExplorer() {
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return
-    const name = deleteTarget.name
+    const name = leafName(deleteTarget.path)
     try {
       const result = await window.api.trashItem(deleteTarget.path)
       if (!result.success) throw new Error(result.error || 'the item could not be deleted')
@@ -1494,7 +1514,8 @@ export default function FileExplorer() {
     if (node.type === 'file') {
       try {
         const result = await window.api.readFile(node.path)
-        useEditorStore.getState().openFile(
+        const { activeFilePath: previous, openFile, setActiveFile } = useEditorStore.getState()
+        openFile(
           {
             path: node.path,
             name: node.name,
@@ -1505,13 +1526,15 @@ export default function FileExplorer() {
           },
           { preview: false },
         )
-        // Trigger split editor via custom event (EditorPanel listens for this)
-        window.dispatchEvent(new CustomEvent('orion:split-editor'))
+        // The file goes to the side pane; the main pane keeps what it showed.
+        if (previous && previous !== node.path) setActiveFile(previous)
+        // Names the file: the split must not guess it, nor close an open split.
+        window.dispatchEvent(new CustomEvent('orion:split-editor-right', { detail: { path: node.path } }))
       } catch (e) {
-        console.error('Failed to open file to side:', e)
+        addToast({ type: 'error', message: `Failed to open ${node.name}: ${ipcErrorMessage(e)}` })
       }
     }
-  }, [ctxMenu, closeContextMenu])
+  }, [ctxMenu, closeContextMenu, addToast])
 
   const handleRevealInFileManager = useCallback(() => {
     if (!ctxMenu || !ctxMenu.node) return
@@ -1593,6 +1616,8 @@ export default function FileExplorer() {
         done(await window.api.createDir(dirPath))
         addToast({ type: 'success', message: `Created folder ${value}` })
       } else if (mode === 'rename' && existingPath) {
+        // A separator would move the item into another (possibly new) folder.
+        if (/[\\/]/.test(value)) throw new Error('a name cannot contain / or \\')
         const s = sep(parentPath)
         const newPath = parentPath + s + value
         if (newPath !== existingPath) {
@@ -1710,7 +1735,6 @@ export default function FileExplorer() {
     setInlineInput({
       mode: 'rename',
       parentPath: node.path.replace(/[\\/][^\\/]+$/, ''),
-      existingName: node.name,
       existingPath: node.path,
       depth: 0,
     })
@@ -2129,7 +2153,8 @@ export default function FileExplorer() {
       {/* Delete confirmation dialog */}
       {deleteTarget && (
         <DeleteDialog
-          name={deleteTarget.name}
+          // Only the last folder of a compact row ("src/components") is deleted.
+          name={leafName(deleteTarget.path)}
           isDirectory={deleteTarget.type === 'directory'}
           onConfirm={handleDeleteConfirm}
           onCancel={handleDeleteCancel}
@@ -2180,10 +2205,6 @@ function HeaderButton({
 /* ── Empty state ───────────────────────────────────────── */
 
 function EmptyExplorer({ onOpenFolder }: { onOpenFolder: () => void }) {
-  const handleCloneRepo = () => {
-    window.dispatchEvent(new CustomEvent('orion:clone-repository'))
-  }
-
   return (
     <div className="flex flex-col items-center justify-center h-full gap-4 px-8">
       <div
@@ -2205,7 +2226,7 @@ function EmptyExplorer({ onOpenFolder }: { onOpenFolder: () => void }) {
           No Folder Opened
         </p>
         <p style={{ color: 'var(--text-muted)', fontSize: 11, opacity: 0.7, lineHeight: 1.6, maxWidth: 200 }}>
-          Open a folder or clone a repository to start exploring your project
+          Open a folder to start exploring your project
         </p>
       </div>
       <div className="flex flex-col gap-2" style={{ width: '100%', maxWidth: 180 }}>
@@ -2235,32 +2256,6 @@ function EmptyExplorer({ onOpenFolder }: { onOpenFolder: () => void }) {
         >
           <FolderPlus size={13} />
           Open Folder
-        </button>
-        <button
-          onClick={handleCloneRepo}
-          className="flex items-center justify-center gap-2 transition-all duration-150"
-          style={{
-            fontSize: 12,
-            padding: '7px 18px',
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            borderRadius: 6,
-            fontWeight: 500,
-            border: '1px solid var(--border)',
-            cursor: 'pointer',
-            width: '100%',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
-            e.currentTarget.style.color = 'var(--text-primary)'
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'transparent'
-            e.currentTarget.style.color = 'var(--text-secondary)'
-          }}
-        >
-          <GitBranch size={13} />
-          Clone Repository
         </button>
       </div>
     </div>
