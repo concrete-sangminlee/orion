@@ -4,6 +4,8 @@ import {
   type OutputLineType,
 } from '@/store/output'
 import { useEditorStore } from '@/store/editor'
+import { useFileStore } from '@/store/files'
+import { openFileInEditor } from '@/utils/openFileInEditor'
 import {
   ChevronDown, ChevronUp, Trash2, Copy, WrapText, FileOutput,
   Pin, PinOff, Clock, Search, X, Filter, ExternalLink,
@@ -98,48 +100,82 @@ function applyAnsiCode(code: number, prev: CSSProperties): CSSProperties {
 
 /* ── File path detection ───────────────────────────────────── */
 
-/** Matches patterns like /foo/bar.ts:42, ./src/x.js:10:5, C:\foo\bar.ts:7 */
-const FILE_PATH_RE = /(?:[a-zA-Z]:[\\\/]|\.{0,2}\/)[^\s:]+(?::\d+(?::\d+)?)?/g
+/**
+ * File references such as /foo/bar.ts:42, ./src/x.js:10:5, src/a.tsx or
+ * C:\foo\bar.ts:7. A link needs a directory part and a file extension that
+ * starts with a letter, and must not continue a word, URL or path (a colour
+ * code may precede it), so 'Mozilla/5.0', 'feature/login' or
+ * 'https://host/x.js' stay plain.
+ */
+const FILE_PATH_RE = /(?:(?<=\x1b\[[\d;]*m)|(?<![\w.@+\-/\\:])(?<!\x1b\[[\d;]*))((?:(?:[a-zA-Z]:[\\/]|\.{0,2}\/|\.{1,2}\\)(?:[\w.@+-]+[\\/])*|(?:[\w.@+-]+[\\/])+)[\w.@+-]*\.[a-zA-Z]\w*)(?::(\d+)(?::\d+)?)?/g
+
+export interface TextSegment {
+  text: string
+  filePath?: string
+  line?: number
+}
+
+/** Split a line of output into plain text and file-reference segments. */
+export function splitFileLinks(text: string): TextSegment[] {
+  const segments: TextSegment[] = []
+  let last = 0
+  FILE_PATH_RE.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = FILE_PATH_RE.exec(text)) !== null) {
+    if (match.index > last) segments.push({ text: text.slice(last, match.index) })
+    segments.push({ text: match[0], filePath: match[1], line: match[2] ? parseInt(match[2], 10) : undefined })
+    last = FILE_PATH_RE.lastIndex
+  }
+  if (last < text.length) segments.push({ text: text.slice(last) })
+  if (segments.length === 0) segments.push({ text })
+  return segments
+}
+
+/**
+ * Relative paths in tool output (src/x.ts, ./x.ts) are relative to the
+ * workspace root. Windows paths get backslashes throughout, as the file tree
+ * has them: tabs are keyed by path, so git's 'src/a.ts' must not become
+ * 'C:\p\src/a.ts', a second tab on a file that is already open.
+ */
+export function resolveOutputPath(filePath: string, root: string | null): string {
+  if (/^[a-zA-Z]:[\\/]/.test(filePath)) return filePath.replace(/\//g, '\\')
+  if (filePath.startsWith('/') || !root) return filePath
+  const sep = root.includes('\\') ? '\\' : '/'
+  const rel = filePath.replace(/^\.[\\/]/, '')
+  return `${root.replace(/[\\/]+$/, '')}${sep}${sep === '\\' ? rel.replace(/\//g, '\\') : rel}`
+}
+
+/** Read the file into a tab (never an empty buffer bound to the real path), then jump to the line. */
+export async function openOutputLink(filePath: string, line?: number): Promise<void> {
+  const opened = await openFileInEditor(resolveOutputPath(filePath, useFileStore.getState().rootPath))
+  if (opened && line) {
+    // The editor switches models after the store update; go to the line once it has.
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('orion:go-to-line', { detail: { line } }))
+    }, 50)
+  }
+}
 
 function renderTextWithLinks(
   text: string,
   baseStyle: CSSProperties,
   searchTerm: string,
-  onFileClick: (path: string, line?: number, col?: number) => void,
+  onFileClick: (path: string, line?: number) => void,
 ): ReactNode[] {
-  // First, split by file path patterns
-  const segments: { text: string; isPath: boolean; filePath?: string; line?: number; col?: number }[] = []
-  let last = 0
-  FILE_PATH_RE.lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = FILE_PATH_RE.exec(text)) !== null) {
-    if (match.index > last) {
-      segments.push({ text: text.slice(last, match.index), isPath: false })
-    }
-    const full = match[0]
-    const parts = full.split(':')
-    const filePath = parts[0]
-    const line = parts[1] ? parseInt(parts[1], 10) : undefined
-    const col = parts[2] ? parseInt(parts[2], 10) : undefined
-    segments.push({ text: full, isPath: true, filePath, line, col })
-    last = FILE_PATH_RE.lastIndex
-  }
-  if (last < text.length) {
-    segments.push({ text: text.slice(last), isPath: false })
-  }
-  if (segments.length === 0) segments.push({ text, isPath: false })
+  const segments = splitFileLinks(text)
 
   const nodes: ReactNode[] = []
   let key = 0
 
   for (const seg of segments) {
-    if (seg.isPath) {
+    if (seg.filePath) {
+      const filePath = seg.filePath
       nodes.push(
         <span
           key={key++}
           onClick={(e) => {
             e.stopPropagation()
-            onFileClick(seg.filePath!, seg.line, seg.col)
+            onFileClick(filePath, seg.line)
           }}
           style={{
             ...baseStyle,
@@ -465,15 +501,6 @@ export default function OutputPanel() {
       return next
     })
   }, [])
-
-  /* ── File click handler ────────────────────────────────────── */
-
-  const handleFileClick = useCallback((path: string, line?: number, _col?: number) => {
-    openFile({ path, name: path.split(/[/\\]/).pop() || path, content: '', language: '', isModified: false, aiModified: false })
-    // Line navigation would be handled by the editor; for now open the file
-    void line
-    void _col
-  }, [openFile])
 
   /* ── Search navigation ─────────────────────────────────────── */
 
@@ -846,10 +873,10 @@ export default function OutputPanel() {
                       {tagResult ? (
                         <>
                           {tagResult.tag}
-                          {renderTextWithLinks(tagResult.rest, { color: lineColor }, searchText, handleFileClick)}
+                          {renderTextWithLinks(tagResult.rest, { color: lineColor }, searchText, openOutputLink)}
                         </>
                       ) : (
-                        renderTextWithLinks(line.text, { color: lineColor }, searchText, handleFileClick)
+                        renderTextWithLinks(line.text, { color: lineColor }, searchText, openOutputLink)
                       )}
                     </span>
                   </div>
