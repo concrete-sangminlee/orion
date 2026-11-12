@@ -82,12 +82,16 @@ describe('renaming and moving', () => {
   })
 
   it('allows a rename whose destination is the same entry (case-only rename)', async () => {
-    // A hard link stands in for a case-insensitive file system, where
-    // `Readme.md` and `README.md` are one entry.
     await fs.writeFile(at('readme.md'), 'docs')
-    await fs.link(at('readme.md'), at('README.md'))
+    const caseInsensitive = await fs.access(at('README.md')).then(() => true, () => false)
+    if (!caseInsensitive) {
+      // A hard link stands in for a case-insensitive file system (macOS,
+      // Windows), where `readme.md` and `README.md` are one entry.
+      await fs.link(at('readme.md'), at('README.md'))
+    }
     await expect(renameItem(at('readme.md'), at('README.md'))).resolves.toBeUndefined()
     expect(await fs.readFile(at('README.md'), 'utf8')).toBe('docs')
+    if (caseInsensitive) expect(await fs.readdir(dir)).toContain('README.md')
   })
 
   it('moves into a folder that does not exist yet', async () => {
