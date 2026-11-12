@@ -24,7 +24,7 @@ import { appendGitSequencerOptions, GitSequencerOptions } from './git-sequencer-
 import { GIT_TAG_FORMAT, parseGitTagLine } from './git-tag-format'
 import { parseGitPorcelainStatusZ } from './git-status-parse'
 import { handle } from './typed-ipc'
-import type { GitSubmodule } from '../../shared/ipc-contract'
+import type { GitBranch, GitSubmodule } from '../../shared/ipc-contract'
 
 const execFileAsync = promisify(execFile)
 
@@ -46,18 +46,35 @@ interface GitExecOptions {
   raw?: boolean
 }
 
+/** Read-only queries (status, log, diff) should answer quickly. */
+const QUERY_TIMEOUT_MS = 10_000
+/**
+ * Commands that change the repository can run hooks (lint-staged, tests),
+ * wait for a GPG pinentry, or rewrite a large worktree. Killing them at the
+ * query timeout aborted commits while the hook's processes kept running.
+ */
+export const MUTATION_TIMEOUT_MS = 10 * 60_000
+
 async function runGitExec(
   cwd: unknown,
   args: string[],
   options?: GitExecOptions
 ): Promise<string> {
   const safeCwd = await resolveGitCwd(cwd)
-  const { stdout } = await execFileAsync('git', args, {
-    cwd: safeCwd,
-    timeout: options?.timeout ?? 10000,
-    maxBuffer: options?.maxBuffer ?? 1024 * 1024 * 5,
-  })
-  return options?.raw ? stdout : stdout.trim()
+  const timeout = options?.timeout ?? QUERY_TIMEOUT_MS
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd: safeCwd,
+      timeout,
+      maxBuffer: options?.maxBuffer ?? 1024 * 1024 * 5,
+    })
+    return options?.raw ? stdout : stdout.trim()
+  } catch (err: any) {
+    // execFile kills git at the timeout; the partial stderr it leaves (often
+    // hook output) does not say why the command stopped.
+    if (err?.killed) throw new Error(`git ${args[0]} timed out after ${Math.round(timeout / 1000)} s`)
+    throw err
+  }
 }
 
 /**
@@ -94,7 +111,7 @@ async function runGitMutation(
   options?: GitExecOptions
 ): Promise<string> {
   try {
-    return await runGitExec(cwd, args, options)
+    return await runGitExec(cwd, args, { timeout: MUTATION_TIMEOUT_MS, ...options })
   } catch (err: any) {
     throw new Error(gitErrorMessage(err))
   }
@@ -207,6 +224,31 @@ async function getGitLogPage(cwd: string, options?: GitLogPageOptions) {
 
 const NETWORK_TIMEOUT_MS = 120_000
 
+/** An untracked folder is one status row; diffing every file in it could take long. */
+const MAX_UNTRACKED_DIFF_FILES = 20
+
+/**
+ * `git diff` ignores untracked files, so show them as added: each one diffed
+ * against an empty file. The paths come from `git ls-files`, so they are inside
+ * the repository even though `--no-index` would accept any path.
+ */
+async function diffUntracked(cwd: unknown, pathspec: string): Promise<string> {
+  const listed = await runGitOrEmpty(cwd, ['ls-files', '-z', '--others', '--exclude-standard', '--', pathspec], { raw: true })
+  const files = listed.split('\0').filter(Boolean)
+  const diffs: string[] = []
+  for (const file of files.slice(0, MAX_UNTRACKED_DIFF_FILES)) {
+    try {
+      diffs.push(await runGitExec(cwd, ['diff', '--no-index', '--', '/dev/null', file]))
+    } catch (err: any) {
+      // --no-index exits 1 when the inputs differ, which is always the case here.
+      if (err?.code === 1 && typeof err.stdout === 'string') diffs.push(err.stdout.trim())
+    }
+  }
+  const omitted = files.length - MAX_UNTRACKED_DIFF_FILES
+  if (omitted > 0) diffs.push(`${omitted} more untracked file${omitted === 1 ? '' : 's'} not shown`)
+  return diffs.filter(Boolean).join('\n')
+}
+
 export function registerGitHandlers() {
   handle('git:status', async (_, cwd: string) => {
     const branch = await runGitOrEmpty(cwd, ['branch', '--show-current'])
@@ -215,28 +257,42 @@ export function registerGitHandlers() {
 
     if (!isRepo) {
       const check = await runGitOrEmpty(cwd, ['rev-parse', '--is-inside-work-tree'])
-      if (check !== 'true') return { isRepo: false, branch: '', files: [], staged: [], unstaged: [], ahead: 0, behind: 0 }
+      if (check !== 'true') {
+        return { isRepo: false, branch: '', detached: false, head: '', upstream: '', files: [], staged: [], unstaged: [], ahead: 0, behind: 0 }
+      }
     }
 
     const { files, staged, unstaged } = parseGitPorcelainStatusZ(statusRaw)
 
-    // Get ahead/behind counts
+    // `branch --show-current` prints nothing on a detached HEAD (it does name
+    // an unborn branch). Reporting 'main' there hid that new commits would be
+    // on no branch at all.
+    const detached = branch === ''
+    const head = detached ? await runGitOrEmpty(cwd, ['rev-parse', '--short', 'HEAD']) : ''
+    const upstream = detached
+      ? ''
+      : await runGitOrEmpty(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
+
     let ahead = 0, behind = 0
-    try {
+    if (upstream) {
       const ab = await runGitOrEmpty(cwd, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'])
       if (ab) {
         const [a, b] = ab.split('\t').map(Number)
         ahead = a || 0
         behind = b || 0
       }
-    } catch {}
+    }
 
-    return { isRepo: true, branch: branch || 'main', files, staged, unstaged, ahead, behind }
+    return { isRepo: true, branch: detached ? 'HEAD' : branch, detached, head, upstream, files, staged, unstaged, ahead, behind }
   })
 
-  handle('git:diff', async (_, cwd: string, filePath?: string) => {
-    const args = filePath ? ['diff', '--', filePath] : ['diff']
-    return await runGitOrEmpty(cwd, args)
+  handle('git:diff', async (_, cwd: string, rawFilePath?: unknown, staged?: unknown) => {
+    const cached = staged === true ? ['--cached'] : []
+    if (rawFilePath === undefined || rawFilePath === '') return await runGitOrEmpty(cwd, ['diff', ...cached])
+    const filePath = normalizeGitPathspec(rawFilePath)
+    const diff = await runGitOrEmpty(cwd, ['diff', ...cached, '--', filePath])
+    if (diff || staged === true) return diff
+    return await diffUntracked(cwd, filePath)
   })
 
   handle('git:log', async (_, cwd: string, count: number = 50) => {
@@ -388,11 +444,17 @@ export function registerGitHandlers() {
     return true
   })
 
-  handle('git:checkout', async (_, cwd: string, branch: unknown) => {
+  handle('git:checkout', async (_, cwd: string, branch: unknown, track?: unknown) => {
     // The trailing `--` forces `branch` to be read as a ref. Without it a
     // value that is not a ref but matches a file (e.g. "README.md") makes git
     // check out that path instead, silently discarding local edits.
-    return await runGitMutation(cwd, ['checkout', normalizeGitRefspec(branch, 'branch'), '--'])
+    if (track === undefined) {
+      return await runGitMutation(cwd, ['checkout', normalizeGitRefspec(branch, 'branch'), '--'])
+    }
+    // Checking out a remote-tracking ref itself detaches HEAD, and git's
+    // by-name guess fails when several remotes have the branch.
+    const startPoint = normalizeGitRefspec(track, 'remote branch')
+    return await runGitMutation(cwd, ['checkout', '-b', normalizeGitBranchName(branch), '--track', startPoint, '--'])
   })
 
   handle('git:discard', async (_, cwd: string, rawFilePath: unknown) => {
@@ -407,12 +469,26 @@ export function registerGitHandlers() {
   })
 
   handle('git:branches', async (_, cwd: string) => {
-    const raw = await runGitOrEmpty(cwd, ['branch', '-a', '--format=%(refname:short)|%(HEAD)'])
+    // Full ref names tell local branches from remote-tracking ones, which
+    // check out as a detached HEAD. TAB cannot occur in a ref name; '|' can.
+    const raw = await runGitOrEmpty(cwd, ['branch', '-a', '--format=%(refname)%09%(HEAD)%09%(symref)'], { raw: true })
     if (!raw) return []
-    return raw.split('\n').filter(Boolean).map((line) => {
-      const [name, head] = line.split('|')
-      return { name, current: head === '*' }
-    })
+    // Longest first, so remote "a/b" wins over "a" for refs/remotes/a/b/x.
+    const remotes = (await runGitOrEmpty(cwd, ['remote'])).split('\n').filter(Boolean).sort((a, b) => b.length - a.length)
+    const branches: GitBranch[] = []
+    for (const line of raw.split('\n')) {
+      const [ref, head, symref] = line.split('\t')
+      if (ref.startsWith('refs/heads/')) {
+        branches.push({ name: ref.slice('refs/heads/'.length), current: head === '*' })
+      } else if (ref.startsWith('refs/remotes/') && !symref) {
+        // Symbolic refs such as origin/HEAD are skipped, and so is the
+        // "(HEAD detached at …)" pseudo-entry, which is no ref at all.
+        const name = ref.slice('refs/remotes/'.length)
+        const remote = remotes.find((r) => name.startsWith(`${r}/`)) ?? name.split('/')[0]
+        branches.push({ name, current: false, remote })
+      }
+    }
+    return branches
   })
 
   // Return parsed diff hunks for a specific file (used for git gutter decorations)
@@ -490,16 +566,21 @@ export function registerGitHandlers() {
   // placed after `--`. Previously a renderer-supplied remote such as
   // `--upload-pack=<cmd>` (pull) or `--receive-pack=<cmd>` (push) followed by
   // `.` made git execute <cmd> locally.
-  handle('git:push', async (_, cwd: string, remote: unknown = 'origin', branch?: unknown, force = false) => {
+  // Without a remote these run plain `git push` / `git pull`, which follow the
+  // branch's configured upstream instead of assuming it lives on 'origin'.
+  handle('git:push', async (_, cwd: string, remote?: unknown, branch?: unknown, force = false, setUpstream = false) => {
     const args = ['push']
     if (force === true) {
       args.push('--force-with-lease')
+    }
+    if (setUpstream === true) {
+      args.push('--set-upstream')
     }
     args.push(...buildRemoteArgs(remote, branch))
     return await runGitMutation(cwd, args, { timeout: NETWORK_TIMEOUT_MS })
   })
 
-  handle('git:pull', async (_, cwd: string, remote: unknown = 'origin', branch?: unknown) => {
+  handle('git:pull', async (_, cwd: string, remote?: unknown, branch?: unknown) => {
     return await runGitMutation(cwd, ['pull', ...buildRemoteArgs(remote, branch)], { timeout: NETWORK_TIMEOUT_MS })
   })
 
@@ -694,7 +775,7 @@ export function registerGitHandlers() {
       }
       appendGitSequencerOptions(args, options)
       args.push(safeHash)
-      const result = await runGitExec(cwd, args)
+      const result = await runGitExec(cwd, args, { timeout: MUTATION_TIMEOUT_MS })
       return { success: true, output: result }
     } catch (err: any) {
       return { success: false, error: gitErrorMessage(err) }
@@ -781,7 +862,7 @@ export function registerGitHandlers() {
         // of the commit the user picked.
         args.push(normalizeGitCommitHash(commitHash))
       }
-      await runGitExec(cwd, args)
+      await runGitExec(cwd, args, { timeout: MUTATION_TIMEOUT_MS })
       return { success: true }
     } catch (err: any) {
       return { success: false, error: gitErrorMessage(err) }
@@ -957,7 +1038,7 @@ export function registerGitHandlers() {
       } else {
         args.push('--no-edit')
       }
-      const result = await runGitExec(cwd, args)
+      const result = await runGitExec(cwd, args, { timeout: MUTATION_TIMEOUT_MS })
       return { success: true, output: result }
     } catch (err: any) {
       return { success: false, error: gitErrorMessage(err) }
@@ -978,7 +1059,7 @@ export function registerGitHandlers() {
         args.push(normalizeGitRefspec(ref, 'reset target'))
       }
       args.push('--')
-      const result = await runGitExec(cwd, args)
+      const result = await runGitExec(cwd, args, { timeout: MUTATION_TIMEOUT_MS })
       return { success: true, output: result }
     } catch (err: any) {
       return { success: false, error: gitErrorMessage(err) }
@@ -1004,7 +1085,7 @@ export function registerGitHandlers() {
       if (options?.ignored) {
         args.push('-x')
       }
-      const result = await runGitExec(cwd, args)
+      const result = await runGitExec(cwd, args, { timeout: MUTATION_TIMEOUT_MS })
       const removedFiles = result.split('\n').filter(Boolean).map((line) => {
         // Lines look like "Removing path/to/file" or "Would remove path/to/file"
         return line.replace(/^(Removing|Would remove)\s+/, '')
