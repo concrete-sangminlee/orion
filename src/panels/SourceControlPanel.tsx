@@ -8,6 +8,7 @@ import { openFileInEditor } from '@/utils/openFileInEditor'
 import { ipcErrorMessage } from '@/utils/ipcResult'
 import type { GitBranch as GitBranchInfo } from '@shared/ipc-contract'
 import { GitBranch, Check, Plus, Minus, RotateCw, FileText, Trash2, ChevronRight, ChevronDown, X, Clock, GitCommit, User, ArrowUp, ArrowDown, Download, Archive, Plus as PlusIcon, AlertTriangle, Package, Play, XCircle, Tag, GitMerge, Copy, Bookmark, BookmarkPlus, Square, CheckSquare, List } from 'lucide-react'
+import { checkoutTargetFor, type CheckoutTarget } from '@/commands/gitCheckout'
 
 interface GitFile {
   path: string
@@ -15,22 +16,6 @@ interface GitFile {
 }
 
 const inlineDiffKey = (filePath: string, isStaged: boolean) => `${isStaged ? 'staged' : 'unstaged'}:${filePath}`
-
-interface CheckoutTarget {
-  /** The local branch to switch to. */
-  branch: string
-  /** Remote-tracking ref to create `branch` from when it does not exist yet. */
-  track?: string
-}
-
-/** What checking out a picker entry should switch to. */
-function checkoutTargetFor(branch: GitBranchInfo, all: GitBranchInfo[]): CheckoutTarget {
-  if (!branch.remote) return { branch: branch.name }
-  // A remote-tracking ref checks out as a detached HEAD: switch to the local
-  // branch of that name, or create one that tracks this ref.
-  const local = branch.name.slice(branch.remote.length + 1)
-  return all.some((b) => !b.remote && b.name === local) ? { branch: local } : { branch: local, track: branch.name }
-}
 
 function checkoutTitle(branch: GitBranchInfo, target: CheckoutTarget): string | undefined {
   if (!branch.remote) return undefined
