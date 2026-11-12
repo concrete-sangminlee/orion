@@ -97,6 +97,15 @@ let win
 try {
   console.log(`Electron smoke test${packagedApp ? ` (packaged: ${path.relative(ROOT, packagedApp)})` : ''}`)
   win = await app.firstWindow({ timeout: 30_000 })
+  // Native message boxes block the main process. Record them and answer
+  // Cancel, so an unexpected one fails a check instead of hanging the run.
+  await app.evaluate(({ dialog }) => {
+    globalThis.__nativeDialogs = []
+    dialog.showMessageBoxSync = (_win, options) => {
+      globalThis.__nativeDialogs.push(options.message)
+      return 2
+    }
+  })
   win.on('pageerror', (error) => pageErrors.push(error.message))
   // Everything the renderer runs must come from the app bundle. Only the
   // local Ollama endpoint may be contacted over the network.
@@ -174,8 +183,10 @@ try {
   // Saving and external changes (farewell.ts is the active editor).
   const dialogs = []
   win.on('dialog', (dialog) => {
-    dialogs.push(dialog.message())
-    void dialog.dismiss()
+    // The main process answers beforeunload (will-prevent-unload) before this
+    // sees it; dismissing it again fails with "No dialog is showing".
+    if (dialog.type() !== 'beforeunload') dialogs.push(dialog.message())
+    dialog.dismiss().catch(() => {})
   })
   const modelValue = () => win.evaluate(() => window.monaco.editor.getEditors()[0].getValue())
   const typeAtEnd = async (text) => {
@@ -224,6 +235,14 @@ try {
   await win.keyboard.press('ArrowDown')
   await win.waitForTimeout(1200)
   check(ollamaRequests.length === requestsBeforeCaretMoves, 'moving the caret requests no completion')
+
+  // Ctrl+I in the editor opens the inline AI edit. It was bound to Ctrl+K,
+  // which starts Monaco's and the app's chords, so it never fired.
+  await win.locator('.monaco-editor .view-lines').first().click()
+  await win.keyboard.press('Control+i')
+  await win.waitForSelector('textarea[placeholder^="Describe code to generate at cursor"]', { timeout: 5_000 }).catch(() => {})
+  check((await win.locator('textarea[placeholder^="Describe code to generate at cursor"]').count()) > 0, 'Ctrl+I in the editor opens the inline AI edit')
+  await win.keyboard.press('Escape')
 
   // Integrated terminal: a real pty runs a command in the workspace.
   const terminal = await win.evaluate(async () => {
@@ -315,6 +334,9 @@ try {
   })
   await win.waitForTimeout(500)
   const opened = await app.evaluate(() => globalThis.__openedExternally)
+  // farewell.ts has unsaved edits: a link must not ask about saving them.
+  const navigationDialogs = await app.evaluate(() => globalThis.__nativeDialogs)
+  check(navigationDialogs.length === 0, `following a link with unsaved edits asks nothing about saving${navigationDialogs.length ? ` (${navigationDialogs.join(' | ')})` : ''}`)
   const urlAfter = await win.evaluate(() => location.href)
   check(urlAfter === state.url, 'window stayed on the app after navigation attempts')
   check(!opened.some((url) => url.startsWith('file:')), 'file: navigation was not handed to the OS')
@@ -343,6 +365,23 @@ try {
   check(pageErrors.length === 0, `no uncaught renderer errors${pageErrors.length ? `: ${pageErrors.join(' | ')}` : ''}`)
   const mainErrors = mainLog.join('').split('\n').filter((line) => /Uncaught exception|Unhandled rejection/.test(line))
   check(mainErrors.length === 0, `no uncaught main-process errors${mainErrors.length ? `: ${mainErrors.join(' | ')}` : ''}`)
+
+  // Closing the window with unsaved edits (farewell.ts still has some) asks
+  // first; Cancel keeps it open. The native dialog is answered by a stub.
+  const closeAttempt = await app.evaluate(async ({ dialog, BrowserWindow }) => {
+    globalThis.__closeDialogs = []
+    dialog.showMessageBoxSync = (_win, options) => {
+      globalThis.__closeDialogs.push(options.message)
+      return 2 // Cancel
+    }
+    BrowserWindow.getAllWindows()[0].close()
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    return { asked: globalThis.__closeDialogs, open: BrowserWindow.getAllWindows().length }
+  })
+  check(
+    closeAttempt.asked.some((message) => /save your changes/i.test(message)) && closeAttempt.open === 1,
+    `closing the window with unsaved edits asks first, and Cancel keeps it open (${JSON.stringify(closeAttempt)})`,
+  )
 } catch (error) {
   failures.push(String(error?.message || error))
   console.log(`  ✗ ${error?.message || error}`)
@@ -352,6 +391,12 @@ try {
     await win.screenshot({ path: path.join(ARTIFACTS, 'electron-smoke.png') }).catch(() => {})
     fs.writeFileSync(path.join(ARTIFACTS, 'main-process.log'), mainLog.join(''))
   }
+  // Answer "Don't Save" so closing the app is not held up by unsaved test edits.
+  await app
+    .evaluate(({ dialog }) => {
+      dialog.showMessageBoxSync = () => 1
+    })
+    .catch(() => {})
   await app.close().catch(() => {})
   fakeOllama.close()
   fs.rmSync(userDataDir, { recursive: true, force: true })

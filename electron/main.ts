@@ -287,6 +287,14 @@ function buildAppMenu(): Menu {
         click: () => emit(getActiveWindow(), 'app:save-all'),
       },
       { type: 'separator' },
+      {
+        // Cmd+W must close the editor tab: with the 'close' role alone it
+        // closed the window, and with it the app.
+        label: 'Close Editor',
+        accelerator: 'CmdOrCtrl+W',
+        click: () => emit(getActiveWindow(), 'app:close-editor'),
+      },
+      { type: 'separator' },
       ...(!isMac
         ? [
             {
@@ -297,7 +305,7 @@ function buildAppMenu(): Menu {
             { type: 'separator' as const },
           ]
         : []),
-      isMac ? { role: 'close' as const } : { role: 'quit' as const },
+      isMac ? { role: 'close' as const, label: 'Close Window', accelerator: 'Cmd+Shift+W' } : { role: 'quit' as const },
     ],
   })
 
@@ -320,7 +328,8 @@ function buildAppMenu(): Menu {
       },
       {
         label: 'Replace',
-        accelerator: 'CmdOrCtrl+H',
+        // Cmd+H is the macOS Hide shortcut (App menu), so it never reached this item.
+        accelerator: isMac ? 'Cmd+Alt+F' : 'Ctrl+H',
         click: () => emit(getActiveWindow(), 'app:replace'),
       },
       { type: 'separator' },
@@ -328,11 +337,6 @@ function buildAppMenu(): Menu {
         label: 'Find in Files',
         accelerator: 'CmdOrCtrl+Shift+F',
         click: () => emit(getActiveWindow(), 'app:find-in-files'),
-      },
-      {
-        label: 'Replace in Files',
-        accelerator: 'CmdOrCtrl+Shift+H',
-        click: () => emit(getActiveWindow(), 'app:replace-in-files'),
       },
     ],
   })
@@ -361,11 +365,6 @@ function buildAppMenu(): Menu {
         label: 'Source Control',
         accelerator: 'CmdOrCtrl+Shift+G',
         click: () => emit(getActiveWindow(), 'app:toggle-sidebar', 'git'),
-      },
-      {
-        label: 'Extensions',
-        accelerator: 'CmdOrCtrl+Shift+X',
-        click: () => emit(getActiveWindow(), 'app:toggle-sidebar', 'extensions'),
       },
       { type: 'separator' },
       {
@@ -434,17 +433,6 @@ function buildAppMenu(): Menu {
       },
       { type: 'separator' },
       {
-        label: 'Go Back',
-        accelerator: isMac ? 'Ctrl+-' : 'Alt+Left',
-        click: () => emit(getActiveWindow(), 'app:go-back'),
-      },
-      {
-        label: 'Go Forward',
-        accelerator: isMac ? 'Ctrl+Shift+-' : 'Alt+Right',
-        click: () => emit(getActiveWindow(), 'app:go-forward'),
-      },
-      { type: 'separator' },
-      {
         label: 'Go to Definition',
         accelerator: 'F12',
         click: () => emit(getActiveWindow(), 'app:go-to-definition'),
@@ -457,35 +445,20 @@ function buildAppMenu(): Menu {
     ],
   })
 
-  // Run menu
+  // Terminal menu. (A Run menu offered debugging, breakpoints and "run active
+  // file"; there is no debugger or runner behind any of them.)
   template.push({
-    label: 'Run',
+    label: 'Terminal',
     submenu: [
       {
-        label: 'Start Debugging',
-        accelerator: 'F5',
-        click: () => emit(getActiveWindow(), 'app:start-debugging'),
+        label: 'New Terminal',
+        // Ctrl+` toggles the panel in the page; Cmd+` belongs to macOS.
+        accelerator: 'CmdOrCtrl+Shift+`',
+        click: () => emit(getActiveWindow(), 'app:new-terminal'),
       },
       {
-        label: 'Run Without Debugging',
-        accelerator: 'Ctrl+F5',
-        click: () => emit(getActiveWindow(), 'app:run-without-debugging'),
-      },
-      {
-        label: 'Stop Debugging',
-        accelerator: 'Shift+F5',
-        click: () => emit(getActiveWindow(), 'app:stop-debugging'),
-      },
-      {
-        label: 'Restart Debugging',
-        accelerator: 'CmdOrCtrl+Shift+F5',
-        click: () => emit(getActiveWindow(), 'app:restart-debugging'),
-      },
-      { type: 'separator' },
-      {
-        label: 'Toggle Breakpoint',
-        accelerator: 'F9',
-        click: () => emit(getActiveWindow(), 'app:toggle-breakpoint'),
+        label: 'Split Terminal',
+        click: () => emit(getActiveWindow(), 'app:split-terminal'),
       },
       { type: 'separator' },
       {
@@ -500,47 +473,13 @@ function buildAppMenu(): Menu {
     ],
   })
 
-  // Terminal menu
-  template.push({
-    label: 'Terminal',
-    submenu: [
-      {
-        label: 'New Terminal',
-        accelerator: 'CmdOrCtrl+`',
-        click: () => emit(getActiveWindow(), 'app:new-terminal'),
-      },
-      {
-        label: 'Split Terminal',
-        accelerator: 'CmdOrCtrl+Shift+`',
-        click: () => emit(getActiveWindow(), 'app:split-terminal'),
-      },
-      { type: 'separator' },
-      {
-        label: 'Run Active File',
-        click: () => emit(getActiveWindow(), 'app:run-active-file'),
-      },
-      {
-        label: 'Run Selected Text',
-        click: () => emit(getActiveWindow(), 'app:run-selected-text'),
-      },
-    ],
-  })
-
   // Help menu
   template.push({
     label: 'Help',
     submenu: [
       {
-        label: 'Welcome',
-        click: () => emit(getActiveWindow(), 'app:show-welcome'),
-      },
-      {
         label: 'Documentation',
         click: () => void shell.openExternal('https://github.com/concrete-sangminlee/orion#readme'),
-      },
-      {
-        label: 'Release Notes',
-        click: () => emit(getActiveWindow(), 'app:show-release-notes'),
       },
       { type: 'separator' },
       {
@@ -558,9 +497,9 @@ function buildAppMenu(): Menu {
         label: 'Check for Updates...',
         click: () => void shell.openExternal(RELEASES_URL),
       },
-      { type: 'separator' },
       ...(!isMac
         ? [
+            { type: 'separator' as const },
             {
               label: `About ${app.name}`,
               click: () => {
@@ -572,16 +511,16 @@ function buildAppMenu(): Menu {
             },
           ]
         : []),
-      {
-        label: 'Toggle Developer Tools',
-        accelerator: isMac ? 'Cmd+Alt+I' : 'F12',
-        click: () => getActiveWindow()?.webContents.toggleDevTools(),
-      },
+      // (Toggle Developer Tools is in View. A second copy here took F12,
+      // which is Go to Definition.)
     ],
   })
 
   return Menu.buildFromTemplate(template)
 }
+
+/** Pages that asked to reload (win:reload) and have not finished loading since. */
+const reloadRequested = new WeakSet<Electron.WebContents>()
 
 // --- Window creation ---
 function createWindow(filesToOpen?: string[]): BrowserWindow {
@@ -669,6 +608,38 @@ function createWindow(filesToOpen?: string[]): BrowserWindow {
     return { action: 'deny' }
   })
 
+  // The renderer's beforeunload handler refuses to unload while a tab has
+  // unsaved edits. A renderer cannot show a prompt then, so ask here, for a
+  // close (the 'close' event fires first) or a reload the app asked for
+  // (win:reload). Any other unload is the page navigating, e.g. a link: that
+  // goes ahead to will-navigate, which keeps the window on the app, without
+  // a question about saving. Without preventDefault() the unload is refused.
+  let closeRequested = false
+  win.on('close', () => { closeRequested = true })
+  win.webContents.on('did-finish-load', () => reloadRequested.delete(win.webContents))
+  win.webContents.on('will-prevent-unload', (event) => {
+    const isReload = reloadRequested.delete(win.webContents)
+    if (!closeRequested && !isReload) {
+      event.preventDefault()
+      return
+    }
+    const then = closeRequested ? 'close' : 'reload'
+    closeRequested = false
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Save', "Don't Save", 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+      message: 'Do you want to save your changes?',
+      detail: "Your changes will be lost if you don't save them.",
+    })
+    // Don't Save: unload anyway, discarding the edits.
+    if (choice === 1) event.preventDefault()
+    // Save: the renderer saves, then closes or reloads again if all were saved.
+    else if (choice === 0) emit(win, 'app:save-and-close', then)
+  })
+
   // --- Track window bounds for persistence ---
   let boundsTimeout: ReturnType<typeof setTimeout> | null = null
   const debounceSaveBounds = () => {
@@ -738,15 +709,19 @@ function registerIpcHandlers() {
   registerTaskHandlers(() => mainWindow)
 
   // Window controls
-  listen('win:minimize', () => mainWindow?.minimize())
-  listen('win:maximize', () => {
-    if (mainWindow?.isMaximized()) {
-      mainWindow.unmaximize()
-    } else {
-      mainWindow?.maximize()
-    }
+  // The window that asked, not the first one.
+  const senderWindow = (event: Electron.IpcMainEvent) => BrowserWindow.fromWebContents(event.sender)
+  listen('win:minimize', (event) => senderWindow(event)?.minimize())
+  listen('win:maximize', (event) => {
+    const win = senderWindow(event)
+    if (win?.isMaximized()) win.unmaximize()
+    else win?.maximize()
   })
-  listen('win:close', () => mainWindow?.close())
+  listen('win:close', (event) => senderWindow(event)?.close())
+  listen('win:reload', (event) => {
+    reloadRequested.add(event.sender)
+    event.sender.reload()
+  })
 
   // Open folder dialog
   handle('fs:open-folder', async () => {

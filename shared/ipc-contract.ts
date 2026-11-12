@@ -607,6 +607,8 @@ export interface IpcSendContract {
   'win:minimize': () => void
   'win:maximize': () => void
   'win:close': () => void
+  /** Reload the page; with unsaved edits the main process asks first. */
+  'win:reload': () => void
 }
 
 /** Push channels: main `webContents.send` ↔ renderer `on`. */
@@ -621,7 +623,8 @@ export interface IpcEventContract {
   'task:output': (data: TaskOutputData) => void
   'task:complete': (data: TaskCompleteData) => void
 
-  // Menu / OS integration
+  // Menu / OS integration. Each native menu item's event runs the renderer
+  // command of the same name (src/commands/nativeMenu.ts).
   'app:open-file': (filePath: string) => void
   'app:open-folder': (folderPath: string) => void
   'app:open-about': () => void
@@ -629,35 +632,29 @@ export interface IpcEventContract {
   'app:save': () => void
   'app:save-as': () => void
   'app:save-all': () => void
+  'app:close-editor': () => void
   'app:open-settings': () => void
   'app:find': () => void
   'app:replace': () => void
   'app:find-in-files': () => void
-  'app:replace-in-files': () => void
   'app:command-palette': () => void
   'app:toggle-sidebar': (panel?: string) => void
   'app:toggle-panel': () => void
   'app:quick-open': () => void
   'app:go-to-symbol': () => void
   'app:go-to-line': () => void
-  'app:go-back': () => void
-  'app:go-forward': () => void
   'app:go-to-definition': () => void
   'app:peek-definition': () => void
-  'app:start-debugging': () => void
-  'app:run-without-debugging': () => void
-  'app:stop-debugging': () => void
-  'app:restart-debugging': () => void
-  'app:toggle-breakpoint': () => void
   'app:run-task': () => void
   'app:run-build-task': () => void
   'app:new-terminal': () => void
   'app:split-terminal': () => void
-  'app:run-active-file': () => void
-  'app:run-selected-text': () => void
-  'app:show-welcome': () => void
-  'app:show-release-notes': () => void
   'app:show-keybindings': () => void
+  /**
+   * The user chose Save when closing or reloading the window with unsaved
+   * edits: save them, then do `then` (the unload the save interrupted).
+   */
+  'app:save-and-close': (then: 'close' | 'reload') => void
 }
 
 // ---------------------------------------------------------------------------

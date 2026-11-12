@@ -185,6 +185,15 @@ describe('createElectronApi — event subscriptions', () => {
     expect(onSave).toHaveBeenCalledWith()
   })
 
+  it('tells the save-before-unload callback whether the window closes or reloads', () => {
+    const fake = createFakeIpc()
+    const api = createElectronApi(fake.ipc)
+    const onSaveAndClose = vi.fn()
+    api.onAppSaveAndClose(onSaveAndClose)
+    fake.dispatch('app:save-and-close', 'reload')
+    expect(onSaveAndClose).toHaveBeenCalledWith('reload')
+  })
+
   it('unsubscribe removes exactly the registered listener', () => {
     const fake = createFakeIpc()
     const api = createElectronApi(fake.ipc)
