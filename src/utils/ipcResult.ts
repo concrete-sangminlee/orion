@@ -43,6 +43,16 @@ export function normalizeQueueKey(filePath: string): string {
   return prefix + segments.join('/') || '.'
 }
 
+/**
+ * The reason inside a rejected IPC call. Electron prefixes it with
+ * "Error invoking remote method '<channel>': Error: ", which means nothing to
+ * a user reading a toast.
+ */
+export function ipcErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '')
+}
+
 export class IpcOperationError extends Error {
   public readonly operation: string
 

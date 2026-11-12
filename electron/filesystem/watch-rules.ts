@@ -37,14 +37,25 @@ export class OwnWriteTracker {
     return path.resolve(filePath).replace(/\\/g, '/')
   }
 
-  record(filePath: string, content: string): void {
+  record(filePath: string, content: string | Buffer): void {
     this.written.set(this.key(filePath), digest(content))
   }
 
-  /** True when the file now holds exactly what the app last wrote. */
+  /**
+   * True when the file now holds exactly what the app last wrote.
+   *
+   * Once the file is seen holding anything else, the record is dropped: the
+   * editor has been told about that change, so if the file later returns to
+   * the saved content (a `git checkout`, an undo in another tool) that is an
+   * external change too and must be reported, not mistaken for our own save.
+   */
   isOwnWrite(filePath: string, currentContent: string | Buffer): boolean {
-    const expected = this.written.get(this.key(filePath))
-    return expected !== undefined && expected === digest(currentContent)
+    const key = this.key(filePath)
+    const expected = this.written.get(key)
+    if (expected === undefined) return false
+    if (expected === digest(currentContent)) return true
+    this.written.delete(key)
+    return false
   }
 
   forget(filePath: string): void {

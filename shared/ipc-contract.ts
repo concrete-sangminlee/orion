@@ -35,7 +35,6 @@ import type {
   TaskRunArgs,
   TaskRunResult,
   TaskScript,
-  UpdateStatus,
   WorkspaceSettings,
 } from './types'
 
@@ -51,7 +50,6 @@ export type {
   TaskRunArgs,
   TaskRunResult,
   TaskScript,
-  UpdateStatus,
   WorkspaceSettings,
 }
 
@@ -72,10 +70,15 @@ export interface OperationResultWithPath extends OperationResult {
 // Filesystem
 // ---------------------------------------------------------------------------
 
-/** `fs:read-file` rejects when the file cannot be read. */
+/**
+ * `fs:read-file` rejects when the file cannot be read or is not text the
+ * editor can save back unchanged (binary, or not UTF-8/UTF-16).
+ */
 export interface ReadFileResult {
   content: string
   language: string
+  /** An image shown as a preview: `content` is empty and the file cannot be saved. */
+  binary?: boolean
 }
 
 export interface FileSearchOptions {
@@ -351,6 +354,28 @@ export interface ApiKeyUpdateResult extends OperationResult, Partial<ApiKeyStatu
   persisted?: boolean
 }
 
+/** Where inline ("ghost text") completions come from. */
+export type InlineCompletionProvider = 'ollama' | 'anthropic'
+
+export interface InlineCompletionRequest {
+  provider: InlineCompletionProvider
+  /** Text before the caret (the main process keeps only the part nearest to it). */
+  prefix: string
+  /** Text after the caret. */
+  suffix: string
+  language: string
+  fileName: string
+  maxTokens?: number
+}
+
+export interface InlineCompletionResult {
+  /** Text to insert at the caret; empty when there is no suggestion. */
+  text: string
+  model?: string
+  /** Why there is no suggestion (provider unavailable, no key, cancelled, ...). */
+  reason?: string
+}
+
 export interface OmoPrompts {
   systemPrompt?: string
   userPromptTemplate?: string
@@ -367,7 +392,9 @@ export interface IpcInvokeContract {
   'fs:write-file': (filePath: string, content: string) => OperationResult
   'fs:delete': (itemPath: string) => OperationResult
   'fs:rename': (oldPath: string, newPath: string) => OperationResult
+  /** Rejects when `rootPath` is not a folder that can be listed. */
   'fs:open-workspace': (rootPath: string) => FileNode[]
+  /** Rejects when `dirPath` is not a listable folder inside the workspace. */
   'fs:read-dir': (dirPath: string) => FileNode[]
   'fs:open-folder': () => string | null
   /** Native multi-select file picker; the chosen files become readable/savable. */
@@ -480,6 +507,7 @@ export interface IpcInvokeContract {
   'omo:set-api-keys': (keys: ApiKeyPatch) => ApiKeyUpdateResult
   'omo:get-api-key-status': () => ApiKeyStatus
   'omo:set-prompts': (prompts: OmoPrompts) => OperationResult
+  'ai:complete': (request: InlineCompletionRequest) => InlineCompletionResult
 
   // Tasks
   'task:run': (args: TaskRunArgs) => TaskRunResult
@@ -487,7 +515,6 @@ export interface IpcInvokeContract {
   'task:list-scripts': (cwd: string) => TaskScript[]
 
   // App
-  'app:check-for-updates': () => void
   'app:get-info': () => AppInfo
 }
 
@@ -495,6 +522,11 @@ export interface IpcInvokeContract {
 export interface IpcSendContract {
   'fs:watch-start': (dirPath: string) => void
   'fs:watch-stop': () => void
+  /**
+   * Sent by the preload (never by page code) with the real path of something
+   * the user dropped onto the window, so that one item can be opened.
+   */
+  'fs:grant-dropped-path': (itemPath: string) => void
   'term:write': (id: string, data: string) => void
   'term:resize': (id: string, cols: number, rows: number) => void
   'term:kill': (id: string) => void
@@ -502,7 +534,6 @@ export interface IpcSendContract {
   'win:minimize': () => void
   'win:maximize': () => void
   'win:close': () => void
-  'app:new-window': () => void
 }
 
 /** Push channels: main `webContents.send` ↔ renderer `on`. */
@@ -552,7 +583,6 @@ export interface IpcEventContract {
   'app:show-welcome': () => void
   'app:show-release-notes': () => void
   'app:show-keybindings': () => void
-  'app:update-status': (status: UpdateStatus) => void
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, screen, globalShortcut, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, screen, shell } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
@@ -15,6 +15,8 @@ import { registerTaskHandlers } from './ipc/tasks'
 import { configureIpcTrust, handle, listen, emit } from './ipc/typed-ipc'
 import { decideNavigation, type AppOrigin } from './security/app-origin'
 import { grantFileAccess } from './workspace/granted-files'
+import { grantWorkspaceRoot, initGrantedRoots } from './workspace/granted-roots'
+import { itemsFromArgs } from './workspace/launch-args'
 
 // --- Constants ---
 
@@ -152,50 +154,23 @@ function getActiveWindow(): BrowserWindow | null {
   return BrowserWindow.getFocusedWindow() || mainWindow
 }
 
-// --- Auto-updater placeholder ---
-interface UpdateStatus {
-  status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
-  version?: string
-  error?: string
-}
+// There is no auto-updater: the update check used to wait two seconds and
+// always report "no update available". The releases page is the truth.
+const RELEASES_URL = 'https://github.com/concrete-sangminlee/orion/releases'
 
-function sendUpdateStatus(win: BrowserWindow, updateStatus: UpdateStatus): void {
-  if (!win.isDestroyed()) {
-    emit(win, 'app:update-status', updateStatus)
+// --- Command line and OS "Open with" ---
+/** In development the app directory is also on the command line. */
+const DEV_APP_PATH = app.isPackaged ? undefined : app.getAppPath()
+
+/** Open the first folder as the workspace and every file in the editor. */
+function openItemsInWindow(win: BrowserWindow, items: { files: string[]; folders: string[] }): void {
+  const [folder] = items.folders
+  if (folder && grantWorkspaceRoot(folder) && !win.isDestroyed()) {
+    const send = () => emit(win, 'app:open-folder', folder)
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send)
+    else send()
   }
-}
-
-async function checkForUpdates(win: BrowserWindow): Promise<void> {
-  try {
-    sendUpdateStatus(win, { status: 'checking' })
-
-    // TODO: integrate electron-updater for production auto-update support
-    await new Promise((resolve) => setTimeout(resolve, 2000))
-
-    sendUpdateStatus(win, { status: 'not-available' })
-
-    console.log('[AutoUpdater] Update check complete - no update available')
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    sendUpdateStatus(win, { status: 'error', error: message })
-    console.error('[AutoUpdater] Update check failed:', err)
-  }
-}
-
-// --- File associations ---
-function getFilesFromArgs(argv: string[]): string[] {
-  return argv
-    .slice(app.isPackaged ? 1 : 2) // skip electron path and script path in dev
-    .filter((arg) => {
-      if (arg.startsWith('-')) return false
-      try {
-        const ext = path.extname(arg).toLowerCase()
-        return SUPPORTED_FILE_EXTENSIONS.includes(ext) && fs.existsSync(arg)
-      } catch {
-        return false
-      }
-    })
-    .map((arg) => path.resolve(arg))
+  openFilesInWindow(win, items.files)
 }
 
 function openFilesInWindow(win: BrowserWindow, filePaths: string[]): void {
@@ -267,11 +242,6 @@ function buildAppMenu(): Menu {
         accelerator: 'CmdOrCtrl+N',
         click: () => emit(getActiveWindow(), 'app:new-file'),
       },
-      {
-        label: 'New Window',
-        accelerator: 'CmdOrCtrl+Shift+N',
-        click: () => createWindow(),
-      },
       { type: 'separator' },
       {
         label: 'Open File...',
@@ -292,7 +262,7 @@ function buildAppMenu(): Menu {
           const result = await dialog.showOpenDialog(win, {
             properties: ['openDirectory'],
           })
-          if (!result.canceled && result.filePaths[0]) {
+          if (!result.canceled && result.filePaths[0] && grantWorkspaceRoot(result.filePaths[0])) {
             emit(win, 'app:open-folder', result.filePaths[0])
           }
         },
@@ -583,10 +553,7 @@ function buildAppMenu(): Menu {
       { type: 'separator' },
       {
         label: 'Check for Updates...',
-        click: () => {
-          const win = getActiveWindow()
-          if (win) checkForUpdates(win)
-        },
+        click: () => void shell.openExternal(RELEASES_URL),
       },
       { type: 'separator' },
       ...(!isMac
@@ -699,13 +666,6 @@ function createWindow(filesToOpen?: string[]): BrowserWindow {
     return { action: 'deny' }
   })
 
-  // Auto-updater check on first window
-  if (windows.size === 1) {
-    win.webContents.once('did-finish-load', () => {
-      setTimeout(() => checkForUpdates(win), 5000)
-    })
-  }
-
   // --- Track window bounds for persistence ---
   let boundsTimeout: ReturnType<typeof setTimeout> | null = null
   const debounceSaveBounds = () => {
@@ -788,7 +748,9 @@ function registerIpcHandlers() {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory'],
     })
-    if (result.canceled) return null
+    if (result.canceled || !result.filePaths[0]) return null
+    // The renderer may open exactly the folder the user picked.
+    grantWorkspaceRoot(result.filePaths[0])
     return result.filePaths[0]
   })
 
@@ -797,17 +759,6 @@ function registerIpcHandlers() {
     const filePaths = await showOpenFilesDialog(win)
     filePaths.forEach(grantFileAccess)
     return filePaths
-  })
-
-  // New window via IPC (renderer can also request it)
-  listen('app:new-window', () => {
-    createWindow()
-  })
-
-  // Update check via IPC
-  handle('app:check-for-updates', async () => {
-    const win = getActiveWindow()
-    if (win) await checkForUpdates(win)
   })
 
   // Get app info
@@ -829,14 +780,15 @@ if (!gotSingleInstanceLock) {
   // Another instance is already running - pass args and quit
   app.quit()
 } else {
-  app.on('second-instance', (_event, argv) => {
-    // Someone tried to run a second instance or open a file
-    const filesToOpen = getFilesFromArgs(argv)
+  app.on('second-instance', (_event, argv, workingDirectory) => {
+    // `orion-ide <path>` while Orion runs: the path is relative to where that
+    // command ran, not to this process.
+    const items = itemsFromArgs(argv, workingDirectory, DEV_APP_PATH)
 
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
-      openFilesInWindow(mainWindow, filesToOpen)
+      openItemsInWindow(mainWindow, items)
     }
   })
 
@@ -852,6 +804,7 @@ if (!gotSingleInstanceLock) {
   })
 
   app.whenReady().then(() => {
+    initGrantedRoots(path.join(app.getPath('userData'), 'granted-roots.json'))
     registerIpcHandlers()
 
     // Build and set application menu
@@ -865,20 +818,14 @@ if (!gotSingleInstanceLock) {
       // The menu won't show because frame: false, but accelerators are active
     }
 
-    // Parse files from command line arguments
-    const cliFiles = getFilesFromArgs(process.argv)
-    const filesToOpen = [...pendingFilesToOpen, ...cliFiles]
-
-    createWindow(filesToOpen.length > 0 ? filesToOpen : undefined)
-
-    // Register global shortcut for new window
-    globalShortcut.register('CmdOrCtrl+Shift+N', () => {
-      createWindow()
-    })
+    // Files and a folder named on the command line. (A global shortcut used
+    // to grab Ctrl+Shift+N from every other application on the system.)
+    const cliItems = itemsFromArgs(process.argv, process.cwd(), DEV_APP_PATH)
+    const win = createWindow([...pendingFilesToOpen, ...cliItems.files])
+    openItemsInWindow(win, { files: [], folders: cliItems.folders })
   })
 
   app.on('window-all-closed', () => {
-    globalShortcut.unregisterAll()
     app.quit()
   })
 

@@ -37,20 +37,13 @@ interface LanguageStrategy {
   triggerPatterns: RegExp[]
 }
 
-interface RecentEdit {
-  text: string
-  lineNumber: number
-  timestamp: number
-}
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEBOUNCE_MS = 300
 const CACHE_MAX_SIZE = 64
 const CACHE_TTL_MS = 60_000 // 1 minute
-const RECENT_EDITS_MAX = 10
 const CONTEXT_WINDOW_BEFORE = 80
 const CONTEXT_WINDOW_AFTER = 20
 
@@ -287,62 +280,6 @@ class CompletionCache {
 // Singleton cache shared across re-renders
 const completionCache = new CompletionCache()
 
-// ---------------------------------------------------------------------------
-// Context extraction helpers
-// ---------------------------------------------------------------------------
-
-function extractImports(model: MonacoEditor.ITextModel, maxLines: number = 30): string {
-  const lines: string[] = []
-  const lineCount = Math.min(model.getLineCount(), maxLines)
-  for (let i = 1; i <= lineCount; i++) {
-    const line = model.getLineContent(i)
-    if (/^\s*(import|from|require|using|use |#include|package )/.test(line)) {
-      lines.push(line)
-    }
-  }
-  return lines.join('\n')
-}
-
-function extractEnclosingSignature(
-  model: MonacoEditor.ITextModel,
-  lineNumber: number,
-): string | null {
-  // Walk backwards to find the nearest function/class/method signature
-  const signaturePatterns = [
-    /^\s*(export\s+)?(async\s+)?function\s+\w+/,
-    /^\s*(export\s+)?(const|let|var)\s+\w+\s*=\s*(async\s+)?\(/,
-    /^\s*(export\s+)?(const|let|var)\s+\w+\s*=\s*(async\s+)?\w+\s*=>/,
-    /^\s*(public|private|protected|static|async|\s)*\w+\s*\(/,
-    /^\s*(export\s+)?(default\s+)?class\s+\w+/,
-    /^\s*(export\s+)?(interface|type)\s+\w+/,
-    /^\s*def\s+\w+/,
-    /^\s*fn\s+\w+/,
-    /^\s*func\s+\w+/,
-  ]
-  for (let i = lineNumber; i >= Math.max(1, lineNumber - 50); i--) {
-    const line = model.getLineContent(i)
-    for (const pat of signaturePatterns) {
-      if (pat.test(line)) {
-        // Grab up to 3 lines of the signature (for multi-line params)
-        const sigLines: string[] = [line]
-        for (let j = i + 1; j <= Math.min(model.getLineCount(), i + 2); j++) {
-          const sl = model.getLineContent(j)
-          sigLines.push(sl)
-          if (/[{:]/.test(sl)) break
-        }
-        return sigLines.join('\n')
-      }
-    }
-  }
-  return null
-}
-
-function formatRecentEdits(edits: RecentEdit[]): string {
-  if (edits.length === 0) return ''
-  const lines = edits.slice(-5).map((e) => `  L${e.lineNumber}: ${e.text.trim().substring(0, 120)}`)
-  return lines.join('\n')
-}
-
 /**
  * Estimate the confidence of a completion response.
  * Returns a value between 0 and 1.
@@ -384,7 +321,9 @@ function confidenceClass(confidence: number): string {
 // ---------------------------------------------------------------------------
 
 export default function GhostTextProvider({ editor, monaco, language, filePath }: GhostTextProviderProps) {
-  const enabled = useCompletionStore((s) => s.enabled)
+  // Off when disabled in Settings or when no provider is selected.
+  const enabled = useCompletionStore((s) => s.enabled && s.provider !== 'off')
+  const debounceMs = useCompletionStore((s) => s.debounceMs)
   const setGhostText = useCompletionStore((s) => s.setGhostText)
   const setLoading = useCompletionStore((s) => s.setLoading)
   const clear = useCompletionStore((s) => s.clear)
@@ -392,7 +331,6 @@ export default function GhostTextProvider({ editor, monaco, language, filePath }
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const disposableRef = useRef<IDisposable | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-  const recentEditsRef = useRef<RecentEdit[]>([])
   const confidenceRef = useRef<number>(0.5)
   const loadingDecorationRef = useRef<string[]>([])
   const styleInjectedRef = useRef(false)
@@ -446,30 +384,6 @@ export default function GhostTextProvider({ editor, monaco, language, filePath }
       editor.deltaDecorations(loadingDecorationRef.current, [])
       loadingDecorationRef.current = []
     }
-  }, [editor])
-
-  // -----------------------------------------------------------------------
-  // Track recent edits for context
-  // -----------------------------------------------------------------------
-  useEffect(() => {
-    if (!editor) return
-    const disposable = editor.onDidChangeModelContent((e) => {
-      const edits = recentEditsRef.current
-      for (const change of e.changes) {
-        if (change.text.trim()) {
-          edits.push({
-            text: change.text,
-            lineNumber: change.range.startLineNumber,
-            timestamp: Date.now(),
-          })
-        }
-      }
-      // Keep only recent edits
-      if (edits.length > RECENT_EDITS_MAX) {
-        recentEditsRef.current = edits.slice(-RECENT_EDITS_MAX)
-      }
-    })
-    return () => disposable.dispose()
   }, [editor])
 
   // -----------------------------------------------------------------------
@@ -537,44 +451,20 @@ export default function GhostTextProvider({ editor, monaco, language, filePath }
     showLoadingDecoration(position.lineNumber)
 
     try {
-      const imports = extractImports(model)
-      const enclosingSignature = extractEnclosingSignature(model, position.lineNumber)
-      const recentEditsStr = formatRecentEdits(recentEditsRef.current)
-
-      // Build enriched prompt with context window
-      const contextSections: string[] = []
-      contextSections.push(`<|file:${filePath.split('/').pop() || 'untitled'}|>`)
-      contextSections.push(`<|language:${language}|>`)
-
-      if (imports) {
-        contextSections.push(`<|imports|>\n${imports}`)
+      // The main process picks the model, bounds the context and cancels the
+      // previous request; the provider is whatever the user chose in Settings.
+      const { provider } = useCompletionStore.getState()
+      if (provider === 'off') {
+        clear()
+        return
       }
-      if (enclosingSignature) {
-        contextSections.push(`<|enclosing_signature|>\n${enclosingSignature}`)
-      }
-      if (recentEditsStr) {
-        contextSections.push(`<|recent_edits|>\n${recentEditsStr}`)
-      }
-
-      contextSections.push(`<|prefix|>\n${prefix}`)
-      contextSections.push(`<|suffix|>\n${suffix}`)
-      contextSections.push(`<|completion|>`)
-
-      const prompt = contextSections.join('\n')
-
-      // Determine stop sequences: universal + language-specific
-      const stopSequences = ['<|', '```', ...strategy.stopSequences]
-
-      // For multi-line, don't stop on single \n\n unless the language doesn't prefer it
-      if (!strategy.preferMultiLine) {
-        stopSequences.push('\n\n')
-      }
-
-      const response = await (window as any).api?.omoComplete?.({
-        prompt,
+      const response = await window.api.aiComplete({
+        provider,
+        prefix,
+        suffix,
+        language,
+        fileName: filePath.split(/[\\/]/).pop() || 'untitled',
         maxTokens: strategy.maxTokens,
-        temperature: strategy.temperature,
-        stop: stopSequences,
       })
 
       if (abortRef.current?.signal.aborted) return
@@ -674,27 +564,22 @@ export default function GhostTextProvider({ editor, monaco, language, filePath }
     )
     disposableRef.current = disposable
 
-    // Listen for cursor position changes to trigger completions with smart debounce
+    // Moving the caret dismisses the suggestion. It does not request a new
+    // one: only typing does, so navigating a file costs no completion requests.
     const cursorDisposable = editor.onDidChangeCursorPosition((e) => {
       if (e.reason === 3) return // Explicit cursor set, skip
+      // Typing moves the caret too; the content handler below owns that case.
+      if (e.source === 'keyboard' && debounceRef.current) return
 
       if (debounceRef.current) clearTimeout(debounceRef.current)
+      debounceRef.current = null
       clear()
       clearLoadingDecoration()
       currentGhostRef.current = null
       partialAcceptIdxRef.current = 0
-
-      debounceRef.current = setTimeout(() => {
-        const model = editor.getModel()
-        if (!model) return
-        const pos = editor.getPosition()
-        if (!pos) return
-        requestCompletion(model, pos)
-      }, DEBOUNCE_MS)
     })
 
-    // Clear ghost text on content changes (but don't cancel debounce – the
-    // cursor-position handler already set a new one)
+    // Typing: clear the current suggestion and ask for a new one after a pause.
     const contentDisposable = editor.onDidChangeModelContent(() => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
       clear()
@@ -708,8 +593,9 @@ export default function GhostTextProvider({ editor, monaco, language, filePath }
         if (!model) return
         const pos = editor.getPosition()
         if (!pos) return
+        debounceRef.current = null
         requestCompletion(model, pos)
-      }, DEBOUNCE_MS)
+      }, debounceMs)
     })
 
     return () => {
@@ -720,7 +606,7 @@ export default function GhostTextProvider({ editor, monaco, language, filePath }
       if (abortRef.current) abortRef.current.abort()
       clearLoadingDecoration()
     }
-  }, [editor, monaco, enabled, requestCompletion, clear, clearLoadingDecoration])
+  }, [editor, monaco, enabled, debounceMs, requestCompletion, clear, clearLoadingDecoration])
 
   // -----------------------------------------------------------------------
   // Tab: accept full completion

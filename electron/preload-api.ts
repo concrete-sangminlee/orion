@@ -29,6 +29,7 @@ import type {
   FileSearchOptions,
   OmoBridgeMessage,
   OmoPrompts,
+  InlineCompletionRequest,
   ApiKeyPatch,
   TaskRunArgs,
   TerminalShellOptions,
@@ -54,7 +55,13 @@ export interface GitCreateTagOptions {
   force?: boolean
 }
 
-export function createElectronApi(ipc: IpcRendererLike) {
+/** What the preload can do that page code cannot. */
+export interface PreloadHost {
+  /** Electron's `webUtils.getPathForFile`: '' unless the File comes from the OS. */
+  getPathForFile(file: unknown): string
+}
+
+export function createElectronApi(ipc: IpcRendererLike, host?: PreloadHost) {
   const invoke = <C extends IpcInvokeChannel>(channel: C, ...args: IpcInvokeArgs<C>) =>
     ipc.invoke(channel, ...args) as Promise<Awaited<IpcInvokeResult<C>>>
 
@@ -100,6 +107,17 @@ export function createElectronApi(ipc: IpcRendererLike) {
     showItemInFolder: (filePath: string) => invoke('fs:show-item', filePath),
     copyFile: (srcPath: string, destDir: string) => invoke('fs:copy-file', srcPath, destDir),
 
+    /**
+     * The absolute path of a file or folder the user dropped onto the window,
+     * or '' when the File does not come from the OS. (`File.path` no longer
+     * exists.) The path is read here, where page code cannot forge it, and
+     * reported to the main process so exactly that item may be opened.
+     */
+    pathForDroppedFile: (file: unknown): string => {
+      const itemPath = host?.getPathForFile(file) ?? ''
+      if (itemPath) send('fs:grant-dropped-path', itemPath)
+      return itemPath
+    },
     watchStart: (dirPath: string) => send('fs:watch-start', dirPath),
     watchStop: () => send('fs:watch-stop'),
     onFsChange: (callback: (...args: IpcEventArgs<'fs:change'>) => void) => subscribe('fs:change', callback),
@@ -234,6 +252,7 @@ export function createElectronApi(ipc: IpcRendererLike) {
     omoSetApiKeys: (keys: ApiKeyPatch) => invoke('omo:set-api-keys', keys),
     omoGetApiKeyStatus: () => invoke('omo:get-api-key-status'),
     omoSetPrompts: (prompts: OmoPrompts) => invoke('omo:set-prompts', prompts),
+    aiComplete: (request: InlineCompletionRequest) => invoke('ai:complete', request),
     onOmoMessage: (callback: (...args: IpcEventArgs<'omo:message'>) => void) => subscribe('omo:message', callback),
 
     // =====================================================================
@@ -252,8 +271,6 @@ export function createElectronApi(ipc: IpcRendererLike) {
     minimize: () => send('win:minimize'),
     maximize: () => send('win:maximize'),
     close: () => send('win:close'),
-    appNewWindow: () => send('app:new-window'),
-    appCheckForUpdates: () => invoke('app:check-for-updates'),
     appGetInfo: () => invoke('app:get-info'),
 
     // =====================================================================
@@ -265,8 +282,6 @@ export function createElectronApi(ipc: IpcRendererLike) {
       subscribe('app:open-folder', callback),
     onAppToggleSidebar: (callback: (...args: IpcEventArgs<'app:toggle-sidebar'>) => void) =>
       subscribe('app:toggle-sidebar', callback),
-    onAppUpdateStatus: (callback: (...args: IpcEventArgs<'app:update-status'>) => void) =>
-      subscribe('app:update-status', callback),
     onAppOpenAbout: onSignal('app:open-about'),
     onAppNewFile: onSignal('app:new-file'),
     onAppSave: onSignal('app:save'),

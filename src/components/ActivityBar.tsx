@@ -1,11 +1,14 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react'
-import { Files, Search, GitBranch, Bot, Settings, ListTree, Package, CircleUser, Bug, FlaskConical, RotateCcw, EyeOff } from 'lucide-react'
+import { Files, Search, GitBranch, Settings, ListTree, RotateCcw, EyeOff } from 'lucide-react'
 import { useEditorStore } from '@/store/editor'
 import { useFileStore } from '@/store/files'
 import { useProblemsStore, getProblemsCount } from '@/store/problems'
 import type { FileNode, OpenFile } from '@shared/types'
 
-type PanelView = 'explorer' | 'search' | 'git' | 'debug' | 'agents' | 'outline' | 'extensions' | 'testing'
+// Run and Debug, AI Agents, Extensions and Testing were removed: each was a
+// simulation (timers, hard-coded catalogues, random test results) with no
+// debugger, agent runtime, marketplace or test runner behind it.
+type PanelView = 'explorer' | 'search' | 'git' | 'outline'
 
 interface Props {
   activeView: PanelView
@@ -18,19 +21,14 @@ interface ActivityItem {
   Icon: typeof Files
   label: string
   shortcut?: string
-  showDot?: boolean
-  badgeKey?: 'git' | 'problems' | 'search' | 'extensions' | 'debug'
+  badgeKey?: 'git' | 'problems' | 'search'
 }
 
 const defaultItems: ActivityItem[] = [
   { view: 'explorer', Icon: Files, label: 'Explorer', shortcut: 'Ctrl+Shift+E' },
   { view: 'search', Icon: Search, label: 'Search', shortcut: 'Ctrl+Shift+F', badgeKey: 'search' },
   { view: 'git', Icon: GitBranch, label: 'Source Control', shortcut: 'Ctrl+Shift+G', badgeKey: 'git' },
-  { view: 'debug', Icon: Bug, label: 'Run and Debug', shortcut: 'Ctrl+Shift+D', badgeKey: 'debug' },
-  { view: 'agents', Icon: Bot, label: 'AI Agents', showDot: true },
   { view: 'outline', Icon: ListTree, label: 'Outline', shortcut: 'Ctrl+Shift+O' },
-  { view: 'extensions', Icon: Package, label: 'Extensions', shortcut: 'Ctrl+Shift+X', badgeKey: 'extensions' },
-  { view: 'testing', Icon: FlaskConical, label: 'Testing', shortcut: 'Ctrl+Shift+T' },
 ]
 
 const STORAGE_KEY_ORDER = 'orion:activity-bar-order'
@@ -147,28 +145,6 @@ const Badge = React.memo(function Badge({ count, type }: { count: number; type?:
     </span>
   )
 })
-
-/* ── Debug Session Dot ─────────────────────────────────────────── */
-function DebugDot({ active }: { active: boolean }) {
-  if (!active) return null
-  return (
-    <span
-      className="anim-pulse"
-      style={{
-        position: 'absolute',
-        top: 6,
-        right: 6,
-        width: 8,
-        height: 8,
-        borderRadius: '50%',
-        background: 'var(--accent-orange, #d29922)',
-        boxShadow: '0 0 6px rgba(210, 153, 34, 0.5)',
-        border: '1.5px solid var(--bg-tertiary)',
-        pointerEvents: 'none',
-      }}
-    />
-  )
-}
 
 /* ── Context Menu Component ────────────────────────────────────── */
 function ContextMenu({ x, y, itemLabel, onHide, onReset, onClose }: {
@@ -302,10 +278,8 @@ export default function ActivityBar({ activeView, onViewChange, onSettingsClick 
   const problems = useProblemsStore((s) => s.problems)
   const problemsCounts = useMemo(() => getProblemsCount(problems), [problems])
 
-  // Dynamic badge state driven by custom events (for search, debug, extensions)
+  // Search result badge, reported by the search panel.
   const [searchResultCount, setSearchResultCount] = useState(0)
-  const [debugActive, setDebugActive] = useState(false)
-  const [extensionUpdateCount, setExtensionUpdateCount] = useState(0)
 
   // Listen for external events to update badge state
   useEffect(() => {
@@ -313,22 +287,10 @@ export default function ActivityBar({ activeView, onViewChange, onSettingsClick 
       const detail = (e as CustomEvent).detail
       setSearchResultCount(typeof detail?.count === 'number' ? detail.count : 0)
     }
-    const onDebugSession = (e: Event) => {
-      const detail = (e as CustomEvent).detail
-      setDebugActive(!!detail?.active)
-    }
-    const onExtensionUpdates = (e: Event) => {
-      const detail = (e as CustomEvent).detail
-      setExtensionUpdateCount(typeof detail?.count === 'number' ? detail.count : 0)
-    }
 
     window.addEventListener('orion:search-results', onSearchResults)
-    window.addEventListener('orion:debug-session', onDebugSession)
-    window.addEventListener('orion:extension-updates', onExtensionUpdates)
     return () => {
       window.removeEventListener('orion:search-results', onSearchResults)
-      window.removeEventListener('orion:debug-session', onDebugSession)
-      window.removeEventListener('orion:extension-updates', onExtensionUpdates)
     }
   }, [])
 
@@ -356,14 +318,10 @@ export default function ActivityBar({ activeView, onViewChange, onSettingsClick 
         return problemsCounts.errors + problemsCounts.warnings
       case 'search':
         return searchResultCount
-      case 'extensions':
-        return extensionUpdateCount
-      case 'debug':
-        return 0 // debug uses a dot indicator, not a count badge
       default:
         return 0
     }
-  }, [gitChangedCount, problemsCounts, searchResultCount, extensionUpdateCount])
+  }, [gitChangedCount, problemsCounts, searchResultCount])
 
   // Visible items (filtered by hidden set)
   const visibleItems = useMemo(
@@ -484,10 +442,7 @@ export default function ActivityBar({ activeView, onViewChange, onSettingsClick 
     : null
 
   // Bottom items tooltip data
-  const bottomTooltipLabel =
-    hoveredView === 'account' ? 'Account' :
-    hoveredView === 'settings' ? 'Settings' :
-    null
+  const bottomTooltipLabel = hoveredView === 'settings' ? 'Settings' : null
   const bottomTooltipShortcut =
     hoveredView === 'settings' ? 'Ctrl+,' : undefined
 
@@ -530,13 +485,12 @@ export default function ActivityBar({ activeView, onViewChange, onSettingsClick 
         }}
       >
         {/* ── Top panel icons ──────────────────────────────────── */}
-        {visibleItems.map(({ view, Icon, label, shortcut, showDot, badgeKey }, index) => {
+        {visibleItems.map(({ view, Icon, label, shortcut, badgeKey }, index) => {
           const isActive = activeView === view
           const isHovered = hoveredView === view
           const badgeCount = getBadgeCount(badgeKey)
           const isDragOver = dragOverIndex === index
           const isDragging = dragIndex === index
-          const isDebugActive = badgeKey === 'debug' && debugActive
 
           return (
             <button
@@ -576,31 +530,8 @@ export default function ActivityBar({ activeView, onViewChange, onSettingsClick 
             >
               <Icon size={21} strokeWidth={isActive ? 1.8 : 1.4} className="activity-bar-icon" />
 
-              {/* Badge count (git, problems, search, extensions) */}
-              {badgeKey !== 'debug' && (
-                <Badge count={badgeCount} type={getBadgeType(badgeKey)} />
-              )}
-
-              {/* Debug session active indicator (orange dot) */}
-              {isDebugActive && <DebugDot active />}
-
-              {/* Notification dot for agents */}
-              {showDot && (
-                <span
-                  className="anim-pulse"
-                  style={{
-                    position: 'absolute',
-                    top: 10,
-                    right: 10,
-                    width: 6,
-                    height: 6,
-                    borderRadius: '50%',
-                    background: 'var(--accent-green)',
-                    boxShadow: '0 0 6px rgba(63, 185, 80, 0.4)',
-                    border: '1px solid var(--bg-tertiary)',
-                  }}
-                />
-              )}
+              {/* Badge count (git, problems, search) */}
+              <Badge count={badgeCount} type={getBadgeType(badgeKey)} />
             </button>
           )
         })}
@@ -609,27 +540,6 @@ export default function ActivityBar({ activeView, onViewChange, onSettingsClick 
         <div className="flex-1" />
 
         {/* ── Bottom section ───────────────────────────────────── */}
-
-        {/* Account button */}
-        <button
-          onClick={() => {
-            window.dispatchEvent(new Event('orion:open-account'))
-          }}
-          className="activity-bar-item relative flex items-center justify-center"
-          aria-label="Account"
-          style={{
-            width: 48,
-            height: 48,
-            borderLeft: '2px solid transparent',
-            color: hoveredView === 'account' ? 'var(--text-secondary)' : 'var(--text-muted)',
-            transition: 'color 0.15s ease',
-            cursor: 'pointer',
-          }}
-          onMouseEnter={(e) => handleMouseEnter('account', e.currentTarget)}
-          onMouseLeave={handleMouseLeave}
-        >
-          <CircleUser size={20} strokeWidth={1.4} className="activity-bar-icon" />
-        </button>
 
         {/* Settings button */}
         <button

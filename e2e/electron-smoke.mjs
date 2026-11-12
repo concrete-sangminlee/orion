@@ -11,9 +11,13 @@
  *
  * Usage:  npm run build && npm run test:e2e
  * Linux without a display:  xvfb-run -a npm run test:e2e
+ * Packaged app:  ORION_E2E_APP=release/<version>/linux-unpacked/orion-ide npm run test:e2e
+ *   (after `npx electron-builder --config electron-builder.yml --dir`), which also
+ *   covers what only exists in a package: the asar layout and shipped native modules.
  */
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,8 +37,11 @@ const check = (condition, message) => {
   }
 }
 
-for (const built of ['dist-electron/main.js', 'dist-electron/preload.cjs', 'dist/index.html']) {
-  if (!fs.existsSync(path.join(ROOT, built))) {
+// Set to a packaged executable to test the package instead of the build output.
+const packagedApp = process.env.ORION_E2E_APP ? path.resolve(ROOT, process.env.ORION_E2E_APP) : null
+
+for (const built of packagedApp ? [packagedApp] : ['dist-electron/main.js', 'dist-electron/preload.cjs', 'dist/index.html'].map((file) => path.join(ROOT, file))) {
+  if (!fs.existsSync(built)) {
     console.error(`Missing ${built} — run \`npm run build\` first.`)
     process.exit(1)
   }
@@ -42,7 +49,27 @@ for (const built of ['dist-electron/main.js', 'dist-electron/preload.cjs', 'dist
 
 const pageErrors = []
 const mainLog = []
-const env = { ...process.env }
+// A stand-in for a local Ollama server, so inline completion can be checked
+// without a model: it lists one code model and answers fill-in-the-middle
+// requests with a fixed completion.
+const ollamaRequests = []
+const fakeOllama = http.createServer((request, response) => {
+  let body = ''
+  request.on('data', (chunk) => (body += chunk))
+  request.on('end', () => {
+    ollamaRequests.push({ url: request.url, body: body ? JSON.parse(body) : null })
+    response.setHeader('Content-Type', 'application/json')
+    if (request.url === '/api/tags') response.end(JSON.stringify({ models: [{ name: 'qwen2.5-coder:1.5b' }] }))
+    else if (request.url === '/api/generate') response.end(JSON.stringify({ response: '6 * 7' }))
+    else {
+      response.statusCode = 404
+      response.end('{}')
+    }
+  })
+})
+await new Promise((resolve) => fakeOllama.listen(0, '127.0.0.1', resolve))
+
+const env = { ...process.env, OLLAMA_HOST: `127.0.0.1:${fakeOllama.address().port}` }
 delete env.VITE_DEV_SERVER_URL
 delete env.NODE_OPTIONS
 delete env.ELECTRON_RUN_AS_NODE
@@ -56,8 +83,10 @@ const secondFile = path.join(workspaceDir, 'farewell.ts')
 fs.writeFileSync(secondFile, 'export const farewell = "bye"\n')
 
 const app = await _electron.launch({
-  executablePath: require('electron'),
-  args: [ROOT, '--no-sandbox', '--disable-gpu', `--user-data-dir=${userDataDir}`],
+  executablePath: packagedApp ?? require('electron'),
+  // The workspace is named on the command line, as `orion-ide <folder>` does:
+  // the main process only lets the renderer open folders the user chose.
+  args: [...(packagedApp ? [] : [ROOT]), '--no-sandbox', '--disable-gpu', `--user-data-dir=${userDataDir}`, workspaceDir],
   env,
   timeout: 60_000,
 })
@@ -66,7 +95,7 @@ app.process().stderr?.on('data', (chunk) => mainLog.push(String(chunk)))
 
 let win
 try {
-  console.log('Electron smoke test')
+  console.log(`Electron smoke test${packagedApp ? ` (packaged: ${path.relative(ROOT, packagedApp)})` : ''}`)
   win = await app.firstWindow({ timeout: 30_000 })
   win.on('pageerror', (error) => pageErrors.push(error.message))
   // Everything the renderer runs must come from the app bundle. Only the
@@ -115,6 +144,10 @@ try {
     BrowserWindow.getAllWindows()[0].webContents.send('app:open-folder', dir)
   }, workspaceDir)
   await win.waitForFunction(() => document.body.innerText.includes('greeting.ts'), null, { timeout: 15_000 })
+  const notChosen = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-e2e-other-'))
+  const selfDeclared = await win.evaluate((dir) => window.api.openWorkspace(dir).then(() => 'opened', (err) => String(err.message)), notChosen)
+  fs.rmSync(notChosen, { recursive: true, force: true })
+  check(/Open Folder first/.test(selfDeclared), `the renderer cannot open a folder the user did not choose (${selfDeclared.slice(-60)})`)
   const openFile = (filePath) =>
     app.evaluate(({ BrowserWindow }, file) => {
       BrowserWindow.getAllWindows()[0].webContents.send('app:open-file', file)
@@ -170,6 +203,98 @@ try {
   await win.keyboard.press('Control+s')
   await win.waitForTimeout(800)
   check(dialogs.length > 0 && disk().includes('edited elsewhere'), 'Ctrl+S asks before overwriting it (declined here)')
+  // Inline completion: typing asks the (fake) local model once after a pause,
+  // Tab inserts the suggestion, and moving the caret asks for nothing.
+  const completionFile = path.join(workspaceDir, 'answer.ts')
+  fs.writeFileSync(completionFile, 'export const one = 1\n')
+  await openFile(completionFile)
+  await win.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue().includes('one = 1'), null, { timeout: 15_000 })
+  await typeAtEnd('export const answer = ')
+  await win.waitForFunction(() => document.querySelector('.monaco-editor .view-lines')?.textContent?.includes('6 * 7'), null, { timeout: 10_000 }).catch(() => {})
+  // Earlier typing in this test asked for completions too; count this line's.
+  const generateRequests = ollamaRequests.filter(
+    (request) => request.url === '/api/generate' && request.body.prompt.endsWith('export const answer = '),
+  )
+  check(generateRequests.length === 1, `typing a line requests one inline completion after a pause (${generateRequests.length} request(s))`)
+  await win.keyboard.press('Tab')
+  await win.waitForTimeout(300)
+  check((await modelValue()).includes('export const answer = 6 * 7'), 'Tab accepts the inline suggestion')
+  const requestsBeforeCaretMoves = ollamaRequests.length
+  await win.keyboard.press('ArrowUp')
+  await win.keyboard.press('ArrowDown')
+  await win.waitForTimeout(1200)
+  check(ollamaRequests.length === requestsBeforeCaretMoves, 'moving the caret requests no completion')
+
+  // Integrated terminal: a real pty runs a command in the workspace.
+  const terminal = await win.evaluate(async () => {
+    let output = ''
+    const unsubscribe = window.api.onTermData((id, data) => {
+      if (id === 'e2e-term') output += data
+    })
+    const created = await window.api.termCreate('e2e-term')
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    window.api.termWrite('e2e-term', 'echo orion-$((6*7))\r')
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    unsubscribe()
+    window.api.termKill('e2e-term')
+    return { created, output }
+  })
+  check(terminal.created.success === true && terminal.output.includes('orion-42'), `integrated terminal runs commands${terminal.created.error ? ` (${terminal.created.error})` : ''}`)
+
+  // File safety. "New File" used to truncate an existing file and a rename
+  // replaced its target; both now fail and leave the file alone.
+  const keepFile = path.join(workspaceDir, 'keep.md')
+  fs.writeFileSync(keepFile, 'a week of work\n')
+  await win.waitForFunction(() => document.body.innerText.includes('keep.md'), null, { timeout: 10_000 })
+  await win.locator('[title="New File"]').first().click()
+  // The name field takes focus on the next frame; typing earlier would go to
+  // the editor that had focus before.
+  await win.waitForFunction(() => document.activeElement instanceof HTMLInputElement && !document.activeElement.closest('.monaco-editor'), null, { timeout: 5_000 })
+  await win.keyboard.type('keep.md')
+  await win.keyboard.press('Enter')
+  await win.waitForFunction(() => document.body.innerText.includes('already exists'), null, { timeout: 5_000 }).catch(() => {})
+  check(
+    fs.readFileSync(keepFile, 'utf8') === 'a week of work\n' && (await win.locator('text=already exists').count()) > 0,
+    'New File with the name of an existing file reports it and leaves the file intact',
+  )
+  const renamedOnto = await win.evaluate(([from, to]) => window.api.renameFile(from, to), [sampleFile, keepFile])
+  check(
+    renamedOnto.success === false && fs.existsSync(sampleFile) && fs.readFileSync(keepFile, 'utf8') === 'a week of work\n',
+    `renaming onto an existing file is refused (${renamedOnto.error})`,
+  )
+
+  // Encodings. A file is opened only if it can be saved back unchanged.
+  const latin1File = path.join(workspaceDir, 'legacy-latin1.txt')
+  const latin1Bytes = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a])
+  fs.writeFileSync(latin1File, latin1Bytes)
+  await openFile(latin1File)
+  await win.waitForFunction(() => document.body.innerText.includes('not UTF-8'), null, { timeout: 5_000 }).catch(() => {})
+  const tabsAfterLatin1 = await win.evaluate(() => window.monaco.editor.getModels().map((model) => model.uri.path))
+  check(
+    (await win.locator('text=not UTF-8').count()) > 0 && !tabsAfterLatin1.some((uri) => uri.endsWith('legacy-latin1.txt')) && fs.readFileSync(latin1File).equals(latin1Bytes),
+    'a file that is not UTF-8 is refused with a reason instead of opened as mangled text',
+  )
+  const utf16File = path.join(workspaceDir, 'wide.txt')
+  fs.writeFileSync(utf16File, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('héllo\n', 'utf16le')]))
+  await openFile(utf16File)
+  await win.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue().includes('héllo'), null, { timeout: 15_000 })
+  await typeAtEnd('wörld')
+  await win.waitForTimeout(2000)
+  const utf16Saved = fs.readFileSync(utf16File)
+  check(
+    utf16Saved[0] === 0xff && utf16Saved[1] === 0xfe && utf16Saved.subarray(2).toString('utf16le') === 'héllo\nwörld',
+    'a UTF-16 file edited in the editor is saved back as UTF-16',
+  )
+  // 1x1 PNG: opens as an image preview, and no save can write over it.
+  const pngFile = path.join(workspaceDir, 'pixel.png')
+  const pngBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+  fs.writeFileSync(pngFile, pngBytes)
+  await openFile(pngFile)
+  await win.waitForFunction(() => [...document.images].some((image) => image.src.endsWith('/pixel.png') && image.naturalWidth === 1), null, { timeout: 10_000 }).catch(() => {})
+  const pngShown = await win.evaluate(() => [...document.images].some((image) => image.src.endsWith('/pixel.png') && image.naturalWidth === 1))
+  const pngWrite = await win.evaluate((file) => window.api.writeFile(file, ''), pngFile)
+  check(pngShown && pngWrite.success === false && fs.readFileSync(pngFile).equals(pngBytes), `an image opens as a preview and cannot be overwritten (${pngWrite.error})`)
+
   const workerUrls = win.workers().map((worker) => worker.url())
   check(workerUrls.length > 0 && workerUrls.every((url) => url.startsWith('file:')), `Monaco workers come from the bundle (${workerUrls.length})`)
 
@@ -228,6 +353,7 @@ try {
     fs.writeFileSync(path.join(ARTIFACTS, 'main-process.log'), mainLog.join(''))
   }
   await app.close().catch(() => {})
+  fakeOllama.close()
   fs.rmSync(userDataDir, { recursive: true, force: true })
   fs.rmSync(workspaceDir, { recursive: true, force: true })
 }

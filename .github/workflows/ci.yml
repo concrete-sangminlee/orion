@@ -66,6 +66,10 @@ jobs:
       - run: npm run build
       - run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - run: xvfb-run -a npm run test:e2e
+      # The same checks against a packaged build: catches files or native
+      # modules missing from the package (asar layout, node-pty).
+      - run: npx electron-builder --config electron-builder.yml --linux dir --publish never
+      - run: ORION_E2E_APP="$(ls release/*/linux-unpacked/orion-ide)" xvfb-run -a npm run test:e2e
       - if: failure()
         uses: actions/upload-artifact@v4
         with:

@@ -62,12 +62,7 @@ const FORBIDDEN: Array<{ pattern: RegExp; reason: string }> = [
  * Known gaps, each with the reason it is not fixed yet. Keep this list short;
  * an entry here is a feature that does not work in the shipped app.
  */
-const KNOWN_GAPS: Record<string, string> = {
-  // Inline AI completion calls `api.omoComplete`, which no IPC channel backs,
-  // so ghost text never appears. Wiring it means picking the model that runs
-  // on every typing pause (a cost decision), so it is deliberately left open.
-  'src/components/GhostTextProvider.tsx': 'omoComplete has no main-process implementation',
-}
+const KNOWN_GAPS: Record<string, string> = {}
 
 describe('renderer IPC bridge usage', () => {
   it(

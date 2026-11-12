@@ -17,7 +17,7 @@ import Resizer from './components/Resizer'
 import StatusBar from './components/StatusBar'
 import CommandPalette from '@/components/CommandPalette'
 import ToastContainer from '@/components/Toast'
-import { writeFileChecked } from '@/utils/ipcResult'
+import { ipcErrorMessage, writeFileChecked } from '@/utils/ipcResult'
 import { confirmOverwriteIfChangedOnDisk } from '@/utils/saveGuards'
 import { openFileInEditor } from '@/utils/openFileInEditor'
 import { migrateLegacyApiKeys } from '@/utils/apiKeys'
@@ -43,13 +43,8 @@ import type { ResizerConstraints } from './components/Resizer'
 const ChatPanel = React.lazy(() => import('./panels/ChatPanel'))
 const SearchPanel = React.lazy(() => import('@/panels/SearchPanel'))
 const SourceControlPanel = React.lazy(() => import('@/panels/SourceControlPanel'))
-const ExtensionsPanel = React.lazy(() => import('./panels/ExtensionsPanel'))
 const OutlinePanel = React.lazy(() => import('@/panels/OutlinePanel'))
 const EditorPanel = React.lazy(() => import('./panels/EditorPanel'))
-const AgentPanel = React.lazy(() => import('./panels/AgentPanel'))
-const DebugPanel = React.lazy(() => import('./panels/DebugPanel'))
-const TestingPanel = React.lazy(() => import('./panels/TestingPanel'))
-const ComposerPanel = React.lazy(() => import('./panels/ComposerPanel'))
 
 // Lazy-loaded editor-area components
 const Breadcrumbs = React.lazy(() => import('./components/Breadcrumbs'))
@@ -161,7 +156,6 @@ export default function App() {
   const [bottomVisible, setBottomVisible] = useState(initialLayout.bottomVisible)
   const [chatVisible, setChatVisible] = useState(initialLayout.chatVisible)
   const [zenMode, setZenMode] = useState(false)
-  const [rightPanelTab, setRightPanelTab] = useState<'chat' | 'composer'>('chat')
   const [zenExitVisible, setZenExitVisible] = useState(false)
   const zenExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -313,8 +307,13 @@ export default function App() {
   }, [])
 
   const openWorkspacePath = useCallback(async (folderPath: string, successMessage?: string) => {
-    const tree = await window.api.openWorkspace(folderPath)
-    await applyWorkspaceTree(folderPath, tree, successMessage)
+    try {
+      const tree = await window.api.openWorkspace(folderPath)
+      await applyWorkspaceTree(folderPath, tree, successMessage)
+    } catch (err) {
+      // Keep the current workspace; an unreadable folder must not look like an empty one.
+      useToastStore.getState().addToast({ type: 'error', message: `Could not open folder: ${ipcErrorMessage(err)}` })
+    }
   }, [applyWorkspaceTree])
 
   const promptOpenWorkspace = useCallback(async () => {
@@ -344,20 +343,17 @@ export default function App() {
     const { addToast } = useToastStore.getState()
     const { openFile } = useEditorStore.getState()
 
-    // Check if a single folder was dropped (Electron exposes .path on File objects)
-    // A dropped folder typically has no type or size=0 in Electron
+    // A single dropped folder becomes the workspace. openWorkspace rejects for
+    // anything that is not a folder, which then opens as a file below.
     if (files.length === 1) {
       const droppedFile = files[0]
-      const filePath = (droppedFile as any).path as string | undefined
+      const filePath = window.api.pathForDroppedFile(droppedFile)
       if (filePath) {
         try {
           // Try to read as directory first
           const tree = await window.api.openWorkspace(filePath)
-          if (tree && Array.isArray(tree) && tree.length >= 0) {
-            // It's a valid directory - set as workspace root
-            await applyWorkspaceTree(filePath, tree, `Opened folder: ${droppedFile.name}`)
-            return
-          }
+          await applyWorkspaceTree(filePath, tree, `Opened folder: ${droppedFile.name}`)
+          return
         } catch {
           // Not a directory, fall through to open as file
         }
@@ -368,7 +364,7 @@ export default function App() {
     let openedCount = 0
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
-      const filePath = (file as any).path as string | undefined
+      const filePath = window.api.pathForDroppedFile(file)
       if (!filePath) continue
 
       // Try opening as a folder first for multi-drops
@@ -397,7 +393,7 @@ export default function App() {
         )
         openedCount++
       } catch (err: any) {
-        addToast({ type: 'error', message: `Failed to open ${file.name}: ${err?.message || err}` })
+        addToast({ type: 'error', message: `Failed to open ${file.name}: ${ipcErrorMessage(err)}` })
       }
     }
 
@@ -607,11 +603,7 @@ export default function App() {
       'orion:show-explorer': () => { setSidebarVisible(true); setActiveView('explorer') },
       'orion:show-search': () => { setSidebarVisible(true); setActiveView('search') },
       'orion:show-git': () => { setSidebarVisible(true); setActiveView('git') },
-      'orion:show-agents': () => { setSidebarVisible(true); setActiveView('agents') },
       'orion:show-outline': () => { setSidebarVisible(true); setActiveView('outline') },
-      'orion:show-debug': () => { setSidebarVisible(true); setActiveView('debug') },
-      'orion:show-extensions': () => { setSidebarVisible(true); setActiveView('extensions') },
-      'orion:show-testing': () => { setSidebarVisible(true); setActiveView('testing') },
       'orion:close-tab': () => {
         const { activeFilePath, closeFile } = useEditorStore.getState()
         if (activeFilePath) closeFile(activeFilePath)
@@ -819,27 +811,6 @@ export default function App() {
         e.preventDefault()
         setSidebarVisible(true)
         setActiveView('outline')
-        return
-      }
-      // Ctrl+Shift+D -> debug
-      if (ctrl && e.shiftKey && e.key === 'D') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('debug')
-        return
-      }
-      // Ctrl+Shift+X -> extensions
-      if (ctrl && e.shiftKey && e.key === 'X') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('extensions')
-        return
-      }
-      // Ctrl+Shift+T -> testing
-      if (ctrl && e.shiftKey && e.key === 'T') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('testing')
         return
       }
       // Ctrl+Shift+Y -> focus output panel (toggle bottom panel)
@@ -1138,13 +1109,9 @@ export default function App() {
               {activeView === 'explorer' && <FileExplorer />}
               <ErrorBoundary>
                 <Suspense fallback={<PanelFallback />}>
-                  {activeView === 'agents' && <AgentPanel />}
                   {activeView === 'search' && <SearchPanel />}
                   {activeView === 'git' && <SourceControlPanel />}
-                  {activeView === 'debug' && <DebugPanel />}
                   {activeView === 'outline' && <OutlinePanel />}
-                  {activeView === 'extensions' && <ExtensionsPanel />}
-                  {activeView === 'testing' && <TestingPanel />}
                 </Suspense>
               </ErrorBoundary>
             </div>
@@ -1221,7 +1188,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Right Panel: Chat / Composer */}
+        {/* Right Panel: Chat. (A "Composer" tab showed canned diffs and changed no file.) */}
         {chatVisible && !zenMode && (
           <>
             <Resizer
@@ -1233,27 +1200,10 @@ export default function App() {
               onReset={() => setRightPanelWidth(DEFAULT_RIGHT_PANEL_WIDTH)}
             />
             <div role="complementary" aria-label="AI Panel" aria-expanded={chatVisible} style={{ width: rightPanelWidth, display: 'flex', flexDirection: 'column' }}>
-              <div style={{ display: 'flex', borderBottom: '1px solid var(--border-primary)', background: 'var(--bg-secondary)', flexShrink: 0 }}>
-                {(['chat', 'composer'] as const).map(tab => (
-                  <button
-                    key={tab}
-                    onClick={() => setRightPanelTab(tab)}
-                    style={{
-                      flex: 1, padding: '6px 12px', fontSize: 11, fontWeight: 500, cursor: 'pointer',
-                      background: rightPanelTab === tab ? 'var(--bg-primary)' : 'transparent',
-                      color: rightPanelTab === tab ? 'var(--text-primary)' : 'var(--text-secondary)',
-                      border: 'none', borderBottom: rightPanelTab === tab ? '2px solid var(--accent-primary)' : '2px solid transparent',
-                      textTransform: 'uppercase', letterSpacing: '0.5px',
-                    }}
-                  >
-                    {tab === 'chat' ? 'Chat' : 'Composer'}
-                  </button>
-                ))}
-              </div>
               <div style={{ flex: 1, overflow: 'hidden' }}>
                 <ErrorBoundary>
                   <Suspense fallback={<PanelFallback />}>
-                    {rightPanelTab === 'chat' ? <ChatPanel /> : <ComposerPanel />}
+                    <ChatPanel />
                   </Suspense>
                 </ErrorBoundary>
               </div>

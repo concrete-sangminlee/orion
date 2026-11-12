@@ -412,12 +412,3 @@ export interface PlatformInfo {
   osVersion: string
 }
 
-// ---------------------------------------------------------------------------
-// Update status types
-// ---------------------------------------------------------------------------
-
-export interface UpdateStatus {
-  status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
-  version?: string
-  error?: string
-}

@@ -3,11 +3,22 @@ import { shell, clipboard } from 'electron'
 import fs from 'fs/promises'
 import path from 'path'
 import { IPC } from '../../shared/ipc-channels'
-import { readFileContent, writeFileContent, deleteItem, renameItem, buildFileTree, detectLanguage } from '../filesystem/operations'
-import { startWatching, stopWatching, recordOwnWrite } from '../filesystem/watcher'
+import {
+  readFileForEditor,
+  encodeFileContent,
+  writeFileBytes,
+  deleteItem,
+  renameItem,
+  createNewFile,
+  createNewDirectory,
+  buildFileTree,
+  detectLanguage,
+} from '../filesystem/operations'
+import { startWatching, stopWatching, recordKnownContent } from '../filesystem/watcher'
 import { setProjectPath } from '../workspace/project-path'
 import { resolveActiveWorkspacePath, resolveWorkspaceRootPath, WorkspacePathAccessError } from './workspace-path-guard'
-import { isGrantedFile } from '../workspace/granted-files'
+import { grantFileAccess, isGrantedFile } from '../workspace/granted-files'
+import { grantWorkspaceRoot, isGrantedWorkspaceRoot } from '../workspace/granted-roots'
 import { isSafeRevealPath } from '../../shared/path-safety'
 import { handle, listen } from './typed-ipc'
 
@@ -32,8 +43,13 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
   // as an empty buffer that a subsequent save could write back.
   handle(IPC.FS_READ_FILE, async (_event, filePath: unknown) => {
     const safeFilePath = await resolveEditableFilePath(filePath)
-    const content = await readFileContent(safeFilePath)
-    return { content, language: detectLanguage(safeFilePath) }
+    // Also rejects for binary files and text that is not UTF-8/UTF-16: showing
+    // those as mangled text let a save destroy the original bytes.
+    const { content, binary, bytes } = await readFileForEditor(safeFilePath)
+    if (bytes) recordKnownContent(safeFilePath, bytes)
+    return binary
+      ? { content, language: 'plaintext', binary: true }
+      : { content, language: detectLanguage(safeFilePath) }
   })
 
   handle(IPC.FS_WRITE_FILE, async (_event, filePath: unknown, content: unknown) => {
@@ -42,8 +58,13 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
         return { success: false, error: 'Invalid file content: expected a string' }
       }
       const safeFilePath = await resolveEditableFilePath(filePath)
-      recordOwnWrite(safeFilePath, content)
-      await writeFileContent(safeFilePath, content)
+      // Written in the encoding the file was opened in (BOM, UTF-16).
+      const bytes = encodeFileContent(safeFilePath, content)
+      recordKnownContent(safeFilePath, bytes)
+      await writeFileBytes(safeFilePath, bytes)
+      // Again once the bytes are on disk: a watcher event that fired mid-write
+      // saw other content and dropped the record.
+      recordKnownContent(safeFilePath, bytes)
       return { success: true }
     } catch (err: any) {
       console.error('Failed to write file:', err.message)
@@ -74,34 +95,37 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
 
   // Opens or switches the active workspace root. All ordinary directory reads
   // below are then constrained to this root.
+  //
+  // Both listing handlers reject on failure. They used to resolve with `[]`,
+  // which the renderer cannot tell from an empty folder: a dropped file was
+  // accepted as a workspace, and a failed refresh emptied the explorer.
   handle(IPC.FS_OPEN_WORKSPACE, async (_event, rootPath: string) => {
-    try {
-      const safeRootPath = await resolveWorkspaceRootPath(rootPath)
-      const tree = await buildFileTree(safeRootPath)
-      setProjectPath(safeRootPath)
-      return tree
-    } catch (err: any) {
-      console.error('Failed to open workspace:', err.message)
-      return []
+    // Only folders the user chose through the main process (dialog, menu,
+    // command line, drop, earlier sessions): otherwise the renderer could make
+    // any folder, e.g. ~/.ssh, "the workspace" and then read and write in it.
+    if (!isGrantedWorkspaceRoot(rootPath)) {
+      throw new WorkspacePathAccessError('Open this folder with File > Open Folder first')
     }
+    const safeRootPath = await resolveWorkspaceRootPath(rootPath)
+    const tree = await buildFileTree(safeRootPath)
+    setProjectPath(safeRootPath)
+    return tree
   })
 
   // Reads a directory inside the active workspace without changing the root.
   handle(IPC.FS_READ_DIR, async (_event, dirPath: string) => {
-    try {
-      const safeDirPath = await resolveActiveWorkspacePath(dirPath, 'directory path')
-      return await buildFileTree(safeDirPath)
-    } catch (err: any) {
-      console.error('Failed to read dir:', err.message)
-      return []
-    }
+    const safeDirPath = await resolveActiveWorkspacePath(dirPath, 'directory path')
+    return buildFileTree(safeDirPath)
   })
 
   handle(IPC.FS_CREATE_FILE, async (_event, filePath: string, content: string = '') => {
     try {
+      if (typeof content !== 'string') {
+        return { success: false, error: 'Invalid file content: expected a string' }
+      }
       const safeFilePath = await resolveActiveWorkspacePath(filePath, 'file path')
-      await fs.mkdir(path.dirname(safeFilePath), { recursive: true })
-      await fs.writeFile(safeFilePath, content, 'utf-8')
+      // Fails if the file exists: creating must never empty an existing file.
+      await createNewFile(safeFilePath, content)
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -111,7 +135,7 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
   handle(IPC.FS_CREATE_DIR, async (_event, dirPath: string) => {
     try {
       const safeDirPath = await resolveActiveWorkspacePath(dirPath, 'directory path')
-      await fs.mkdir(safeDirPath, { recursive: true })
+      await createNewDirectory(safeDirPath)
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -254,7 +278,8 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
   // Copy a file from source to destination directory
   handle(IPC.FS_COPY_FILE, async (_event, srcPath: string, destDir: string) => {
     try {
-      const safeSrcPath = await resolveActiveWorkspacePath(srcPath, 'source path')
+      // The source is in the workspace, or an item the user dropped from outside it.
+      const safeSrcPath = await resolveEditableFilePath(srcPath)
       const safeDestDir = await resolveActiveWorkspacePath(destDir, 'destination directory')
       const fileName = path.basename(safeSrcPath)
       let destPath = path.join(safeDestDir, fileName)
@@ -295,6 +320,13 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
 
   listen(IPC.FS_WATCH_STOP, () => {
     stopWatching()
+  })
+
+  // Only the preload sends this, with a path Electron itself resolved from a
+  // dropped File. It grants that one item, like the Open File / Open Folder
+  // dialogs do: a folder may become the workspace, a file may be opened.
+  listen('fs:grant-dropped-path', (_event, itemPath: unknown) => {
+    if (typeof itemPath === 'string' && !grantWorkspaceRoot(itemPath)) grantFileAccess(itemPath)
   })
 }
 
