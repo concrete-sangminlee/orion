@@ -153,7 +153,9 @@ function detectTestRunner(): TestRunner | null {
 
   // Java projects (Gradle)
   if (fs.existsSync(path.join(cwd, 'build.gradle')) || fs.existsSync(path.join(cwd, 'build.gradle.kts'))) {
-    return { name: 'Gradle', command: './gradlew test', language: 'java' };
+    // cmd.exe cannot run `./gradlew`; the wrapper ships gradlew.bat for Windows.
+    const wrapper = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+    return { name: 'Gradle', command: `${wrapper} test`, language: 'java' };
   }
 
   return null;

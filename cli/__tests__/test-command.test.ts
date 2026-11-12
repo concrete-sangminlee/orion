@@ -96,8 +96,10 @@ describe('orion test --generate', () => {
 describe('orion test exit status', () => {
   it('exits with the test runner\'s status when tests fail', async () => {
     // A Gradle project whose wrapper fails, so the runner is deterministic.
+    // Both wrappers, as Gradle generates them: the shell script and gradlew.bat.
     fs.writeFileSync(path.join(tmp, 'build.gradle'), '');
     fs.writeFileSync(path.join(tmp, 'gradlew'), '#!/bin/sh\nexit 5\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(tmp, 'gradlew.bat'), '@exit /b 5\r\n');
     mocks.reply = 'The tests fail.';
 
     await testCommand();
