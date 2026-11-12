@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `customCSS` passed to `MarkdownPreview` is now sanitized before injection into both the live preview and the exported HTML. `@import` directives, `</style>` breakout attempts, `expression(...)` (legacy IE), and any `url(...)` that isn't a `data:` URI are stripped — closes CSS-based exfiltration via attribute-selector tricks and external resource fetches.
 
 ### Fixed
+- **Closing discarded unsaved edits without asking.** Ctrl+W, Close Others / Right / All, the close-all button, middle-click and the Open Editors X closed modified tabs silently, and closing, quitting or reloading the window never asked. Every close now asks Save / Don't Save / Cancel; following a link does not.
+- Edits the user discarded (Don't Save, Reload) were kept as "recovery", restored as unsaved changes at the next launch and then auto-saved over the file.
+- **About 120 menu, title bar and command palette entries did nothing** (their events had no listener), and the renderer subscribed to 3 of the native menu's 35 events, so on macOS Cmd+S, Cmd+P and the other menu shortcuts had no effect. One command registry now backs the palette, the title bar, the native menu and the shortcuts; a test fails when an event or menu item has no handler.
+- Inline AI edit (now Ctrl+I) never opened: Ctrl+K starts Monaco's and the app's chords. Fold All / Unfold All were bound to Ctrl+K, Ctrl+0 and Ctrl+J on their own instead of as chords.
+- Settings that were saved but never applied; `.orion/settings.json` that could not be read was overwritten, one with a UTF-8 BOM could not be read, and a value of the wrong type crashed the explorer and the settings dialog.
+- The status bar branch picker checked out remote branches into a detached HEAD; renaming a compacted explorer folder moved it into a new nested path; dropping an OS folder on the explorer failed.
 - **File operations destroyed data.** New File with an existing name emptied that file, and a rename, move or copy onto an existing name replaced it. They now fail and leave both untouched (a case-only rename still works).
 - **Non-UTF-8 and binary files were corrupted on save.** Files were always decoded as UTF-8, so Latin-1, UTF-16 or binary content became U+FFFD and the next save (auto-save included) wrote that over the original bytes. Files open only if they can be saved back byte for byte (UTF-8 with or without BOM, UTF-16 with BOM) and are saved in the encoding they were opened in; other files are refused with a reason, and images open as a preview that cannot be overwritten.
 - The watcher missed a file that changed and then returned to the saved content, and flagged a false conflict for a file created just before it was opened.
@@ -103,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CHANGELOG.md` and `SECURITY.md` are now shipped in the published npm tarball via the `files` manifest.
 
 ### Changed
+- Inline AI edit is Ctrl+I (as in VS Code) instead of Ctrl+K.
 - Ctrl+Shift+S is Save As, as the menus show it (it ran a second copy of Save All).
 - "Check for Updates" opens the releases page; the previous check waited two seconds and always reported that no update was available.
 - **AI models.** The previously hard-coded Claude IDs (`claude-sonnet-4-20250514`, …) are retired; the CLI now defaults to `claude-opus-5-5` (`claude`, `claude-opus`, `claude-sonnet`, `claude-haiku`, new `claude-fable` shortcuts point at current models), and `temperature` is only sent to models that still accept it. `temperature: 0` / `maxTokens` in config are no longer replaced by defaults (`||` → `??`).
@@ -111,6 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AI chat markdown parsing was extracted from `AIChatWidget` into a shared `src/utils/aiChatMarkdown.ts` module. The widget no longer duplicates fenced-code-block detection: both call sites use `hasCodeBlock()` and the shared `CODE_BLOCK_REGEX`.
 
 ### Removed
+- The app-level breadcrumb bar, which listed made-up sibling files and folders (the editor's own breadcrumb is real), and menu, palette and status bar entries with nothing behind them (debugger, extensions, remote, accounts, fullscreen, the encoding picker, the memory estimate, the Explorer's Clone Repository, the inline edit's Refine and model picker).
 - Simulated features with nothing behind them: Run and Debug (timers, fake variables and call stack), Extensions (hard-coded catalogue, timed "install"), Testing (`Math.random()` results), AI Agents (mock tasks), the Composer tab (canned diffs), the chat's Agent mode (scripted agent logs), the Ports and Debug Console tabs, the terminal's keyword-table "Generate", the notification center's seeded notifications, and the welcome tab's invented "What's New" list.
 - New Window: a second window shared the first window's workspace, watcher and terminals, and Ctrl+Shift+N was registered as a global shortcut that took the key from every other application.
 - `orion plan --execute`, which reported plan steps as completed without writing any file.
