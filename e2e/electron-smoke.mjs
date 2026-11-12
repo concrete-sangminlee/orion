@@ -11,6 +11,9 @@
  *
  * Usage:  npm run build && npm run test:e2e
  * Linux without a display:  xvfb-run -a npm run test:e2e
+ * Packaged app:  ORION_E2E_APP=release/<version>/linux-unpacked/orion-ide npm run test:e2e
+ *   (after `npx electron-builder --config electron-builder.yml --dir`), which also
+ *   covers what only exists in a package: the asar layout and shipped native modules.
  */
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
@@ -34,8 +37,11 @@ const check = (condition, message) => {
   }
 }
 
-for (const built of ['dist-electron/main.js', 'dist-electron/preload.cjs', 'dist/index.html']) {
-  if (!fs.existsSync(path.join(ROOT, built))) {
+// Set to a packaged executable to test the package instead of the build output.
+const packagedApp = process.env.ORION_E2E_APP ? path.resolve(ROOT, process.env.ORION_E2E_APP) : null
+
+for (const built of packagedApp ? [packagedApp] : ['dist-electron/main.js', 'dist-electron/preload.cjs', 'dist/index.html'].map((file) => path.join(ROOT, file))) {
+  if (!fs.existsSync(built)) {
     console.error(`Missing ${built} — run \`npm run build\` first.`)
     process.exit(1)
   }
@@ -77,8 +83,8 @@ const secondFile = path.join(workspaceDir, 'farewell.ts')
 fs.writeFileSync(secondFile, 'export const farewell = "bye"\n')
 
 const app = await _electron.launch({
-  executablePath: require('electron'),
-  args: [ROOT, '--no-sandbox', '--disable-gpu', `--user-data-dir=${userDataDir}`],
+  executablePath: packagedApp ?? require('electron'),
+  args: [...(packagedApp ? [] : [ROOT]), '--no-sandbox', '--disable-gpu', `--user-data-dir=${userDataDir}`],
   env,
   timeout: 60_000,
 })
@@ -87,7 +93,7 @@ app.process().stderr?.on('data', (chunk) => mainLog.push(String(chunk)))
 
 let win
 try {
-  console.log('Electron smoke test')
+  console.log(`Electron smoke test${packagedApp ? ` (packaged: ${path.relative(ROOT, packagedApp)})` : ''}`)
   win = await app.firstWindow({ timeout: 30_000 })
   win.on('pageerror', (error) => pageErrors.push(error.message))
   // Everything the renderer runs must come from the app bundle. Only the
