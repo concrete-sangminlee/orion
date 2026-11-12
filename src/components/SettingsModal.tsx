@@ -7,6 +7,7 @@ import { useProfileStore } from '@/store/profiles'
 import { useSettingsStore } from '@/store/settings'
 import type { WorkspaceSettings } from '@shared/types'
 import type { ApiKeyPatch, ApiKeyStatus } from '@shared/ipc-contract'
+import { DEFAULT_COMPLETION_SETTINGS, type CompletionProviderSetting } from '@/store/completion'
 
 interface Props {
   open: boolean
@@ -112,6 +113,7 @@ interface AISettings {
   temperature: number
   maxTokens: number
   ghostTextEnabled: boolean
+  completionProvider: CompletionProviderSetting
   completionDelay: number
   customModelName: string
   customEndpointUrl: string
@@ -352,6 +354,7 @@ export default function SettingsModal({ open, onClose }: Props) {
     temperature: 0.7,
     maxTokens: 4096,
     ghostTextEnabled: true,
+    completionProvider: DEFAULT_COMPLETION_SETTINGS.provider,
     completionDelay: 300,
     customModelName: '',
     customEndpointUrl: '',
@@ -507,6 +510,7 @@ export default function SettingsModal({ open, onClose }: Props) {
       temperature: 0.7,
       maxTokens: 4096,
       ghostTextEnabled: true,
+      completionProvider: DEFAULT_COMPLETION_SETTINGS.provider,
       completionDelay: 300,
       customModelName: '',
       customEndpointUrl: '',
@@ -1330,6 +1334,26 @@ if (a === b && c >= d) {
                 <SettingRow label="Ghost Text Completions" description="Show AI-powered inline code suggestions as you type">
                   <Toggle checked={aiSettings.ghostTextEnabled} onChange={(v) => setAiSettings(s => ({ ...s, ghostTextEnabled: v }))} />
                 </SettingRow>
+
+                {aiSettings.ghostTextEnabled && (
+                  <SettingRow
+                    label="Completion Provider"
+                    description={
+                      aiSettings.completionProvider === 'anthropic'
+                        ? 'Claude Haiku 5.5 with your Anthropic API key. Every typing pause sends a billed request.'
+                        : 'Local (Ollama) is free and keeps your code on this machine. Needs Ollama running with a model installed.'
+                    }
+                  >
+                    <SelectDropdown
+                      value={aiSettings.completionProvider}
+                      onChange={(v) => setAiSettings(s => ({ ...s, completionProvider: v as CompletionProviderSetting }))}
+                      options={[
+                        { value: 'ollama', label: 'Local (Ollama)' },
+                        { value: 'anthropic', label: 'Claude Haiku 5.5 (API key, billed)' },
+                      ]}
+                    />
+                  </SettingRow>
+                )}
 
                 {aiSettings.ghostTextEnabled && (
                   <SettingRow label="Completion Delay" description="Delay in ms before showing inline suggestions">

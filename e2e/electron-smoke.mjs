@@ -14,6 +14,7 @@
  */
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,7 +43,27 @@ for (const built of ['dist-electron/main.js', 'dist-electron/preload.cjs', 'dist
 
 const pageErrors = []
 const mainLog = []
-const env = { ...process.env }
+// A stand-in for a local Ollama server, so inline completion can be checked
+// without a model: it lists one code model and answers fill-in-the-middle
+// requests with a fixed completion.
+const ollamaRequests = []
+const fakeOllama = http.createServer((request, response) => {
+  let body = ''
+  request.on('data', (chunk) => (body += chunk))
+  request.on('end', () => {
+    ollamaRequests.push({ url: request.url, body: body ? JSON.parse(body) : null })
+    response.setHeader('Content-Type', 'application/json')
+    if (request.url === '/api/tags') response.end(JSON.stringify({ models: [{ name: 'qwen2.5-coder:1.5b' }] }))
+    else if (request.url === '/api/generate') response.end(JSON.stringify({ response: '6 * 7' }))
+    else {
+      response.statusCode = 404
+      response.end('{}')
+    }
+  })
+})
+await new Promise((resolve) => fakeOllama.listen(0, '127.0.0.1', resolve))
+
+const env = { ...process.env, OLLAMA_HOST: `127.0.0.1:${fakeOllama.address().port}` }
 delete env.VITE_DEV_SERVER_URL
 delete env.NODE_OPTIONS
 delete env.ELECTRON_RUN_AS_NODE
@@ -170,6 +191,44 @@ try {
   await win.keyboard.press('Control+s')
   await win.waitForTimeout(800)
   check(dialogs.length > 0 && disk().includes('edited elsewhere'), 'Ctrl+S asks before overwriting it (declined here)')
+  // Inline completion: typing asks the (fake) local model once after a pause,
+  // Tab inserts the suggestion, and moving the caret asks for nothing.
+  const completionFile = path.join(workspaceDir, 'answer.ts')
+  fs.writeFileSync(completionFile, 'export const one = 1\n')
+  await openFile(completionFile)
+  await win.waitForFunction(() => window.monaco.editor.getEditors()[0].getValue().includes('one = 1'), null, { timeout: 15_000 })
+  await typeAtEnd('export const answer = ')
+  await win.waitForFunction(() => document.querySelector('.monaco-editor .view-lines')?.textContent?.includes('6 * 7'), null, { timeout: 10_000 }).catch(() => {})
+  // Earlier typing in this test asked for completions too; count this line's.
+  const generateRequests = ollamaRequests.filter(
+    (request) => request.url === '/api/generate' && request.body.prompt.endsWith('export const answer = '),
+  )
+  check(generateRequests.length === 1, `typing a line requests one inline completion after a pause (${generateRequests.length} request(s))`)
+  await win.keyboard.press('Tab')
+  await win.waitForTimeout(300)
+  check((await modelValue()).includes('export const answer = 6 * 7'), 'Tab accepts the inline suggestion')
+  const requestsBeforeCaretMoves = ollamaRequests.length
+  await win.keyboard.press('ArrowUp')
+  await win.keyboard.press('ArrowDown')
+  await win.waitForTimeout(1200)
+  check(ollamaRequests.length === requestsBeforeCaretMoves, 'moving the caret requests no completion')
+
+  // Integrated terminal: a real pty runs a command in the workspace.
+  const terminal = await win.evaluate(async () => {
+    let output = ''
+    const unsubscribe = window.api.onTermData((id, data) => {
+      if (id === 'e2e-term') output += data
+    })
+    const created = await window.api.termCreate('e2e-term')
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    window.api.termWrite('e2e-term', 'echo orion-$((6*7))\r')
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    unsubscribe()
+    window.api.termKill('e2e-term')
+    return { created, output }
+  })
+  check(terminal.created.success === true && terminal.output.includes('orion-42'), `integrated terminal runs commands${terminal.created.error ? ` (${terminal.created.error})` : ''}`)
+
   const workerUrls = win.workers().map((worker) => worker.url())
   check(workerUrls.length > 0 && workerUrls.every((url) => url.startsWith('file:')), `Monaco workers come from the bundle (${workerUrls.length})`)
 
@@ -228,6 +287,7 @@ try {
     fs.writeFileSync(path.join(ARTIFACTS, 'main-process.log'), mainLog.join(''))
   }
   await app.close().catch(() => {})
+  fakeOllama.close()
   fs.rmSync(userDataDir, { recursive: true, force: true })
   fs.rmSync(workspaceDir, { recursive: true, force: true })
 }

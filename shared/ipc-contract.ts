@@ -351,6 +351,28 @@ export interface ApiKeyUpdateResult extends OperationResult, Partial<ApiKeyStatu
   persisted?: boolean
 }
 
+/** Where inline ("ghost text") completions come from. */
+export type InlineCompletionProvider = 'ollama' | 'anthropic'
+
+export interface InlineCompletionRequest {
+  provider: InlineCompletionProvider
+  /** Text before the caret (the main process keeps only the part nearest to it). */
+  prefix: string
+  /** Text after the caret. */
+  suffix: string
+  language: string
+  fileName: string
+  maxTokens?: number
+}
+
+export interface InlineCompletionResult {
+  /** Text to insert at the caret; empty when there is no suggestion. */
+  text: string
+  model?: string
+  /** Why there is no suggestion (provider unavailable, no key, cancelled, ...). */
+  reason?: string
+}
+
 export interface OmoPrompts {
   systemPrompt?: string
   userPromptTemplate?: string
@@ -480,6 +502,7 @@ export interface IpcInvokeContract {
   'omo:set-api-keys': (keys: ApiKeyPatch) => ApiKeyUpdateResult
   'omo:get-api-key-status': () => ApiKeyStatus
   'omo:set-prompts': (prompts: OmoPrompts) => OperationResult
+  'ai:complete': (request: InlineCompletionRequest) => InlineCompletionResult
 
   // Tasks
   'task:run': (args: TaskRunArgs) => TaskRunResult

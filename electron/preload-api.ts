@@ -29,6 +29,7 @@ import type {
   FileSearchOptions,
   OmoBridgeMessage,
   OmoPrompts,
+  InlineCompletionRequest,
   ApiKeyPatch,
   TaskRunArgs,
   TerminalShellOptions,
@@ -234,6 +235,7 @@ export function createElectronApi(ipc: IpcRendererLike) {
     omoSetApiKeys: (keys: ApiKeyPatch) => invoke('omo:set-api-keys', keys),
     omoGetApiKeyStatus: () => invoke('omo:get-api-key-status'),
     omoSetPrompts: (prompts: OmoPrompts) => invoke('omo:set-prompts', prompts),
+    aiComplete: (request: InlineCompletionRequest) => invoke('ai:complete', request),
     onOmoMessage: (callback: (...args: IpcEventArgs<'omo:message'>) => void) => subscribe('omo:message', callback),
 
     // =====================================================================
