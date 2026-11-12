@@ -3,12 +3,12 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { useTerminalStore } from '@/store/terminal'
+import { useFileStore } from '@/store/files'
+import { openFileInEditor } from '@/utils/openFileInEditor'
 import '@xterm/xterm/css/xterm.css'
 import {
-  Play, Copy, Pencil, RefreshCw, X, Sparkles, Clock,
-  ChevronDown, Loader2, Plus, Columns2, Trash2, Ban,
-  Maximize2, Minimize2, Search, ArrowUp, ArrowDown,
+  X, ChevronDown, Plus, Columns2, Trash2, Ban,
+  Search, ArrowUp, ArrowDown,
   Terminal as TerminalIcon,
 } from 'lucide-react'
 
@@ -241,80 +241,6 @@ const terminalTheme = {
 /* ── File path regex patterns for link detection ──────── */
 const FILE_PATH_RE = /(?:(?:[a-zA-Z]:\\|\/)[^\s:*?"<>|]+|(?:\.\.?\/|\b(?:src|lib|app|components|pages|utils|hooks|store|config|test|spec|electron|shared)\/)[^\s:*?"<>|]+)(?::(\d+)(?::(\d+))?)?/g
 
-/* ── Inject overlay styles once ───────────────────────── */
-const cmdStyleId = 'terminal-cmd-suggest-styles'
-if (typeof document !== 'undefined' && !document.getElementById(cmdStyleId)) {
-  const style = document.createElement('style')
-  style.id = cmdStyleId
-  style.textContent = `
-    @keyframes cmd-overlay-in {
-      from { opacity: 0; transform: translateY(8px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-    @keyframes cmd-pulse {
-      0%, 100% { opacity: 0.6; }
-      50% { opacity: 1; }
-    }
-    @keyframes cmd-spin {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
-    }
-    .cmd-suggest-overlay {
-      animation: cmd-overlay-in 0.15s ease;
-    }
-    .cmd-suggest-btn {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px 10px;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.04);
-      color: var(--text-secondary);
-      font-size: 11px;
-      cursor: pointer;
-      transition: background 0.12s, color 0.12s, border-color 0.12s;
-      font-family: inherit;
-      white-space: nowrap;
-    }
-    .cmd-suggest-btn:hover {
-      background: rgba(255,255,255,0.08);
-      color: var(--text-primary);
-      border-color: rgba(255,255,255,0.15);
-    }
-    .cmd-suggest-btn.primary {
-      background: rgba(88,166,255,0.12);
-      border-color: rgba(88,166,255,0.3);
-      color: var(--accent);
-    }
-    .cmd-suggest-btn.primary:hover {
-      background: rgba(88,166,255,0.2);
-      border-color: rgba(88,166,255,0.5);
-      color: #79c0ff;
-    }
-    .cmd-suggest-history-item {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 5px 10px;
-      width: 100%;
-      text-align: left;
-      border: none;
-      background: transparent;
-      color: var(--text-secondary);
-      font-size: 11px;
-      font-family: var(--font-mono, monospace);
-      cursor: pointer;
-      transition: background 0.1s;
-    }
-    .cmd-suggest-history-item:hover {
-      background: rgba(255,255,255,0.05);
-      color: var(--text-primary);
-    }
-  `
-  document.head.appendChild(style)
-}
-
 /* ── OS detection ─────────────────────────────────────── */
 const isWindows = navigator.userAgent.includes('Windows') || navigator.platform?.startsWith('Win')
 
@@ -354,653 +280,86 @@ function getShellIcon(shellPath?: string): string {
   return '$'
 }
 
-/* ── Command pattern database (fallback without AI) ───── */
-interface CommandPattern {
-  keywords: string[]
-  generate: (input: string) => string
+/* ── Settings > Terminal ──────────────────────────────── */
+const TERMINAL_SETTINGS_KEY = 'orion-terminal-settings'
+
+interface TerminalSettings {
+  defaultShell: string
+  fontFamily: string
+  fontSize: number
+  cursorStyle: 'block' | 'bar' | 'underline'
+  scrollback: number
 }
 
-const commandPatterns: CommandPattern[] = [
-  // File finding
-  {
-    keywords: ['find file', 'find files', 'search file', 'locate file', 'find all'],
-    generate: (input) => {
-      const extMatch = input.match(/\.(ts|tsx|js|jsx|py|go|rs|java|css|html|json|md|txt|yaml|yml|xml|sql|sh|bat|rb|php|c|cpp|h)\b/i)
-      const ext = extMatch ? extMatch[1] : '*'
-      const sizeMatch = input.match(/(\d+)\s*(kb|mb|gb)/i)
-      if (sizeMatch) {
-        const size = parseInt(sizeMatch[1])
-        const unit = sizeMatch[2].toLowerCase()
-        const bytes = unit === 'kb' ? size * 1024 : unit === 'mb' ? size * 1024 * 1024 : size * 1024 * 1024 * 1024
-        return isWindows
-          ? `Get-ChildItem -Recurse -File -Filter "*.${ext}" | Where-Object { $_.Length -gt ${bytes} } | Select-Object FullName, @{N='Size(KB)';E={[math]::Round($_.Length/1KB,1)}}`
-          : `find . -name "*.${ext}" -size +${sizeMatch[1]}${unit === 'kb' ? 'k' : unit === 'mb' ? 'M' : 'G'} -exec ls -lh {} \\;`
-      }
-      const nameMatch = input.match(/named?\s+["']?([^\s"']+)["']?/i)
-      const pattern = nameMatch ? nameMatch[1] : `*.${ext}`
-      return isWindows
-        ? `Get-ChildItem -Recurse -Filter "${pattern}" | Select-Object FullName`
-        : `find . -name "${pattern}" -type f`
-    },
-  },
-  { keywords: ['install package', 'install dep', 'add package', 'add dep', 'npm install', 'yarn add', 'pip install'],
-    generate: (input) => {
-      const pkgMatch = input.match(/(?:install|add)\s+(?:package\s+)?["']?([a-zA-Z0-9@/._-]+)["']?/i)
-      const pkg = pkgMatch ? pkgMatch[1] : '<package-name>'
-      if (input.match(/pip|python/i)) return `pip install ${pkg}`
-      if (input.match(/yarn/i)) return `yarn add ${pkg}`
-      if (input.match(/pnpm/i)) return `pnpm add ${pkg}`
-      if (input.match(/dev\s*dep/i)) return `npm install --save-dev ${pkg}`
-      return `npm install ${pkg}`
-    },
-  },
-  { keywords: ['git commit', 'commit change', 'commit all', 'save changes'],
-    generate: (input) => {
-      const msgMatch = input.match(/(?:message|msg|with)\s+["']([^"']+)["']/i)
-      const msg = msgMatch ? msgMatch[1] : 'Update changes'
-      return `git add -A && git commit -m "${msg}"`
-    },
-  },
-  { keywords: ['git push', 'push to remote', 'push changes'], generate: () => 'git push origin HEAD' },
-  { keywords: ['git pull', 'pull latest', 'pull changes'], generate: () => 'git pull origin main' },
-  { keywords: ['git status', 'check status', 'what changed'], generate: () => 'git status' },
-  { keywords: ['git branch', 'list branch', 'show branch', 'current branch'], generate: () => 'git branch -a' },
-  { keywords: ['create branch', 'new branch', 'checkout new', 'switch branch'],
-    generate: (input) => {
-      const nameMatch = input.match(/(?:branch|named?)\s+["']?([a-zA-Z0-9/_-]+)["']?/i)
-      const name = nameMatch ? nameMatch[1] : 'feature/new-branch'
-      return `git checkout -b ${name}`
-    },
-  },
-  { keywords: ['git log', 'commit history', 'show log', 'recent commits'], generate: () => 'git log --oneline -20' },
-  { keywords: ['git diff', 'show diff', 'what changed', 'show changes'], generate: () => 'git diff' },
-  { keywords: ['git stash', 'stash changes'], generate: () => 'git stash' },
-  { keywords: ['list process', 'show process', 'running process', 'task list', 'ps aux'],
-    generate: () => isWindows ? 'tasklist' : 'ps aux',
-  },
-  { keywords: ['kill process', 'stop process', 'end task'],
-    generate: (input) => {
-      const nameMatch = input.match(/(?:kill|stop|end)\s+(?:process|task)?\s*["']?([a-zA-Z0-9._-]+)["']?/i)
-      const name = nameMatch ? nameMatch[1] : '<process-name>'
-      return isWindows ? `taskkill /IM "${name}" /F` : `pkill -f "${name}"`
-    },
-  },
-  { keywords: ['disk space', 'free space', 'storage', 'disk usage'],
-    generate: () => isWindows ? 'Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}' : 'df -h',
-  },
-  { keywords: ['memory', 'ram usage', 'free memory'],
-    generate: () => isWindows ? 'Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 10 Name, @{N="Mem(MB)";E={[math]::Round($_.WorkingSet64/1MB,1)}}' : 'free -h',
-  },
-  { keywords: ['list files', 'show files', 'dir', 'ls', 'directory contents'],
-    generate: (input) => {
-      const dirMatch = input.match(/(?:in|of|from)\s+["']?([^\s"']+)["']?/i)
-      const dir = dirMatch ? dirMatch[1] : '.'
-      return isWindows ? `Get-ChildItem "${dir}" -Force` : `ls -la ${dir}`
-    },
-  },
-  { keywords: ['create dir', 'make dir', 'mkdir', 'new folder', 'create folder'],
-    generate: (input) => {
-      const nameMatch = input.match(/(?:directory|dir|folder|named?)\s+["']?([^\s"']+)["']?/i)
-      const name = nameMatch ? nameMatch[1] : 'new-folder'
-      return isWindows ? `New-Item -ItemType Directory -Name "${name}"` : `mkdir -p ${name}`
-    },
-  },
-  { keywords: ['port', 'listening', 'open port', 'what port', 'which port'],
-    generate: () => isWindows ? 'netstat -ano | findstr LISTENING' : 'ss -tlnp',
-  },
-  { keywords: ['curl', 'http request', 'fetch url', 'download'],
-    generate: (input) => {
-      const urlMatch = input.match(/https?:\/\/[^\s]+/i)
-      const url = urlMatch ? urlMatch[0] : 'https://example.com'
-      return `curl -s "${url}"`
-    },
-  },
-  { keywords: ['search in file', 'grep', 'find text', 'search text', 'search for', 'find string', 'search content'],
-    generate: (input) => {
-      const textMatch = input.match(/(?:for|text|string|content)\s+["']([^"']+)["']/i) || input.match(/["']([^"']+)["']/i)
-      const text = textMatch ? textMatch[1] : '<search-term>'
-      return isWindows
-        ? `Get-ChildItem -Recurse -File | Select-String -Pattern "${text}" | Select-Object -First 20 Path, LineNumber, Line`
-        : `grep -rn "${text}" . --include="*.{ts,tsx,js,jsx,py,go,rs}" | head -20`
-    },
-  },
-  { keywords: ['docker', 'container', 'docker ps'],
-    generate: (input) => {
-      if (input.match(/stop|kill/i)) return 'docker stop $(docker ps -q)'
-      if (input.match(/log/i)) return 'docker logs --tail 50 <container>'
-      if (input.match(/build/i)) return 'docker build -t myapp .'
-      if (input.match(/run/i)) return 'docker run -d -p 3000:3000 myapp'
-      return 'docker ps -a'
-    },
-  },
-  { keywords: ['run script', 'npm run', 'start dev', 'dev server', 'start server'],
-    generate: (input) => {
-      if (input.match(/build/i)) return 'npm run build'
-      if (input.match(/test/i)) return 'npm test'
-      if (input.match(/lint/i)) return 'npm run lint'
-      return 'npm run dev'
-    },
-  },
-  { keywords: ['delete', 'remove file', 'rm', 'remove dir', 'clean'],
-    generate: (input) => {
-      if (input.match(/node_modules/i)) return isWindows ? 'Remove-Item -Recurse -Force node_modules' : 'rm -rf node_modules'
-      if (input.match(/dist|build|out/i)) {
-        const dir = input.match(/(dist|build|out)/i)?.[1] || 'dist'
-        return isWindows ? `Remove-Item -Recurse -Force ${dir}` : `rm -rf ${dir}`
-      }
-      const fileMatch = input.match(/(?:delete|remove|rm)\s+["']?([^\s"']+)["']?/i)
-      const file = fileMatch ? fileMatch[1] : '<file>'
-      return isWindows ? `Remove-Item "${file}"` : `rm "${file}"`
-    },
-  },
-  { keywords: ['env', 'environment variable', 'show env', 'path variable'],
-    generate: (input) => {
-      if (input.match(/path/i)) return isWindows ? '$env:PATH -split ";"' : 'echo $PATH | tr ":" "\\n"'
-      return isWindows ? 'Get-ChildItem Env: | Format-Table Name, Value -AutoSize' : 'env | sort'
-    },
-  },
-  { keywords: ['count lines', 'line count', 'wc', 'how many lines'],
-    generate: (input) => {
-      const fileMatch = input.match(/(?:in|of)\s+["']?([^\s"']+)["']?/i)
-      const file = fileMatch ? fileMatch[1] : '.'
-      if (file === '.' || input.match(/project|all|total/i)) {
-        return isWindows
-          ? `Get-ChildItem -Recurse -File -Include *.ts,*.tsx,*.js,*.jsx | Get-Content | Measure-Object -Line | Select-Object Lines`
-          : `find . -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" | xargs wc -l | tail -1`
-      }
-      return isWindows ? `(Get-Content "${file}" | Measure-Object -Line).Lines` : `wc -l "${file}"`
-    },
-  },
-]
-
-/* ── Generate command from user description ───────────── */
-function generateCommand(description: string): string {
-  const lower = description.toLowerCase().trim()
-
-  for (const pattern of commandPatterns) {
-    for (const keyword of pattern.keywords) {
-      if (lower.includes(keyword)) {
-        return pattern.generate(description)
-      }
-    }
-  }
-
-  const words = lower.split(/\s+/)
-  for (const pattern of commandPatterns) {
-    for (const keyword of pattern.keywords) {
-      const kwWords = keyword.split(/\s+/)
-      const matchCount = kwWords.filter(kw => words.some(w => w.includes(kw) || kw.includes(w))).length
-      if (matchCount >= kwWords.length * 0.7) {
-        return pattern.generate(description)
-      }
-    }
-  }
-
-  if (lower.match(/^(git|npm|yarn|pnpm|pip|docker|kubectl|curl|wget|cat|ls|dir|cd|mkdir|rm|cp|mv|chmod|chown|grep|find|sed|awk|tar|zip|ssh|scp)\s/)) {
-    return description.trim()
-  }
-
-  return isWindows
-    ? `# Could not generate a specific command for: "${description}"\n# Try describing the task more specifically, e.g.:\n#   "find all .ts files larger than 50KB"\n#   "git commit with message 'fix: update login'\n#   "kill process named node"`
-    : `# Could not generate a specific command for: "${description}"\n# Try describing the task more specifically, e.g.:\n#   "find all .ts files larger than 50KB"\n#   "git commit with message 'fix: update login'"\n#   "kill process named node"`
+// What Settings > Terminal shows before anything has been saved.
+const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
+  defaultShell: 'default',
+  fontFamily: 'Cascadia Code',
+  fontSize: 13,
+  cursorStyle: 'block',
+  scrollback: 1000,
 }
 
-/* ── localStorage history ─────────────────────────────── */
-const HISTORY_KEY = 'terminal-cmd-suggest-history'
-const MAX_HISTORY = 10
-
-interface HistoryEntry {
-  description: string
-  command: string
-  timestamp: number
+/** Settings from localStorage or an orion:terminal-config event; bad fields fall back to defaults. */
+function parseTerminalSettings(raw: unknown): TerminalSettings {
+  const s = (raw && typeof raw === 'object' ? raw : {}) as Partial<Record<keyof TerminalSettings, unknown>>
+  const d = DEFAULT_TERMINAL_SETTINGS
+  const isInt = (v: unknown, min: number, max: number): v is number =>
+    typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max
+  return {
+    defaultShell: typeof s.defaultShell === 'string' ? s.defaultShell : d.defaultShell,
+    fontFamily: typeof s.fontFamily === 'string' && s.fontFamily.trim() ? s.fontFamily : d.fontFamily,
+    fontSize: isInt(s.fontSize, 6, 72) ? s.fontSize : d.fontSize,
+    cursorStyle: s.cursorStyle === 'bar' || s.cursorStyle === 'underline' || s.cursorStyle === 'block'
+      ? s.cursorStyle
+      : d.cursorStyle,
+    scrollback: isInt(s.scrollback, 0, 100000) ? s.scrollback : d.scrollback,
+  }
 }
 
-function loadHistory(): HistoryEntry[] {
+function loadTerminalSettings(): TerminalSettings {
   try {
-    const raw = localStorage.getItem(HISTORY_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch {}
-  return []
+    return parseTerminalSettings(JSON.parse(localStorage.getItem(TERMINAL_SETTINGS_KEY) ?? 'null'))
+  } catch {
+    return DEFAULT_TERMINAL_SETTINGS
+  }
 }
 
-function saveToHistory(description: string, command: string) {
-  const history = loadHistory()
-  if (command.startsWith('#')) return
-  const filtered = history.filter(h => h.command !== command)
-  filtered.unshift({ description, command, timestamp: Date.now() })
-  if (filtered.length > MAX_HISTORY) filtered.length = MAX_HISTORY
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(filtered))
-  } catch {}
+function xtermAppearance(settings: TerminalSettings) {
+  return {
+    fontFamily: `"${settings.fontFamily.replace(/["\\]/g, '')}", monospace`,
+    fontSize: settings.fontSize,
+    cursorStyle: settings.cursorStyle,
+    scrollback: settings.scrollback,
+  }
 }
 
-/* ── Syntax highlighting for generated commands ───────── */
-function highlightCommand(cmd: string): React.JSX.Element[] {
-  const lines = cmd.split('\n')
-  return lines.map((line, lineIdx) => {
-    if (line.startsWith('#')) {
-      return (
-        <div key={lineIdx} style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
-          {line}
-        </div>
-      )
-    }
-    const tokens = line.split(/(\s+|&&|\||;|"|'|`|\$\([^)]*\)|\$\{[^}]*\}|\$[A-Za-z_]\w*)/)
-    return (
-      <div key={lineIdx}>
-        {tokens.map((token, i) => {
-          if (/^(&&|\|{1,2}|;|>|>>|<)$/.test(token)) {
-            return <span key={i} style={{ color: '#f9e2af' }}>{token}</span>
-          }
-          if (/^--?[a-zA-Z]/.test(token)) {
-            return <span key={i} style={{ color: '#94e2d5' }}>{token}</span>
-          }
-          if (/^["'`]/.test(token)) {
-            return <span key={i} style={{ color: '#a6e3a1' }}>{token}</span>
-          }
-          if (/^\$/.test(token)) {
-            return <span key={i} style={{ color: '#cba6f7' }}>{token}</span>
-          }
-          if (i === 0 && token.trim()) {
-            return <span key={i} style={{ color: '#89b4fa', fontWeight: 600 }}>{token}</span>
-          }
-          return <span key={i}>{token}</span>
-        })}
-      </div>
-    )
-  })
+/** The "Default Shell" setting as a launch profile; undefined means the system shell. */
+function defaultShellProfile(defaultShell: string): ShellProfile | undefined {
+  // Settings lists Git Bash as 'bash'; on Unix that is plain bash.
+  const id = isWindows && defaultShell === 'bash' ? 'gitbash' : defaultShell
+  return shellProfiles.find(p => p.id === id)
 }
 
-/* ── Command Suggestion Overlay component ─────────────── */
+/* ── File links in terminal output ────────────────────── */
 
-interface CmdSuggestProps {
-  visible: boolean
-  onClose: () => void
-  onRun: (command: string) => void
+/** Relative paths in tool output (src/x.ts, ./x.ts) are relative to the workspace. */
+function resolveTerminalPath(filePath: string): string {
+  if (/^(?:[a-zA-Z]:\\|\/)/.test(filePath)) return filePath
+  const root = useFileStore.getState().rootPath
+  if (!root) return filePath
+  const sep = root.includes('\\') ? '\\' : '/'
+  return `${root.replace(/[\\/]+$/, '')}${sep}${filePath.replace(/^\.[\\/]/, '')}`
 }
 
-function CommandSuggestOverlay({ visible, onClose, onRun }: CmdSuggestProps) {
-  const [query, setQuery] = useState('')
-  const [generatedCommand, setGeneratedCommand] = useState<string | null>(null)
-  const [isEditing, setIsEditing] = useState(false)
-  const [editValue, setEditValue] = useState('')
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [showHistory, setShowHistory] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
-  const editRef = useRef<HTMLTextAreaElement>(null)
-  const overlayRef = useRef<HTMLDivElement>(null)
-
-  const history = loadHistory()
-
-  useEffect(() => {
-    if (visible) {
-      setQuery('')
-      setGeneratedCommand(null)
-      setIsEditing(false)
-      setEditValue('')
-      setShowHistory(false)
-      setCopied(false)
-      setTimeout(() => inputRef.current?.focus(), 50)
-    }
-  }, [visible])
-
-  useEffect(() => {
-    if (isEditing && editRef.current) {
-      editRef.current.focus()
-      editRef.current.select()
-    }
-  }, [isEditing])
-
-  useEffect(() => {
-    if (!visible) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        if (isEditing) {
-          setIsEditing(false)
-        } else if (generatedCommand) {
-          setGeneratedCommand(null)
-          setQuery('')
-          setTimeout(() => inputRef.current?.focus(), 50)
-        } else {
-          onClose()
-        }
-      }
-    }
-    window.addEventListener('keydown', handler, true)
-    return () => window.removeEventListener('keydown', handler, true)
-  }, [visible, isEditing, generatedCommand, onClose])
-
-  useEffect(() => {
-    if (!visible) return
-    const handler = (e: MouseEvent) => {
-      if (overlayRef.current && !overlayRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [visible, onClose])
-
-  const handleGenerate = useCallback(() => {
-    if (!query.trim()) return
-    setIsGenerating(true)
+async function openTerminalLink(filePath: string, line?: number, column?: number) {
+  const opened = await openFileInEditor(resolveTerminalPath(filePath))
+  if (opened && line) {
+    // Same hand-off as the Problems panel: the editor switches models first.
     setTimeout(() => {
-      const cmd = generateCommand(query)
-      setGeneratedCommand(cmd)
-      setEditValue(cmd)
-      setIsGenerating(false)
-      if (!cmd.startsWith('#')) {
-        saveToHistory(query, cmd)
-      }
-    }, 300 + Math.random() * 200)
-  }, [query])
-
-  const handleRegenerate = useCallback(() => {
-    if (!query.trim()) return
-    setIsGenerating(true)
-    setTimeout(() => {
-      const cmd = generateCommand(query)
-      setGeneratedCommand(cmd)
-      setEditValue(cmd)
-      setIsGenerating(false)
-    }, 300 + Math.random() * 200)
-  }, [query])
-
-  const handleRun = useCallback(() => {
-    const cmd = isEditing ? editValue : generatedCommand
-    if (!cmd || cmd.startsWith('#')) return
-    onRun(cmd)
-    onClose()
-  }, [generatedCommand, isEditing, editValue, onRun, onClose])
-
-  const handleCopy = useCallback(() => {
-    const cmd = isEditing ? editValue : generatedCommand
-    if (!cmd) return
-    navigator.clipboard.writeText(cmd)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }, [generatedCommand, isEditing, editValue])
-
-  const handleHistorySelect = useCallback((entry: HistoryEntry) => {
-    setQuery(entry.description)
-    setGeneratedCommand(entry.command)
-    setEditValue(entry.command)
-    setShowHistory(false)
-  }, [])
-
-  if (!visible) return null
-
-  return (
-    <div
-      ref={overlayRef}
-      className="cmd-suggest-overlay"
-      style={{
-        position: 'absolute',
-        bottom: 8,
-        left: 12,
-        right: 12,
-        zIndex: 100,
-        background: 'var(--bg-secondary)',
-        border: '1px solid var(--border)',
-        borderRadius: 8,
-        boxShadow: '0 -4px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(88,166,255,0.1)',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Input area */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '8px 12px',
-          borderBottom: generatedCommand || showHistory ? '1px solid var(--border)' : 'none',
-        }}
-      >
-        <Sparkles
-          size={14}
-          style={{
-            color: 'var(--accent)',
-            flexShrink: 0,
-            animation: isGenerating ? 'cmd-pulse 1s infinite' : undefined,
-          }}
-        />
-        <input
-          ref={inputRef}
-          type="text"
-          value={query}
-          onChange={e => {
-            setQuery(e.target.value)
-            if (generatedCommand) {
-              setGeneratedCommand(null)
-              setIsEditing(false)
-            }
-          }}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              if (generatedCommand && !generatedCommand.startsWith('#')) {
-                handleRun()
-              } else {
-                handleGenerate()
-              }
-            }
-          }}
-          placeholder="Describe what you want to do..."
-          style={{
-            flex: 1,
-            background: 'transparent',
-            border: 'none',
-            outline: 'none',
-            color: 'var(--text-primary)',
-            fontSize: 13,
-            fontFamily: 'inherit',
-            padding: 0,
-          }}
-        />
-        {history.length > 0 && !generatedCommand && (
-          <button
-            className="cmd-suggest-btn"
-            onClick={() => setShowHistory(prev => !prev)}
-            title="Command history"
-            style={{ padding: '3px 6px' }}
-          >
-            <Clock size={12} />
-            <ChevronDown
-              size={10}
-              style={{
-                transform: showHistory ? 'rotate(180deg)' : 'rotate(0)',
-                transition: 'transform 0.15s',
-              }}
-            />
-          </button>
-        )}
-        {!generatedCommand && (
-          <button
-            className="cmd-suggest-btn primary"
-            onClick={handleGenerate}
-            disabled={isGenerating || !query.trim()}
-            style={{
-              opacity: isGenerating || !query.trim() ? 0.5 : 1,
-            }}
-          >
-            {isGenerating ? (
-              <Loader2 size={12} style={{ animation: 'cmd-spin 1s linear infinite' }} />
-            ) : (
-              <Sparkles size={12} />
-            )}
-            Generate
-          </button>
-        )}
-        <button
-          onClick={onClose}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 22,
-            height: 22,
-            borderRadius: 4,
-            border: 'none',
-            background: 'transparent',
-            color: 'var(--text-muted)',
-            cursor: 'pointer',
-            transition: 'background 0.1s, color 0.1s',
-            flexShrink: 0,
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.08)'
-            e.currentTarget.style.color = 'var(--text-primary)'
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.background = 'transparent'
-            e.currentTarget.style.color = 'var(--text-muted)'
-          }}
-          title="Close (Esc)"
-        >
-          <X size={14} />
-        </button>
-      </div>
-
-      {/* History dropdown */}
-      {showHistory && !generatedCommand && (
-        <div style={{ maxHeight: 180, overflowY: 'auto' }}>
-          <div
-            style={{
-              padding: '4px 12px 2px',
-              fontSize: 10,
-              color: 'var(--text-muted)',
-              fontWeight: 600,
-              textTransform: 'uppercase',
-              letterSpacing: '0.5px',
-            }}
-          >
-            Recent Commands
-          </div>
-          {history.map((entry, i) => (
-            <button
-              key={i}
-              className="cmd-suggest-history-item"
-              onClick={() => handleHistorySelect(entry)}
-            >
-              <Clock size={10} style={{ flexShrink: 0, opacity: 0.4 }} />
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {entry.command}
-              </span>
-              <span style={{ fontSize: 9, color: 'var(--text-muted)', opacity: 0.4, flexShrink: 0 }}>
-                {new Date(entry.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Generated command preview */}
-      {generatedCommand && (
-        <div style={{ padding: '0' }}>
-          <div
-            style={{
-              padding: '10px 14px',
-              fontFamily: 'Cascadia Code, Fira Code, Consolas, monospace',
-              fontSize: 12,
-              lineHeight: 1.6,
-              color: 'var(--text-primary)',
-              background: 'rgba(0,0,0,0.2)',
-              overflowX: 'auto',
-              whiteSpace: 'pre',
-            }}
-          >
-            {isEditing ? (
-              <textarea
-                ref={editRef}
-                value={editValue}
-                onChange={e => setEditValue(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && e.ctrlKey) {
-                    e.preventDefault()
-                    handleRun()
-                  }
-                }}
-                style={{
-                  width: '100%',
-                  minHeight: 40,
-                  background: 'transparent',
-                  border: '1px solid rgba(88,166,255,0.3)',
-                  borderRadius: 4,
-                  color: 'var(--text-primary)',
-                  fontFamily: 'inherit',
-                  fontSize: 'inherit',
-                  lineHeight: 'inherit',
-                  resize: 'vertical',
-                  outline: 'none',
-                  padding: '4px 6px',
-                }}
-              />
-            ) : (
-              highlightCommand(generatedCommand)
-            )}
-          </div>
-
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '6px 10px',
-              borderTop: '1px solid var(--border)',
-            }}
-          >
-            <button
-              className="cmd-suggest-btn primary"
-              onClick={handleRun}
-              disabled={generatedCommand.startsWith('#')}
-              style={{
-                opacity: generatedCommand.startsWith('#') ? 0.4 : 1,
-              }}
-              title={isEditing ? 'Run edited command (Ctrl+Enter)' : 'Run command (Enter)'}
-            >
-              <Play size={11} />
-              Run
-            </button>
-
-            <button className="cmd-suggest-btn" onClick={handleCopy} title="Copy to clipboard">
-              <Copy size={11} />
-              {copied ? 'Copied!' : 'Copy'}
-            </button>
-
-            <button
-              className="cmd-suggest-btn"
-              onClick={() => {
-                if (isEditing) {
-                  setGeneratedCommand(editValue)
-                  setIsEditing(false)
-                } else {
-                  setIsEditing(true)
-                }
-              }}
-              title={isEditing ? 'Done editing' : 'Edit command before running'}
-            >
-              <Pencil size={11} />
-              {isEditing ? 'Done' : 'Edit'}
-            </button>
-
-            <button className="cmd-suggest-btn" onClick={handleRegenerate} title="Regenerate command">
-              <RefreshCw size={11} />
-              Regenerate
-            </button>
-
-            <span style={{ flex: 1 }} />
-            <span style={{ fontSize: 10, color: 'var(--text-muted)', opacity: 0.5 }}>
-              {isEditing ? 'Ctrl+Enter to run' : 'Enter to run  |  Esc to dismiss'}
-            </span>
-          </div>
-        </div>
-      )}
-    </div>
-  )
+      window.dispatchEvent(new CustomEvent('orion:go-to-line', { detail: { line, column: column ?? 1 } }))
+    }, 50)
+  }
 }
 
 /* ── Terminal Find Bar component ──────────────────────── */
@@ -1121,42 +480,33 @@ interface SingleTerminalProps {
   sessionId: string
   shellPath?: string
   shellArgs?: string[]
+  /** Typed into the shell once it has started (used to run tasks). */
+  initialCommand?: string
   onTitleChange?: (sessionId: string, title: string) => void
   isActive?: boolean
 }
 
-function SingleTerminal({ sessionId, shellPath, shellArgs, onTitleChange, isActive }: SingleTerminalProps) {
+function SingleTerminal({ sessionId, shellPath, shellArgs, initialCommand, onTitleChange, isActive }: SingleTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const termRef = useRef<Terminal | null>(null)
-  const fitRef = useRef<FitAddon | null>(null)
+  const refitRef = useRef<(() => void) | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
-  const initRef = useRef(false)
-  const [_error, setError] = useState<string | null>(null)
-  const [showCmdSuggest, setShowCmdSuggest] = useState(false)
   const [showFind, setShowFind] = useState(false)
-  const { addSession } = useTerminalStore()
 
-  /* ── Run a command in the terminal ────────────────────── */
-  const runCommand = useCallback((cmd: string) => {
-    const lines = cmd.split('\n').filter(l => !l.startsWith('#'))
-    const finalCmd = lines.join(' && ')
-    if (finalCmd.trim()) {
-      window.api.termWrite(sessionId, finalCmd + '\r')
-    }
-  }, [sessionId])
-
+  // The pty lives exactly as long as this component is mounted. Parents keep
+  // hidden terminals mounted (display:none), so the cleanup below runs when
+  // the user closes the terminal, not when another tab or panel is shown.
+  // (No run-once guard: under StrictMode's re-run the pty is simply recreated.)
   useEffect(() => {
-    if (!containerRef.current || initRef.current) return
-    initRef.current = true
+    const container = containerRef.current
+    if (!container) return
+    let disposed = false
+    const settings = loadTerminalSettings()
 
     const term = new Terminal({
       theme: terminalTheme,
-      fontSize: 13,
-      fontFamily: 'Cascadia Code, Fira Code, Consolas, monospace',
+      ...xtermAppearance(settings),
       cursorBlink: true,
-      cursorStyle: 'bar',
       cursorWidth: 2,
-      scrollback: 5000,
       smoothScrollDuration: 100,
     })
 
@@ -1202,11 +552,7 @@ function SingleTerminal({ sessionId, shellPath, shellArgs, onTitleChange, isActi
               end: { x: endX, y: bufferLineNumber },
             },
             text: fullMatch,
-            activate: () => {
-              window.dispatchEvent(new CustomEvent('orion:open-file', {
-                detail: { path: pathOnly, line: lineNum, column: colNum },
-              }))
-            },
+            activate: () => { void openTerminalLink(pathOnly, lineNum, colNum) },
           })
         }
 
@@ -1214,13 +560,17 @@ function SingleTerminal({ sessionId, shellPath, shellArgs, onTitleChange, isActi
       },
     })
 
-    term.open(containerRef.current)
-    fit.fit()
+    // Hidden terminals stay mounted under display:none. There FitAddon reads
+    // the container's "100%" as 100px and would shrink the shell to about
+    // 10x6 (reflowing away scrollback), so only fit while it has a layout box.
+    const refit = () => {
+      if (container.clientWidth === 0 || container.clientHeight === 0) return
+      try { fit.fit() } catch {}
+    }
 
-    termRef.current = term
-    fitRef.current = fit
-
-    addSession({ id: sessionId, name: 'Terminal', type: 'shell', shellPath })
+    term.open(container)
+    refit()
+    refitRef.current = refit
 
     /* ── Title tracking ── */
     term.onTitleChange((title) => {
@@ -1229,15 +579,6 @@ function SingleTerminal({ sessionId, shellPath, shellArgs, onTitleChange, isActi
 
     /* ── Keyboard shortcuts ── */
     term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-      // Ctrl+K: Open AI command suggestion overlay
-      if (event.ctrlKey && !event.shiftKey && event.key === 'k' && event.type === 'keydown') {
-        event.preventDefault()
-        window.dispatchEvent(new CustomEvent('terminal:toggle-cmd-suggest', {
-          detail: { sessionId },
-        }))
-        return false
-      }
-
       // Ctrl+F: Open terminal find bar
       if (event.ctrlKey && !event.shiftKey && event.key === 'f' && event.type === 'keydown') {
         event.preventDefault()
@@ -1264,8 +605,9 @@ function SingleTerminal({ sessionId, shellPath, shellArgs, onTitleChange, isActi
         return false
       }
 
-      // Ctrl+Shift+`: New terminal
-      if (event.ctrlKey && event.shiftKey && event.key === '`') {
+      // Ctrl+Shift+`: New terminal (handled by the bottom panel). With Shift
+      // held, e.key is '~', so match the physical key.
+      if (event.ctrlKey && event.shiftKey && event.code === 'Backquote') {
         return false
       }
 
@@ -1278,31 +620,42 @@ function SingleTerminal({ sessionId, shellPath, shellArgs, onTitleChange, isActi
       return true
     })
 
-    /* ── Create backend PTY ── */
-    const shellOptions = shellPath ? { shellPath, shellArgs: shellArgs || [] } : undefined
+    /* ── Create backend PTY at the size xterm was fitted to ── */
+    const profile = shellPath ? undefined : defaultShellProfile(settings.defaultShell)
+    const shellOptions = shellPath
+      ? { shellPath, shellArgs: shellArgs || [] }
+      : profile ? { shellPath: profile.shellPath, shellArgs: profile.args } : undefined
+    const startSize = { cols: term.cols, rows: term.rows }
 
-    window.api.termCreate(sessionId, shellOptions).then((result: any) => {
-      if (result && !result.success) {
-        setError(result.error || 'Failed to create terminal')
+    window.api.termCreate(sessionId, shellOptions, startSize).then((result) => {
+      if (disposed) return
+      if (!result.success) {
         term.writeln('\x1b[31mTerminal failed to start: ' + (result.error || 'Unknown error') + '\x1b[0m')
         term.writeln('\x1b[33mThis is a known issue with node-pty on some Windows configurations.\x1b[0m')
         return
       }
       term.onData((data) => window.api.termWrite(sessionId, data))
       term.onResize(({ cols, rows }) => window.api.termResize(sessionId, cols, rows))
-    }).catch((err: any) => {
-      setError(err.message)
-      term.writeln('\x1b[31mTerminal error: ' + err.message + '\x1b[0m')
+      // The view may have been refitted while the shell was starting.
+      if (term.cols !== startSize.cols || term.rows !== startSize.rows) {
+        window.api.termResize(sessionId, term.cols, term.rows)
+      }
+      if (initialCommand) window.api.termWrite(sessionId, initialCommand + '\r')
+    }).catch((err: unknown) => {
+      if (disposed) return
+      term.writeln('\x1b[31mTerminal error: ' + (err instanceof Error ? err.message : String(err)) + '\x1b[0m')
     })
 
-    const cleanup = window.api.onTermData((id: string, data: string) => {
+    const offData = window.api.onTermData((id: string, data: string) => {
       if (id === sessionId) term.write(data)
     })
 
-    const resizeObserver = new ResizeObserver(() => {
-      try { fit.fit() } catch {}
+    const offExit = window.api.onTermExit((id: string, exitCode: number) => {
+      if (id === sessionId) term.write(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m\r\n`)
     })
-    resizeObserver.observe(containerRef.current)
+
+    const resizeObserver = new ResizeObserver(refit)
+    resizeObserver.observe(container)
 
     /* ── Listen for clear terminal events ── */
     const handleClear = (e: Event) => {
@@ -1314,10 +667,20 @@ function SingleTerminal({ sessionId, shellPath, shellArgs, onTitleChange, isActi
     }
     window.addEventListener('terminal:clear', handleClear)
 
+    /* ── Settings > Terminal changes apply to open terminals ── */
+    const handleConfig = (e: Event) => {
+      Object.assign(term.options, xtermAppearance(parseTerminalSettings((e as CustomEvent).detail)))
+      refit()
+    }
+    window.addEventListener('orion:terminal-config', handleConfig)
+
     return () => {
-      cleanup()
+      disposed = true
+      offData()
+      offExit()
       resizeObserver.disconnect()
       window.removeEventListener('terminal:clear', handleClear)
+      window.removeEventListener('orion:terminal-config', handleConfig)
       term.dispose()
       window.api.termKill(sessionId)
     }
@@ -1325,22 +688,8 @@ function SingleTerminal({ sessionId, shellPath, shellArgs, onTitleChange, isActi
 
   /* ── Refit on visibility change ── */
   useEffect(() => {
-    if (isActive && fitRef.current) {
-      try { fitRef.current.fit() } catch {}
-    }
+    if (isActive) refitRef.current?.()
   }, [isActive])
-
-  /* ── Listen for Ctrl+K toggle event ── */
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail
-      if (detail?.sessionId === sessionId) {
-        setShowCmdSuggest(prev => !prev)
-      }
-    }
-    window.addEventListener('terminal:toggle-cmd-suggest', handler)
-    return () => window.removeEventListener('terminal:toggle-cmd-suggest', handler)
-  }, [sessionId])
 
   /* ── Listen for Ctrl+F toggle event ── */
   useEffect(() => {
@@ -1362,11 +711,6 @@ function SingleTerminal({ sessionId, shellPath, shellArgs, onTitleChange, isActi
         onClose={() => setShowFind(false)}
         searchAddonRef={searchRef}
       />
-      <CommandSuggestOverlay
-        visible={showCmdSuggest}
-        onClose={() => setShowCmdSuggest(false)}
-        onRun={runCommand}
-      />
     </div>
   )
 }
@@ -1381,6 +725,8 @@ interface TerminalTab {
   shellIcon: string
   /** If set, this tab is a split child of the parent tab */
   splitParentId?: string
+  /** Named by the user; shell title escapes no longer rename it. */
+  renamed?: boolean
 }
 
 let tabCounter = 0
@@ -1434,10 +780,12 @@ interface Props {
   sessionId: string
   shellPath?: string
   shellArgs?: string[]
+  /** Typed into the first terminal once its shell has started. */
+  initialCommand?: string
   onTitleChange?: (sessionId: string, title: string) => void
 }
 
-export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitleChange }: Props) {
+export default function TerminalPanel({ sessionId, shellPath, shellArgs, initialCommand, onTitleChange }: Props) {
   const [tabs, setTabs] = useState<TerminalTab[]>(() => [{
     id: sessionId,
     name: 'Terminal 1',
@@ -1449,14 +797,12 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [showShellDropdown, setShowShellDropdown] = useState(false)
-  const [isMaximized, setIsMaximized] = useState(false)
   const [splitSizes, setSplitSizes] = useState<Record<string, number>>({})
   const renameInputRef = useRef<HTMLInputElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
-  const { maximizedSessionId, setMaximizedSession } = useTerminalStore()
 
   /* ── Derived: build split groups ────────────────────── */
-  const { groups, activeGroup, activeGroupParentId } = useMemo(() => {
+  const { groups, activeGroupParentId } = useMemo(() => {
     const grps: TerminalTab[][] = []
     const used = new Set<string>()
     for (const t of tabs) {
@@ -1473,7 +819,7 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
     }
     const ag = grps.find(g => g.some(t => t.id === activeTabId))
     const agpId = ag?.[0]?.splitParentId || ag?.[0]?.id
-    return { groups: grps, activeGroup: ag, activeGroupParentId: agpId }
+    return { groups: grps, activeGroupParentId: agpId }
   }, [tabs, activeTabId])
 
   /* ── Create new terminal tab ────────────────────────── */
@@ -1492,7 +838,7 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
     setShowShellDropdown(false)
   }, [tabs.length])
 
-  /* ── Close tab ──────────────────────────────────────── */
+  /* ── Close tab (unmounting its SingleTerminal kills the pty) ── */
   const closeTab = useCallback((id: string) => {
     setTabs(prev => {
       const closing = prev.find(t => t.id === id)
@@ -1519,8 +865,6 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
       }
       return next
     })
-    // Kill the PTY
-    window.api?.termKill?.(id)
   }, [activeTabId])
 
   /* ── Split terminal ─────────────────────────────────── */
@@ -1561,20 +905,6 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
     closeTab(activeTabId)
   }, [activeTabId, closeTab])
 
-  /* ── Maximize toggle ────────────────────────────────── */
-  const toggleMaximize = useCallback(() => {
-    if (isMaximized) {
-      setMaximizedSession(null)
-      setIsMaximized(false)
-    } else {
-      setMaximizedSession(sessionId)
-      setIsMaximized(true)
-    }
-    window.dispatchEvent(new CustomEvent('terminal:maximize-toggle', {
-      detail: { sessionId, maximized: !isMaximized },
-    }))
-  }, [isMaximized, sessionId, setMaximizedSession])
-
   /* ── Rename ─────────────────────────────────────────── */
   const startRename = useCallback((id: string, currentName: string) => {
     setRenamingId(id)
@@ -1584,7 +914,7 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
   const commitRename = useCallback(() => {
     if (renamingId && renameValue.trim()) {
       setTabs(prev =>
-        prev.map(t => t.id === renamingId ? { ...t, name: renameValue.trim() } : t)
+        prev.map(t => t.id === renamingId ? { ...t, name: renameValue.trim(), renamed: true } : t)
       )
     }
     setRenamingId(null)
@@ -1619,7 +949,7 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
   /* ── Handle title changes from child terminals ──────── */
   const handleChildTitleChange = useCallback((sid: string, title: string) => {
     setTabs(prev =>
-      prev.map(t => t.id === sid ? { ...t, name: title || t.name } : t)
+      prev.map(t => t.id === sid && !t.renamed ? { ...t, name: title || t.name } : t)
     )
     // Propagate to parent if it's the original session
     if (sid === sessionId) {
@@ -1911,17 +1241,6 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
             <Search size={13} />
           </button>
 
-          {/* Maximize terminal */}
-          <button
-            className="tp-toolbar-btn"
-            data-active={isMaximized}
-            onClick={toggleMaximize}
-            title={isMaximized ? 'Restore Terminal' : 'Maximize Terminal'}
-            style={{ width: 24, height: 24 }}
-          >
-            {isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-          </button>
-
           {/* Separator */}
           <div style={{ width: 1, height: 14, background: 'var(--border-color)', margin: '0 2px', opacity: 0.4 }} />
 
@@ -1943,35 +1262,19 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
           const parentId = group[0].splitParentId || group[0].id
           const isGroupVisible = parentId === activeGroupParentId
 
-          if (!isGroupVisible) {
-            // Render hidden to preserve terminal state
-            return (
-              <div key={parentId} style={{ display: 'none' }}>
-                {group.map(t => (
-                  <SingleTerminal
-                    key={t.id}
-                    sessionId={t.id}
-                    shellPath={t.shellPath}
-                    shellArgs={t.shellArgs}
-                    onTitleChange={handleChildTitleChange}
-                    isActive={false}
-                  />
-                ))}
-              </div>
-            )
-          }
-
-          // Visible group: render side by side with dividers
+          // Hidden groups render the same tree as visible ones, only with
+          // display:none: a different element shape would remount (and so
+          // kill) their terminals on every tab switch.
           return (
             <div
               key={parentId}
               style={{
-                display: 'flex',
+                display: isGroupVisible ? 'flex' : 'none',
                 height: '100%',
               }}
             >
               {group.map((t, idx) => {
-                const isTabActive = activeTabId === t.id
+                const isTabActive = isGroupVisible && activeTabId === t.id
                 const sizeKey = `${parentId}-${idx}`
                 const extraWidth = splitSizes[sizeKey] || 0
 
@@ -2090,6 +1393,7 @@ export default function TerminalPanel({ sessionId, shellPath, shellArgs, onTitle
                           sessionId={t.id}
                           shellPath={t.shellPath}
                           shellArgs={t.shellArgs}
+                          initialCommand={t.id === sessionId ? initialCommand : undefined}
                           onTitleChange={handleChildTitleChange}
                           isActive={isTabActive}
                         />

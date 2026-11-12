@@ -1,3 +1,4 @@
+import type { TerminalSize } from '../../shared/ipc-contract'
 import type { ShellOptions } from '../terminal/manager'
 
 const CONTROL_CHARACTER_RE = /[\x00-\x1F\x7F]/
@@ -65,4 +66,39 @@ export function validateShellOptions(options: unknown): ShellOptions {
   }
 
   return result
+}
+
+// Far beyond any real screen; node-pty passes these straight to ioctl/ConPTY.
+const MAX_TERMINAL_COLS = 2000
+const MAX_TERMINAL_ROWS = 1000
+
+function isGridDimension(value: unknown, max: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= max
+}
+
+/** A renderer-supplied cols/rows pair, or null when it is not a usable grid size. */
+export function parseTerminalSize(cols: unknown, rows: unknown): TerminalSize | null {
+  if (!isGridDimension(cols, MAX_TERMINAL_COLS) || !isGridDimension(rows, MAX_TERMINAL_ROWS)) return null
+  return { cols, rows }
+}
+
+/** The optional initial size of term:create; undefined means "use the pty default". */
+export function validateTerminalSize(size: unknown): TerminalSize | undefined {
+  if (size === undefined || size === null) return undefined
+  if (typeof size !== 'object' || Array.isArray(size)) {
+    throw new UnsafeShellOptionsError('size must be an object')
+  }
+  const { cols, rows } = size as { cols?: unknown; rows?: unknown }
+  const parsed = parseTerminalSize(cols, rows)
+  if (!parsed) {
+    throw new UnsafeShellOptionsError(
+      `size must have integer cols (1-${MAX_TERMINAL_COLS}) and rows (1-${MAX_TERMINAL_ROWS})`,
+    )
+  }
+  return parsed
+}
+
+/** Terminal ids are renderer-chosen map keys; anything else is ignored. */
+export function isTerminalId(id: unknown): id is string {
+  return typeof id === 'string' && id.length > 0 && id.length <= 128
 }

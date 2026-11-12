@@ -1,5 +1,43 @@
 import { describe, expect, it } from 'vitest'
-import { UnsafeShellOptionsError, validateShellOptions } from './terminal-options-guard'
+import {
+  UnsafeShellOptionsError,
+  isTerminalId,
+  parseTerminalSize,
+  validateShellOptions,
+  validateTerminalSize,
+} from './terminal-options-guard'
+
+describe('validateTerminalSize', () => {
+  it('treats a missing size as "use the default"', () => {
+    expect(validateTerminalSize(undefined)).toBeUndefined()
+    expect(validateTerminalSize(null)).toBeUndefined()
+  })
+
+  it('accepts a positive integer grid', () => {
+    expect(validateTerminalSize({ cols: 140, rows: 12 })).toEqual({ cols: 140, rows: 12 })
+  })
+
+  it('rejects anything node-pty could choke on', () => {
+    for (const bad of [{ cols: 0, rows: 24 }, { cols: 80, rows: -1 }, { cols: 80.5, rows: 24 },
+      { cols: '80', rows: 24 }, { cols: Number.NaN, rows: 24 }, { cols: 1e9, rows: 24 }, [80, 24], 'big']) {
+      expect(() => validateTerminalSize(bad)).toThrow(UnsafeShellOptionsError)
+    }
+  })
+
+  it('parseTerminalSize returns null instead of throwing (for fire-and-forget resize)', () => {
+    expect(parseTerminalSize(120, 30)).toEqual({ cols: 120, rows: 30 })
+    expect(parseTerminalSize(120, Infinity)).toBeNull()
+  })
+})
+
+describe('isTerminalId', () => {
+  it('accepts short non-empty strings only', () => {
+    expect(isTerminalId('3f2b-term')).toBe(true)
+    expect(isTerminalId('')).toBe(false)
+    expect(isTerminalId(7)).toBe(false)
+    expect(isTerminalId('x'.repeat(129))).toBe(false)
+  })
+})
 
 describe('validateShellOptions', () => {
   it('returns an empty object for undefined input', () => {
