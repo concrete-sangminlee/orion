@@ -18,6 +18,7 @@ import { startWatching, stopWatching, recordKnownContent } from '../filesystem/w
 import { setProjectPath } from '../workspace/project-path'
 import { resolveActiveWorkspacePath, resolveWorkspaceRootPath, WorkspacePathAccessError } from './workspace-path-guard'
 import { grantFileAccess, isGrantedFile } from '../workspace/granted-files'
+import { grantWorkspaceRoot, isGrantedWorkspaceRoot } from '../workspace/granted-roots'
 import { isSafeRevealPath } from '../../shared/path-safety'
 import { handle, listen } from './typed-ipc'
 
@@ -99,6 +100,12 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
   // which the renderer cannot tell from an empty folder: a dropped file was
   // accepted as a workspace, and a failed refresh emptied the explorer.
   handle(IPC.FS_OPEN_WORKSPACE, async (_event, rootPath: string) => {
+    // Only folders the user chose through the main process (dialog, menu,
+    // command line, drop, earlier sessions): otherwise the renderer could make
+    // any folder, e.g. ~/.ssh, "the workspace" and then read and write in it.
+    if (!isGrantedWorkspaceRoot(rootPath)) {
+      throw new WorkspacePathAccessError('Open this folder with File > Open Folder first')
+    }
     const safeRootPath = await resolveWorkspaceRootPath(rootPath)
     const tree = await buildFileTree(safeRootPath)
     setProjectPath(safeRootPath)
@@ -316,9 +323,10 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
   })
 
   // Only the preload sends this, with a path Electron itself resolved from a
-  // dropped File. It grants that one item, like the "Open File" dialog does.
+  // dropped File. It grants that one item, like the Open File / Open Folder
+  // dialogs do: a folder may become the workspace, a file may be opened.
   listen('fs:grant-dropped-path', (_event, itemPath: unknown) => {
-    if (typeof itemPath === 'string') grantFileAccess(itemPath)
+    if (typeof itemPath === 'string' && !grantWorkspaceRoot(itemPath)) grantFileAccess(itemPath)
   })
 }
 

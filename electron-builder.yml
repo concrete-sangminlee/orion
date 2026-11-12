@@ -241,14 +241,9 @@ linux:
       StartupWMClass: orion-ide
 
 deb:
-  depends:
-    - gconf2
-    - gconf-service
-    - libnotify4
-    - libappindicator1
-    - libsecret-1-0
-    - libxtst6
-    - libnss3
+  # electron-builder's default dependency list matches current Electron. The
+  # old explicit list named packages Debian and Ubuntu no longer ship
+  # (gconf2, gconf-service, libappindicator1), so the .deb could not install.
   priority: optional
   afterInstall: build/linux/after-install.sh
   afterRemove: build/linux/after-remove.sh

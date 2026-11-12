@@ -271,8 +271,6 @@ export function createElectronApi(ipc: IpcRendererLike, host?: PreloadHost) {
     minimize: () => send('win:minimize'),
     maximize: () => send('win:maximize'),
     close: () => send('win:close'),
-    appNewWindow: () => send('app:new-window'),
-    appCheckForUpdates: () => invoke('app:check-for-updates'),
     appGetInfo: () => invoke('app:get-info'),
 
     // =====================================================================
@@ -284,8 +282,6 @@ export function createElectronApi(ipc: IpcRendererLike, host?: PreloadHost) {
       subscribe('app:open-folder', callback),
     onAppToggleSidebar: (callback: (...args: IpcEventArgs<'app:toggle-sidebar'>) => void) =>
       subscribe('app:toggle-sidebar', callback),
-    onAppUpdateStatus: (callback: (...args: IpcEventArgs<'app:update-status'>) => void) =>
-      subscribe('app:update-status', callback),
     onAppOpenAbout: onSignal('app:open-about'),
     onAppNewFile: onSignal('app:new-file'),
     onAppSave: onSignal('app:save'),

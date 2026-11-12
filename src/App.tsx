@@ -43,13 +43,8 @@ import type { ResizerConstraints } from './components/Resizer'
 const ChatPanel = React.lazy(() => import('./panels/ChatPanel'))
 const SearchPanel = React.lazy(() => import('@/panels/SearchPanel'))
 const SourceControlPanel = React.lazy(() => import('@/panels/SourceControlPanel'))
-const ExtensionsPanel = React.lazy(() => import('./panels/ExtensionsPanel'))
 const OutlinePanel = React.lazy(() => import('@/panels/OutlinePanel'))
 const EditorPanel = React.lazy(() => import('./panels/EditorPanel'))
-const AgentPanel = React.lazy(() => import('./panels/AgentPanel'))
-const DebugPanel = React.lazy(() => import('./panels/DebugPanel'))
-const TestingPanel = React.lazy(() => import('./panels/TestingPanel'))
-const ComposerPanel = React.lazy(() => import('./panels/ComposerPanel'))
 
 // Lazy-loaded editor-area components
 const Breadcrumbs = React.lazy(() => import('./components/Breadcrumbs'))
@@ -161,7 +156,6 @@ export default function App() {
   const [bottomVisible, setBottomVisible] = useState(initialLayout.bottomVisible)
   const [chatVisible, setChatVisible] = useState(initialLayout.chatVisible)
   const [zenMode, setZenMode] = useState(false)
-  const [rightPanelTab, setRightPanelTab] = useState<'chat' | 'composer'>('chat')
   const [zenExitVisible, setZenExitVisible] = useState(false)
   const zenExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -609,11 +603,7 @@ export default function App() {
       'orion:show-explorer': () => { setSidebarVisible(true); setActiveView('explorer') },
       'orion:show-search': () => { setSidebarVisible(true); setActiveView('search') },
       'orion:show-git': () => { setSidebarVisible(true); setActiveView('git') },
-      'orion:show-agents': () => { setSidebarVisible(true); setActiveView('agents') },
       'orion:show-outline': () => { setSidebarVisible(true); setActiveView('outline') },
-      'orion:show-debug': () => { setSidebarVisible(true); setActiveView('debug') },
-      'orion:show-extensions': () => { setSidebarVisible(true); setActiveView('extensions') },
-      'orion:show-testing': () => { setSidebarVisible(true); setActiveView('testing') },
       'orion:close-tab': () => {
         const { activeFilePath, closeFile } = useEditorStore.getState()
         if (activeFilePath) closeFile(activeFilePath)
@@ -821,27 +811,6 @@ export default function App() {
         e.preventDefault()
         setSidebarVisible(true)
         setActiveView('outline')
-        return
-      }
-      // Ctrl+Shift+D -> debug
-      if (ctrl && e.shiftKey && e.key === 'D') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('debug')
-        return
-      }
-      // Ctrl+Shift+X -> extensions
-      if (ctrl && e.shiftKey && e.key === 'X') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('extensions')
-        return
-      }
-      // Ctrl+Shift+T -> testing
-      if (ctrl && e.shiftKey && e.key === 'T') {
-        e.preventDefault()
-        setSidebarVisible(true)
-        setActiveView('testing')
         return
       }
       // Ctrl+Shift+Y -> focus output panel (toggle bottom panel)
@@ -1140,13 +1109,9 @@ export default function App() {
               {activeView === 'explorer' && <FileExplorer />}
               <ErrorBoundary>
                 <Suspense fallback={<PanelFallback />}>
-                  {activeView === 'agents' && <AgentPanel />}
                   {activeView === 'search' && <SearchPanel />}
                   {activeView === 'git' && <SourceControlPanel />}
-                  {activeView === 'debug' && <DebugPanel />}
                   {activeView === 'outline' && <OutlinePanel />}
-                  {activeView === 'extensions' && <ExtensionsPanel />}
-                  {activeView === 'testing' && <TestingPanel />}
                 </Suspense>
               </ErrorBoundary>
             </div>
@@ -1223,7 +1188,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Right Panel: Chat / Composer */}
+        {/* Right Panel: Chat. (A "Composer" tab showed canned diffs and changed no file.) */}
         {chatVisible && !zenMode && (
           <>
             <Resizer
@@ -1235,27 +1200,10 @@ export default function App() {
               onReset={() => setRightPanelWidth(DEFAULT_RIGHT_PANEL_WIDTH)}
             />
             <div role="complementary" aria-label="AI Panel" aria-expanded={chatVisible} style={{ width: rightPanelWidth, display: 'flex', flexDirection: 'column' }}>
-              <div style={{ display: 'flex', borderBottom: '1px solid var(--border-primary)', background: 'var(--bg-secondary)', flexShrink: 0 }}>
-                {(['chat', 'composer'] as const).map(tab => (
-                  <button
-                    key={tab}
-                    onClick={() => setRightPanelTab(tab)}
-                    style={{
-                      flex: 1, padding: '6px 12px', fontSize: 11, fontWeight: 500, cursor: 'pointer',
-                      background: rightPanelTab === tab ? 'var(--bg-primary)' : 'transparent',
-                      color: rightPanelTab === tab ? 'var(--text-primary)' : 'var(--text-secondary)',
-                      border: 'none', borderBottom: rightPanelTab === tab ? '2px solid var(--accent-primary)' : '2px solid transparent',
-                      textTransform: 'uppercase', letterSpacing: '0.5px',
-                    }}
-                  >
-                    {tab === 'chat' ? 'Chat' : 'Composer'}
-                  </button>
-                ))}
-              </div>
               <div style={{ flex: 1, overflow: 'hidden' }}>
                 <ErrorBoundary>
                   <Suspense fallback={<PanelFallback />}>
-                    {rightPanelTab === 'chat' ? <ChatPanel /> : <ComposerPanel />}
+                    <ChatPanel />
                   </Suspense>
                 </ErrorBoundary>
               </div>

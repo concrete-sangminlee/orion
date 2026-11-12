@@ -84,7 +84,9 @@ fs.writeFileSync(secondFile, 'export const farewell = "bye"\n')
 
 const app = await _electron.launch({
   executablePath: packagedApp ?? require('electron'),
-  args: [...(packagedApp ? [] : [ROOT]), '--no-sandbox', '--disable-gpu', `--user-data-dir=${userDataDir}`],
+  // The workspace is named on the command line, as `orion-ide <folder>` does:
+  // the main process only lets the renderer open folders the user chose.
+  args: [...(packagedApp ? [] : [ROOT]), '--no-sandbox', '--disable-gpu', `--user-data-dir=${userDataDir}`, workspaceDir],
   env,
   timeout: 60_000,
 })
@@ -142,6 +144,10 @@ try {
     BrowserWindow.getAllWindows()[0].webContents.send('app:open-folder', dir)
   }, workspaceDir)
   await win.waitForFunction(() => document.body.innerText.includes('greeting.ts'), null, { timeout: 15_000 })
+  const notChosen = fs.mkdtempSync(path.join(os.tmpdir(), 'orion-e2e-other-'))
+  const selfDeclared = await win.evaluate((dir) => window.api.openWorkspace(dir).then(() => 'opened', (err) => String(err.message)), notChosen)
+  fs.rmSync(notChosen, { recursive: true, force: true })
+  check(/Open Folder first/.test(selfDeclared), `the renderer cannot open a folder the user did not choose (${selfDeclared.slice(-60)})`)
   const openFile = (filePath) =>
     app.evaluate(({ BrowserWindow }, file) => {
       BrowserWindow.getAllWindows()[0].webContents.send('app:open-file', file)

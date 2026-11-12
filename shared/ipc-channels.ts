@@ -114,8 +114,6 @@ export const IPC = {
   WIN_CLOSE: 'win:close',
 
   // App
-  APP_NEW_WINDOW: 'app:new-window',
-  APP_CHECK_FOR_UPDATES: 'app:check-for-updates',
   APP_GET_INFO: 'app:get-info',
 
   // App events (main -> renderer)
@@ -154,7 +152,6 @@ export const IPC = {
   APP_SHOW_WELCOME: 'app:show-welcome',
   APP_SHOW_RELEASE_NOTES: 'app:show-release-notes',
   APP_SHOW_KEYBINDINGS: 'app:show-keybindings',
-  APP_UPDATE_STATUS: 'app:update-status',
 
   // OMO extended
   OMO_SET_API_KEYS: 'omo:set-api-keys',
@@ -275,7 +272,6 @@ export const IPC_INVOKE_CHANNELS = channelList({
   'task:run': true,
   'task:kill': true,
   'task:list-scripts': true,
-  'app:check-for-updates': true,
   'app:get-info': true,
 } satisfies Record<IpcInvokeChannel, true>)
 
@@ -290,7 +286,6 @@ export const IPC_SEND_CHANNELS = channelList({
   'win:minimize': true,
   'win:maximize': true,
   'win:close': true,
-  'app:new-window': true,
 } satisfies Record<IpcSendChannel, true>)
 
 export const IPC_EVENT_CHANNELS = channelList({
@@ -337,5 +332,4 @@ export const IPC_EVENT_CHANNELS = channelList({
   'app:show-welcome': true,
   'app:show-release-notes': true,
   'app:show-keybindings': true,
-  'app:update-status': true,
 } satisfies Record<IpcEventChannel, true>)

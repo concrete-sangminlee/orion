@@ -35,7 +35,6 @@ import type {
   TaskRunArgs,
   TaskRunResult,
   TaskScript,
-  UpdateStatus,
   WorkspaceSettings,
 } from './types'
 
@@ -51,7 +50,6 @@ export type {
   TaskRunArgs,
   TaskRunResult,
   TaskScript,
-  UpdateStatus,
   WorkspaceSettings,
 }
 
@@ -517,7 +515,6 @@ export interface IpcInvokeContract {
   'task:list-scripts': (cwd: string) => TaskScript[]
 
   // App
-  'app:check-for-updates': () => void
   'app:get-info': () => AppInfo
 }
 
@@ -537,7 +534,6 @@ export interface IpcSendContract {
   'win:minimize': () => void
   'win:maximize': () => void
   'win:close': () => void
-  'app:new-window': () => void
 }
 
 /** Push channels: main `webContents.send` ↔ renderer `on`. */
@@ -587,7 +583,6 @@ export interface IpcEventContract {
   'app:show-welcome': () => void
   'app:show-release-notes': () => void
   'app:show-keybindings': () => void
-  'app:update-status': (status: UpdateStatus) => void
 }
 
 // ---------------------------------------------------------------------------
