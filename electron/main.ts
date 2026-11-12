@@ -4,8 +4,11 @@ import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { registerFilesystemHandlers } from './ipc/filesystem'
 import { registerTerminalHandlers } from './ipc/terminal'
+import { registerDialogHandlers } from './ipc/dialogs'
+import { killAllTerminals } from './terminal/manager'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerOmoHandlers } from './ipc/omo'
+import { registerInlineEditHandlers } from './ai/inline-edit'
 import { registerGitHandlers } from './ipc/git'
 import { registerWorkspaceHandlers } from './ipc/workspace'
 import { registerFileOperationHandlers } from './ipc/file-operations'
@@ -722,12 +725,14 @@ const APP_ORIGIN: AppOrigin = {
 function registerIpcHandlers() {
   configureIpcTrust(APP_ORIGIN)
   registerFilesystemHandlers(() => mainWindow)
-  registerTerminalHandlers(() => mainWindow)
+  registerTerminalHandlers()
   registerSettingsHandlers()
   registerOmoHandlers(() => mainWindow)
+  registerInlineEditHandlers()
   registerGitHandlers()
   registerWorkspaceHandlers()
   registerFileOperationHandlers(() => mainWindow)
+  registerDialogHandlers()
   registerClipboardHandlers()
   registerShellHandlers()
   registerTaskHandlers(() => mainWindow)
@@ -824,6 +829,9 @@ if (!gotSingleInstanceLock) {
     const win = createWindow([...pendingFilesToOpen, ...cliItems.files])
     openItemsInWindow(win, { files: [], folders: cliItems.folders })
   })
+
+  // Shells must not outlive the app.
+  app.on('will-quit', () => killAllTerminals())
 
   app.on('window-all-closed', () => {
     app.quit()

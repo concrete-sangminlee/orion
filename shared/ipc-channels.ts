@@ -76,6 +76,7 @@ export const IPC = {
   TERM_RESIZE: 'term:resize',
   TERM_KILL: 'term:kill',
   TERM_DATA: 'term:data',
+  TERM_EXIT: 'term:exit',
 
   // Settings
   SETTINGS_GET: 'settings:get',
@@ -180,6 +181,7 @@ export const IPC_INVOKE_CHANNELS = channelList({
   'fs:read-dir': true,
   'fs:open-folder': true,
   'fs:open-file-dialog': true,
+  'fs:save-file-dialog': true,
   'fs:create-file': true,
   'fs:create-dir': true,
   'fs:search': true,
@@ -269,6 +271,7 @@ export const IPC_INVOKE_CHANNELS = channelList({
   'omo:get-api-key-status': true,
   'omo:set-prompts': true,
   'ai:complete': true,
+  'ai:edit': true,
   'task:run': true,
   'task:kill': true,
   'task:list-scripts': true,
@@ -293,6 +296,7 @@ export const IPC_EVENT_CHANNELS = channelList({
   'fs:external-change': true,
   'file:watch-event': true,
   'term:data': true,
+  'term:exit': true,
   'omo:message': true,
   'task:output': true,
   'task:complete': true,

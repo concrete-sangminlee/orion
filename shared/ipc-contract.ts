@@ -81,6 +81,12 @@ export interface ReadFileResult {
   binary?: boolean
 }
 
+/** Where the user chose to save a buffer; `fs:write-file` accepts this path. */
+export interface SaveFileDialogResult {
+  filePath: string
+  language: string
+}
+
 export interface FileSearchOptions {
   caseSensitive?: boolean
   regex?: boolean
@@ -125,7 +131,14 @@ export interface GitStatusFile {
 
 export interface GitStatusResult {
   isRepo: boolean
+  /** The current branch; 'HEAD' when HEAD is detached. */
   branch: string
+  /** HEAD points at a commit, not a branch: new commits land on no branch. */
+  detached: boolean
+  /** Short hash of HEAD when detached, otherwise ''. */
+  head: string
+  /** The branch's upstream (e.g. 'origin/main'), or '' when none is set. */
+  upstream: string
   files: GitStatusFile[]
   staged: GitStatusFile[]
   unstaged: GitStatusFile[]
@@ -177,8 +190,11 @@ export interface GitDiffHunk {
 }
 
 export interface GitBranch {
+  /** Branch name; `<remote>/<branch>` for a remote-tracking ref. */
   name: string
   current: boolean
+  /** Set for remote-tracking refs: the remote they belong to. */
+  remote?: string
 }
 
 export interface GitStashEntry {
@@ -298,6 +314,12 @@ export interface TerminalShellOptions {
   shellArgs?: string[]
 }
 
+/** Character grid of the xterm view, so the pty starts at the size the user sees. */
+export interface TerminalSize {
+  cols: number
+  rows: number
+}
+
 // ---------------------------------------------------------------------------
 // Workspace settings
 // ---------------------------------------------------------------------------
@@ -324,14 +346,29 @@ export interface WorkspaceSettingsReadResult {
 // AI assistant (OMO bridge)
 // ---------------------------------------------------------------------------
 
+/** One earlier turn of a chat conversation, as the provider should see it. */
+export interface OmoChatTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export interface OmoBridgeMessage {
   type: 'chat' | 'agent-command' | 'cancel'
   payload: {
     message?: string
-    mode?: 'agent' | 'chat'
     model?: string
     projectPath?: string
     files?: string[]
+    /**
+     * chat: echoed on this turn's chat-stream / chat-response events so the
+     * renderer can route them to the message that asked. cancel: the turn to
+     * abort (every turn when omitted).
+     */
+    requestId?: string
+    /** Earlier turns of the visible conversation, oldest first; one-shot requests omit it. */
+    history?: OmoChatTurn[]
+    /** Extra system instructions for this request only (active-file context, custom prompt). */
+    systemPrompt?: string
   }
 }
 
@@ -388,6 +425,23 @@ export interface InlineCompletionResult {
   reason?: string
 }
 
+/** An inline AI edit (Ctrl+K, editor AI actions): rewrite the selection, or write code at the cursor. */
+export interface InlineEditRequest {
+  instruction: string
+  /** The selected code to rewrite; empty to generate code at the cursor. */
+  code: string
+  language: string
+  fileName: string
+  /** File text before / after the selection, for reference (the main process keeps the part nearest it). */
+  before?: string
+  after?: string
+  /** A model name from the chat's model picker. */
+  model?: string
+}
+
+/** The text that replaces the selection, or why there is none. */
+export type InlineEditResult = { text: string } | { error: string }
+
 export interface OmoPrompts {
   systemPrompt?: string
   userPromptTemplate?: string
@@ -411,6 +465,8 @@ export interface IpcInvokeContract {
   'fs:open-folder': () => string | null
   /** Native multi-select file picker; the chosen files become readable/savable. */
   'fs:open-file-dialog': () => string[]
+  /** Native "Save As"; null when cancelled. The chosen file exists and is savable afterwards. */
+  'fs:save-file-dialog': (suggestedName?: string) => SaveFileDialogResult | null
   'fs:create-file': (filePath: string, content?: string) => OperationResult
   'fs:create-dir': (dirPath: string) => OperationResult
   'fs:search': (rootPath: string, query: string, options?: FileSearchOptions) => FileSearchResult
@@ -445,7 +501,8 @@ export interface IpcInvokeContract {
 
   // Git — queries (degrade to empty results outside a repository)
   'git:status': (cwd: string) => GitStatusResult
-  'git:diff': (cwd: string, filePath?: string) => string
+  /** Working-tree diff (an untracked file shows as added), or the index diff with `staged`. */
+  'git:diff': (cwd: string, filePath?: string, staged?: boolean) => string
   'git:log': (cwd: string, count?: number) => GitLogEntry[]
   'git:log-page': (cwd: string, options?: GitLogPageOptions) => GitLogPage
   'git:file-log': (cwd: string, options?: GitLogPageOptions) => GitLogPage
@@ -474,9 +531,12 @@ export interface IpcInvokeContract {
   'git:unstage-all': (cwd: string) => boolean
   'git:discard': (cwd: string, filePath: string) => boolean
   'git:commit': (cwd: string, message: string, amend?: boolean) => boolean
-  'git:checkout': (cwd: string, branch: string) => string
+  /** With `track` (a remote-tracking ref such as 'origin/feature'), creates local `branch` from it, tracking it. */
+  'git:checkout': (cwd: string, branch: string, track?: string) => string
   'git:create-branch': (cwd: string, branchName: string) => string
-  'git:push': (cwd: string, remote?: string, branch?: string, force?: boolean) => string
+  /** No `remote` pushes to the configured upstream; `setUpstream` records remote/branch as it. */
+  'git:push': (cwd: string, remote?: string, branch?: string, force?: boolean, setUpstream?: boolean) => string
+  /** No `remote` pulls from the configured upstream. */
   'git:pull': (cwd: string, remote?: string, branch?: string) => string
   'git:fetch': (cwd: string) => string
   'git:stash': (cwd: string) => string
@@ -503,7 +563,7 @@ export interface IpcInvokeContract {
   'git:config-set': (cwd: string, key: string, value: string, scope?: Exclude<GitConfigScope, 'system'>) => OperationResult
 
   // Terminal
-  'term:create': (id: string, shellOptions?: TerminalShellOptions) => OperationResult
+  'term:create': (id: string, shellOptions?: TerminalShellOptions, size?: TerminalSize) => OperationResult
 
   // Settings
   'settings:get': () => AppSettings
@@ -520,6 +580,7 @@ export interface IpcInvokeContract {
   'omo:get-api-key-status': () => ApiKeyStatus
   'omo:set-prompts': (prompts: OmoPrompts) => OperationResult
   'ai:complete': (request: InlineCompletionRequest) => InlineCompletionResult
+  'ai:edit': (request: InlineEditRequest) => InlineEditResult
 
   // Tasks
   'task:run': (args: TaskRunArgs) => TaskRunResult
@@ -554,6 +615,8 @@ export interface IpcEventContract {
   'fs:external-change': (change: ExternalFileChange) => void
   'file:watch-event': (event: FileWatchEventPayload) => void
   'term:data': (id: string, data: string) => void
+  /** The shell behind a terminal exited on its own (not sent for term:kill). */
+  'term:exit': (id: string, exitCode: number) => void
   'omo:message': (event: OmoEvent) => void
   'task:output': (data: TaskOutputData) => void
   'task:complete': (data: TaskCompleteData) => void
