@@ -93,6 +93,12 @@ const COMPAT_MAX_TOKENS = 4096
 
 type OnChunk = (text: string) => void
 
+/** A provider's reply, and whether it stopped at the output cap (so it is cut off). */
+interface ProviderReply {
+  text: string
+  truncated: boolean
+}
+
 export interface CallOptions {
   /** Aborts the in-flight provider request; the call then rejects even if the reply already arrived. */
   signal?: AbortSignal
@@ -115,7 +121,7 @@ function toAnthropicRequest(config: AIConfig, messages: ChatMessage[]): Anthropi
 }
 
 // Call Anthropic API; streams through onChunk when it is given
-async function callAnthropic(config: AIConfig, messages: ChatMessage[], handler: EventHandler, onChunk?: OnChunk, signal?: AbortSignal): Promise<string> {
+async function callAnthropic(config: AIConfig, messages: ChatMessage[], handler: EventHandler, onChunk?: OnChunk, signal?: AbortSignal): Promise<ProviderReply> {
   const AnthropicSDK = (await import('@anthropic-ai/sdk')).default
   const client = new AnthropicSDK({ apiKey: config.apiKey })
   const request = toAnthropicRequest(config, messages)
@@ -123,7 +129,10 @@ async function callAnthropic(config: AIConfig, messages: ChatMessage[], handler:
   if (!onChunk) {
     log(handler, 'Calling Claude API...', 'action')
     const response = await client.messages.create(request, { signal })
-    return response.content.map(b => (b.type === 'text' ? b.text : '')).join('')
+    return {
+      text: response.content.map(b => (b.type === 'text' ? b.text : '')).join(''),
+      truncated: response.stop_reason === 'max_tokens',
+    }
   }
 
   log(handler, 'Calling Claude API (streaming)...', 'action')
@@ -135,8 +144,8 @@ async function callAnthropic(config: AIConfig, messages: ChatMessage[], handler:
     onChunk(text)
   })
 
-  await stream.finalMessage()
-  return fullText
+  const final = await stream.finalMessage()
+  return { text: fullText, truncated: final.stop_reason === 'max_tokens' }
 }
 
 function outputTokenLimit(config: AIConfig): { max_tokens?: number; max_completion_tokens?: number } {
@@ -146,7 +155,7 @@ function outputTokenLimit(config: AIConfig): { max_tokens?: number; max_completi
 }
 
 // Call OpenAI-compatible API (OpenAI, Moonshot, Gemini, NVIDIA NIM, Ollama); streams through onChunk when it is given
-async function callOpenAICompat(config: AIConfig, messages: ChatMessage[], handler: EventHandler, onChunk?: OnChunk, signal?: AbortSignal): Promise<string> {
+async function callOpenAICompat(config: AIConfig, messages: ChatMessage[], handler: EventHandler, onChunk?: OnChunk, signal?: AbortSignal): Promise<ProviderReply> {
   const OpenAI = (await import('openai')).default
   const client = new OpenAI({ apiKey: config.apiKey, ...(config.baseURL ? { baseURL: config.baseURL } : {}) })
 
@@ -160,22 +169,27 @@ async function callOpenAICompat(config: AIConfig, messages: ChatMessage[], handl
   if (!onChunk) {
     log(handler, `Calling ${label}...`, 'action')
     const response = await client.chat.completions.create(request, { signal })
-    return response.choices[0]?.message?.content || 'No response generated.'
+    const choice = response.choices[0]
+    // Ollama's OpenAI-compatible endpoint also reports its num_predict cap as 'length'.
+    return { text: choice?.message?.content || '', truncated: choice?.finish_reason === 'length' }
   }
 
   log(handler, `Calling ${label} (streaming)...`, 'action')
   const stream = await client.chat.completions.create({ ...request, stream: true }, { signal })
 
   let fullText = ''
+  let truncated = false
   for await (const chunk of stream) {
-    const text = chunk.choices[0]?.delta?.content || ''
+    const choice = chunk.choices[0]
+    if (choice?.finish_reason === 'length') truncated = true
+    const text = choice?.delta?.content || ''
     if (text) {
       fullText += text
       onChunk(text)
     }
   }
 
-  return fullText || 'No response generated.'
+  return { text: fullText, truncated }
 }
 
 // Check if Ollama is running
@@ -238,6 +252,18 @@ export function setCustomPrompts(prompts: unknown) {
   customSystemPrompt = typeof systemPrompt === 'string' ? systemPrompt : ''
   customUserTemplate = typeof userPromptTemplate === 'string' ? userPromptTemplate : ''
   console.log('[AI Client] Custom prompts updated')
+}
+
+/**
+ * The user's message inside the Settings "User Prompt Template". A template
+ * without {message} is prepended (as Settings describes it) rather than
+ * replacing what the user typed, and the message is inserted with a replacer
+ * function so `$&`, `$'` and the like in it stay literal.
+ */
+function applyUserTemplate(template: string, message: string): string {
+  if (!template.trim()) return message
+  if (!template.includes('{message}')) return `${template}\n\n${message}`
+  return template.replace('{message}', () => message)
 }
 
 // ─── Conversation history ────────────────────────────────────────────────────
@@ -308,11 +334,7 @@ function prepareCall(
 
   console.log(`[AI Client] Calling ${config.provider} / ${config.model}${streaming ? ' (streaming)' : ''}`)
 
-  // Apply user template if set
-  let processedMessage = message
-  if (customUserTemplate && customUserTemplate !== '{message}') {
-    processedMessage = customUserTemplate.replace('{message}', message)
-  }
+  let processedMessage = applyUserTemplate(customUserTemplate, message)
 
   // For small local models, prepend Korean instruction directly to user message
   if (config.provider === 'ollama') {
@@ -333,6 +355,11 @@ function prepareCall(
   }
 }
 
+interface CallResult {
+  config: AIConfig
+  reply: ProviderReply
+}
+
 async function runCall(
   selectedModel: string,
   message: string,
@@ -340,19 +367,27 @@ async function runCall(
   handler: EventHandler,
   onChunk: OnChunk | undefined,
   options: CallOptions = {},
-): Promise<{ content: string; model: string } | null> {
+): Promise<CallResult | null> {
   const { signal } = options
   signal?.throwIfAborted()
   const prepared = prepareCall(selectedModel, message, apiKeys, handler, onChunk !== undefined, options)
   if (!prepared) return null
 
   const { config, messages } = prepared
-  const content = config.provider === 'anthropic'
+  const reply = config.provider === 'anthropic'
     ? await callAnthropic(config, messages, handler, onChunk, signal)
     : await callOpenAICompat(config, messages, handler, onChunk, signal)
 
   // A cancel that lands as the reply completes still discards it.
   signal?.throwIfAborted()
+  return { config, reply }
+}
+
+/** The reply as the chat shows it: an empty OpenAI-compatible completion reads as a notice. */
+function chatReply(result: CallResult | null): { content: string; model: string } | null {
+  if (!result) return null
+  const { config, reply } = result
+  const content = reply.text || (config.provider === 'anthropic' ? '' : 'No response generated.')
   return { content, model: config.model }
 }
 
@@ -363,7 +398,7 @@ export async function callAI(
   handler: EventHandler,
   options?: CallOptions,
 ): Promise<{ content: string; model: string } | null> {
-  return runCall(selectedModel, message, apiKeys, handler, undefined, options)
+  return chatReply(await runCall(selectedModel, message, apiKeys, handler, undefined, options))
 }
 
 export async function callAIStreaming(
@@ -374,7 +409,30 @@ export async function callAIStreaming(
   onChunk: (text: string) => void,
   options?: CallOptions,
 ): Promise<{ content: string; model: string } | null> {
-  return runCall(selectedModel, message, apiKeys, handler, onChunk, options)
+  return chatReply(await runCall(selectedModel, message, apiKeys, handler, onChunk, options))
+}
+
+export interface AICompletion {
+  /** The reply exactly as the model sent it: '' when it sent nothing. */
+  content: string
+  /** The reply stopped at the output cap, so its end is missing. */
+  truncated: boolean
+}
+
+/**
+ * One request whose reply is used as data, not shown in the chat (inline
+ * edit): an empty reply stays empty instead of becoming the chat's notice,
+ * and a reply cut off at the output cap says so.
+ */
+export async function completeAI(
+  selectedModel: string,
+  message: string,
+  apiKeys: Record<string, string>,
+  handler: EventHandler,
+  options?: CallOptions,
+): Promise<AICompletion | null> {
+  const result = await runCall(selectedModel, message, apiKeys, handler, undefined, options)
+  return result && { content: result.reply.text, truncated: result.reply.truncated }
 }
 
 export function hasApiKey(selectedModel: string, apiKeys: Record<string, string>): boolean {
