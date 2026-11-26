@@ -149,7 +149,6 @@ export function createElectronApi(ipc: IpcRendererLike, host?: PreloadHost) {
     // =====================================================================
     clipboardReadText: () => invoke('clipboard:read-text'),
     clipboardWriteText: (text: string) => invoke('clipboard:write-text', text),
-    clipboardReadImage: () => invoke('clipboard:read-image'),
 
     // =====================================================================
     // Shell (electron/ipc/shell.ts)

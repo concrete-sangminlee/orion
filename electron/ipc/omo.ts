@@ -35,7 +35,7 @@ export function registerOmoHandlers(getWindow: () => BrowserWindow | null) {
   handle('omo:set-api-keys', async (_event, rawPatch: unknown) => {
     try {
       const store = getApiKeyStore()
-      const { persisted } = store.update(normalizeApiKeyPatch(rawPatch))
+      const { persisted } = await store.update(normalizeApiKeyPatch(rawPatch))
       setApiKeys(store.keys() as Record<string, string>)
       return { success: true, persisted, configured: store.configured(), encryptionAvailable: store.encryptionAvailable() }
     } catch (err: any) {

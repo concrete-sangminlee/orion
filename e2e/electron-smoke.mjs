@@ -360,6 +360,15 @@ try {
   const removed = await win.evaluate(() => window.api.omoSetApiKeys({ anthropic: null }))
   check(removed.success && removed.configured?.anthropic === false, 'a key can be removed')
 
+  // Clipboard: the main-process clipboard is asynchronous since Electron 44.
+  const clipText = 'orion clipboard ✓ 42'
+  const clipWrite = await win.evaluate((text) => window.api.clipboardWriteText(text), clipText)
+  const clipRead = await win.evaluate(() => window.api.clipboardReadText())
+  check(clipWrite.success && clipRead.success && clipRead.text === clipText, `clipboard text round-trips through the main process (${JSON.stringify(clipRead)})`)
+  const copied = await win.evaluate((file) => window.api.copyPathToClipboard(file), keepFile)
+  const copiedRead = await win.evaluate(() => window.api.clipboardReadText())
+  check(copied.success && copiedRead.text === keepFile, 'Copy Path puts the file path on the clipboard')
+
   check(cspViolations.length === 0, `no Content-Security-Policy violations${cspViolations.length ? `: ${cspViolations.slice(0, 3).join(' | ')}` : ''}`)
   check(remoteRequests.length === 0, `renderer loaded nothing from the network${remoteRequests.length ? `: ${[...new Set(remoteRequests)].slice(0, 3).join(', ')}` : ''}`)
   check(pageErrors.length === 0, `no uncaught renderer errors${pageErrors.length ? `: ${pageErrors.join(' | ')}` : ''}`)

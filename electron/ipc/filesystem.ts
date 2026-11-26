@@ -231,7 +231,7 @@ export function registerFilesystemHandlers(getWindow: () => BrowserWindow | null
       if (!isSafeRevealPath(itemPath)) {
         return { success: false, error: 'Refused to copy path: empty or contains control characters' }
       }
-      clipboard.writeText(itemPath)
+      await clipboard.writeText(itemPath)
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message }

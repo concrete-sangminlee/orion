@@ -11,16 +11,19 @@ let store: ApiKeyStore | null = null
  * keyring, safeStorage falls back to its "basic_text" backend, which only
  * obfuscates; keys still never reach the renderer.
  *
- * Call after app 'ready' (safeStorage is unavailable before it).
+ * Call after app 'ready' (safeStorage is unavailable before it), and await
+ * `ready()` once before reading keys.
  */
 export function getApiKeyStore(): ApiKeyStore {
   if (store) return store
   const file = path.join(app.getPath('userData'), 'api-keys.json')
   store = createApiKeyStore({
+    // The async API: the synchronous one is deprecated in Electron 45 and
+    // removed in 46. It also decrypts keys stored by the synchronous one.
     cipher: {
-      isAvailable: () => safeStorage.isEncryptionAvailable(),
-      encrypt: (plainText) => safeStorage.encryptString(plainText),
-      decrypt: (cipherText) => safeStorage.decryptString(cipherText),
+      isAvailable: () => safeStorage.isAsyncEncryptionAvailable(),
+      encrypt: (plainText) => safeStorage.encryptStringAsync(plainText),
+      decrypt: (cipherText) => safeStorage.decryptStringAsync(cipherText),
     },
     io: {
       read: () => {
