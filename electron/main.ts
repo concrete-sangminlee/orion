@@ -20,6 +20,8 @@ import { decideNavigation, type AppOrigin } from './security/app-origin'
 import { grantFileAccess } from './workspace/granted-files'
 import { grantWorkspaceRoot, initGrantedRoots } from './workspace/granted-roots'
 import { itemsFromArgs } from './workspace/launch-args'
+import { getApiKeyStore } from './secrets'
+import { getProjectPath } from './workspace/project-path'
 
 // --- Constants ---
 
@@ -196,9 +198,19 @@ function openFilesInWindow(win: BrowserWindow, filePaths: string[]): void {
   }
 }
 
+/**
+ * Where an Open dialog starts. Since Electron 43 a dialog without a
+ * `defaultPath` opens in Downloads instead of the folder used last, so open
+ * dialogs start in the workspace, or in the home folder without one.
+ */
+function dialogStartFolder(): string {
+  return getProjectPath() ?? app.getPath('home')
+}
+
 async function showOpenFilesDialog(win: BrowserWindow | null): Promise<string[]> {
   const options: Electron.OpenDialogOptions = {
     properties: ['openFile', 'multiSelections'],
+    defaultPath: dialogStartFolder(),
     filters: [
       { name: 'All Supported', extensions: SUPPORTED_FILE_EXTENSIONS.map((e) => e.slice(1)) },
       { name: 'All Files', extensions: ['*'] },
@@ -264,6 +276,7 @@ function buildAppMenu(): Menu {
           if (!win) return
           const result = await dialog.showOpenDialog(win, {
             properties: ['openDirectory'],
+            defaultPath: dialogStartFolder(),
           })
           if (!result.canceled && result.filePaths[0] && grantWorkspaceRoot(result.filePaths[0])) {
             emit(win, 'app:open-folder', result.filePaths[0])
@@ -727,6 +740,7 @@ function registerIpcHandlers() {
   handle('fs:open-folder', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory'],
+      defaultPath: dialogStartFolder(),
     })
     if (result.canceled || !result.filePaths[0]) return null
     // The renderer may open exactly the folder the user picked.
@@ -783,8 +797,10 @@ if (!gotSingleInstanceLock) {
     }
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     initGrantedRoots(path.join(app.getPath('userData'), 'granted-roots.json'))
+    // Decrypt the stored API keys before any handler can read them.
+    await getApiKeyStore().ready()
     registerIpcHandlers()
 
     // Build and set application menu

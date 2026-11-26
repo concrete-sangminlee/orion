@@ -25,10 +25,15 @@ import { API_KEY_PROVIDERS } from '../../shared/api-key-providers'
 
 export { API_KEY_PROVIDERS }
 
+/**
+ * Asynchronous OS encryption (Electron safeStorage's async API: the
+ * synchronous methods are deprecated in Electron 45 and removed in 46).
+ */
 export interface SecretCipher {
-  isAvailable(): boolean
-  encrypt(plainText: string): Buffer
-  decrypt(cipherText: Buffer): string
+  isAvailable(): Promise<boolean>
+  encrypt(plainText: string): Promise<Buffer>
+  /** `shouldReEncrypt`: the OS rotated the key or offers a stronger one. */
+  decrypt(cipherText: Buffer): Promise<{ result: string; shouldReEncrypt: boolean }>
 }
 
 export interface KeyFileIO {
@@ -80,12 +85,14 @@ interface KeyFile {
 }
 
 export interface ApiKeyStore {
+  /** Decrypt the stored keys. Await once before anything reads them. */
+  ready(): Promise<void>
   /** Decrypted keys for the AI bridge. Never send this to the renderer. */
   keys(): Partial<Record<ApiKeyProvider, string>>
   configured(): ApiKeyConfigured
   encryptionAvailable(): boolean
   /** Apply a validated patch; `persisted` is false when only kept in memory. */
-  update(patch: ApiKeyPatch): { persisted: boolean }
+  update(patch: ApiKeyPatch): Promise<{ persisted: boolean }>
 }
 
 export function createApiKeyStore({ cipher, io, onWarning = () => {} }: {
@@ -93,61 +100,74 @@ export function createApiKeyStore({ cipher, io, onWarning = () => {} }: {
   io: KeyFileIO
   onWarning?: (message: string) => void
 }): ApiKeyStore {
-  let cache: Partial<Record<ApiKeyProvider, string>> | null = null
+  let cache: Partial<Record<ApiKeyProvider, string>> = {}
+  let available = false
+  let loading: Promise<void> | null = null
+  // Writes run one after another, so an older key set never lands last.
+  let writes: Promise<unknown> = Promise.resolve()
 
-  const load = (): Partial<Record<ApiKeyProvider, string>> => {
-    if (cache) return cache
-    cache = {}
+  const persist = async (keys: Partial<Record<ApiKeyProvider, string>>): Promise<boolean> => {
+    if (!available) return false
+    const file: KeyFile = { version: 1, keys: {} }
+    for (const provider of API_KEY_PROVIDERS) {
+      const key = keys[provider]
+      if (key) file.keys[provider] = (await cipher.encrypt(key)).toString('base64')
+    }
+    io.write(JSON.stringify(file, null, 2))
+    return true
+  }
+  const queuePersist = (keys: Partial<Record<ApiKeyProvider, string>>): Promise<boolean> => {
+    const run = writes.then(() => persist(keys))
+    writes = run.catch(() => {})
+    return run
+  }
+
+  const load = async (): Promise<void> => {
+    available = await cipher.isAvailable().catch(() => false)
     let contents: string | null = null
     try {
       contents = io.read()
     } catch (err) {
       onWarning(`Could not read stored API keys: ${(err as Error).message}`)
     }
-    if (!contents) return cache
+    if (!contents) return
     let parsed: KeyFile
     try {
       parsed = JSON.parse(contents)
     } catch {
       onWarning('Stored API keys are not valid JSON; ignoring them')
-      return cache
+      return
     }
-    if (!cipher.isAvailable()) {
+    if (!available) {
       onWarning('OS encryption is unavailable; stored API keys cannot be decrypted this session')
-      return cache
+      return
     }
+    let reEncrypt = false
     for (const provider of API_KEY_PROVIDERS) {
       const encoded = parsed?.keys?.[provider]
       if (typeof encoded !== 'string') continue
       try {
-        cache[provider] = cipher.decrypt(Buffer.from(encoded, 'base64'))
+        const { result, shouldReEncrypt } = await cipher.decrypt(Buffer.from(encoded, 'base64'))
+        cache[provider] = result
+        reEncrypt ||= shouldReEncrypt
       } catch {
         onWarning(`Stored ${provider} API key could not be decrypted; ignoring it`)
       }
     }
-    return cache
-  }
-
-  const persist = (keys: Partial<Record<ApiKeyProvider, string>>): boolean => {
-    if (!cipher.isAvailable()) return false
-    const file: KeyFile = { version: 1, keys: {} }
-    for (const provider of API_KEY_PROVIDERS) {
-      const key = keys[provider]
-      if (key) file.keys[provider] = cipher.encrypt(key).toString('base64')
+    if (reEncrypt) {
+      await queuePersist({ ...cache }).catch((err) => onWarning(`Could not re-encrypt stored API keys: ${(err as Error).message}`))
     }
-    io.write(JSON.stringify(file, null, 2))
-    return true
   }
 
   return {
-    keys: () => ({ ...load() }),
-    configured: () => {
-      const keys = load()
-      return Object.fromEntries(API_KEY_PROVIDERS.map((provider) => [provider, Boolean(keys[provider])])) as ApiKeyConfigured
-    },
-    encryptionAvailable: () => cipher.isAvailable(),
-    update: (patch) => {
-      const next = { ...load() }
+    ready: () => (loading ??= load()),
+    keys: () => ({ ...cache }),
+    configured: () =>
+      Object.fromEntries(API_KEY_PROVIDERS.map((provider) => [provider, Boolean(cache[provider])])) as ApiKeyConfigured,
+    encryptionAvailable: () => available,
+    update: async (patch) => {
+      await (loading ??= load())
+      const next = { ...cache }
       for (const provider of API_KEY_PROVIDERS) {
         if (!(provider in patch)) continue
         const value = patch[provider]
@@ -155,7 +175,7 @@ export function createApiKeyStore({ cipher, io, onWarning = () => {} }: {
         else next[provider] = value
       }
       cache = next
-      return { persisted: persist(next) }
+      return { persisted: await queuePersist(next) }
     },
   }
 }

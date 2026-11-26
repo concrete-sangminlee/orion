@@ -95,7 +95,6 @@ export const IPC = {
   // Clipboard
   CLIPBOARD_READ_TEXT: 'clipboard:read-text',
   CLIPBOARD_WRITE_TEXT: 'clipboard:write-text',
-  CLIPBOARD_READ_IMAGE: 'clipboard:read-image',
 
   // Shell
   SHELL_OPEN_EXTERNAL: 'shell:open-external',
@@ -192,7 +191,6 @@ export const IPC_INVOKE_CHANNELS = channelList({
   'file:read-binary': true,
   'clipboard:read-text': true,
   'clipboard:write-text': true,
-  'clipboard:read-image': true,
   'shell:open-external': true,
   'shell:show-item-in-folder': true,
   'shell:open-path': true,

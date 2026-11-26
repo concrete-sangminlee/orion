@@ -329,7 +329,7 @@ Ollama works out of the box with no API key. Run `orion config` for API key setu
 | Layer | Technology |
 |-------|-----------|
 | CLI | Node.js · Commander · Chalk · Ora · Marked |
-| Desktop | Electron 42 · React 19 · TypeScript 5.9 |
+| Desktop | Electron 45 · React 19 · TypeScript 5.9 |
 | Editor | Monaco Editor 0.52 |
 | Terminal | @xterm/xterm 6 · node-pty |
 | State | Zustand 5 (17 stores) |

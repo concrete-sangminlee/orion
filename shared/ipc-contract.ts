@@ -492,7 +492,6 @@ export interface IpcInvokeContract {
   // Clipboard
   'clipboard:read-text': () => OperationResult & { text?: string }
   'clipboard:write-text': (text: string) => OperationResult
-  'clipboard:read-image': () => OperationResult & { data?: string | null }
 
   // Shell
   'shell:open-external': (url: string) => OperationResult
